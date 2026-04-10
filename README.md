@@ -124,7 +124,7 @@ Forwarded msg ──→ extract sender + content
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/mindsecretary.git
+git clone https://github.com/ginkida/mindsecretary.git
 cd mindsecretary
 cp .env.example .env
 # Fill in .env: API keys + profile

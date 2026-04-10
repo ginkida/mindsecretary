@@ -1,13 +1,14 @@
 .env
 .git
 .gitignore
-.gokin
 .claude
+CLAUDE.md
+claude.md
 data/
 tests/
 *.md
+!README.md
 __pycache__
 *.pyc
 .venv
 *.egg-info
-*.zip

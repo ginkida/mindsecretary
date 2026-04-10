@@ -7,6 +7,7 @@ data/
 # Claude Code
 .claude/
 CLAUDE.md
+claude.md
 
 # Python
 __pycache__/
@@ -28,7 +29,3 @@ build/
 # OS
 .DS_Store
 Thumbs.db
-
-# Project-specific
-.gokin/
-tender.zip
