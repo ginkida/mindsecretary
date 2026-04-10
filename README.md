@@ -70,12 +70,33 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 
 ## Quick Start
 
+### Option A: From pre-built image (recommended)
+
+```bash
+# 1. Create a directory and download configs
+mkdir mindsecretary && cd mindsecretary
+curl -LO https://raw.githubusercontent.com/ginkida/mindsecretary/main/.env.example
+curl -LO https://raw.githubusercontent.com/ginkida/mindsecretary/main/docker-compose.yaml
+mkdir -p config
+curl -Lo config/profile.yaml https://raw.githubusercontent.com/ginkida/mindsecretary/main/config/profile.yaml
+curl -Lo config/settings.yaml https://raw.githubusercontent.com/ginkida/mindsecretary/main/config/settings.yaml
+
+# 2. Configure
+cp .env.example .env
+# Edit .env — fill in API keys and profile
+
+# 3. Run
+docker compose up -d
+```
+
+### Option B: Build from source
+
 ```bash
 git clone https://github.com/ginkida/mindsecretary.git
 cd mindsecretary
 cp .env.example .env
 # Edit .env — fill in API keys and profile
-docker compose up -d
+docker compose up -d --build
 ```
 
 ### Required Environment Variables

@@ -1,5 +1,6 @@
 services:
   mindsecretary:
+    image: ghcr.io/ginkida/mindsecretary:latest
     build: .
     container_name: mindsecretary
     restart: unless-stopped
