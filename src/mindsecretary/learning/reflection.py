@@ -89,7 +89,7 @@ class WeeklyReflection:
             return None
 
         # Extract and save learnings from JSON block at the end
-        self._extract_learnings(text)
+        await self._extract_learnings(text)
 
         # Log as interaction
         self.db.log_interaction(
@@ -126,7 +126,7 @@ class WeeklyReflection:
             lines.append(f"- {name}: {done}/{total}")
         return "\n".join(lines)
 
-    def _extract_learnings(self, text: str):
+    async def _extract_learnings(self, text: str):
         """Extract JSON learnings block from the response and save to memory."""
         # Find JSON array in the response
         import re
@@ -151,7 +151,7 @@ class WeeklyReflection:
             confidence = learning.get("confidence", 0.5)
             importance = max(1, min(10, int(confidence * 10)))
             try:
-                self.memory.save(
+                await self.memory.save(
                     content=learning["content"],
                     category="learning",
                     importance=importance,
