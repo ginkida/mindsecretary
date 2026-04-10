@@ -1,0 +1,25 @@
+llm:
+  model: "claude-sonnet-4-6-20250514"
+  max_tokens: 1024
+  max_tool_rounds: 5
+
+stt:
+  model: "whisper-large-v3"
+  language: "ru"
+
+embeddings:
+  model: "voyage-3"
+
+memory:
+  search_top_k: 8
+  relevance_weight: 0.6
+  importance_weight: 0.4
+
+proactive:
+  morning_briefing: true
+  evening_summary: true
+  post_event_followup: true
+  pre_meeting_briefing: true
+  weather_monitor: true
+  reminder_check_interval_min: 5
+  weather_check_interval_min: 60

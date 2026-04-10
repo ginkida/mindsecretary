@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+import asyncio
+import inspect
+import logging
+from typing import Any
+
+from ..core.database import Database
+from ..core.memory import Memory
+from ..integrations.weather import WeatherClient
+
+logger = logging.getLogger(__name__)
+
+TOOL_DEFINITIONS = [
+    {
+        "name": "save_memory",
+        "description": (
+            "Сохранить факт, обещание или наблюдение. Вызывай для КАЖДОГО "
+            "нового факта из сообщения пользователя. Из одного голосового "
+            "может быть несколько вызовов."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Что запомнить. Включи контекст: кто, когда, связь.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "contact", "health", "work", "personal",
+                        "promise", "preference", "location", "learning",
+                    ],
+                },
+                "importance": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "1=мелочь, 5=полезно, 8=важно, 10=критично",
+                },
+                "related_person": {"type": "string"},
+                "related_date": {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["content", "category", "importance"],
+        },
+    },
+    {
+        "name": "search_memory",
+        "description": "Семантический поиск по памяти — прошлое, люди, обещания.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "contact", "health", "work", "personal",
+                        "promise", "preference", "location", "learning",
+                    ],
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "create_event",
+        "description": "Создать событие в календаре.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_at": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
+                "end_at": {"type": "string"},
+                "location": {"type": "string"},
+                "related_person": {"type": "string", "description": "Кто участвует"},
+                "description": {"type": "string"},
+            },
+            "required": ["title", "start_at"],
+        },
+    },
+    {
+        "name": "get_events",
+        "description": "Получить события за период.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "YYYY-MM-DD"},
+                "date_to": {"type": "string"},
+            },
+            "required": ["date_from"],
+        },
+    },
+    {
+        "name": "create_reminder",
+        "description": "Создать напоминание.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "trigger_at": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
+                "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+            },
+            "required": ["text", "trigger_at"],
+        },
+    },
+    {
+        "name": "update_contact",
+        "description": (
+            "Создать или обновить контакт. Вызывай при ЛЮБОМ упоминании "
+            "нового факта о человеке: переезд, работа, семья, интересы."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "relation": {"type": "string"},
+                "birthday": {"type": "string"},
+                "notes": {"type": "string", "description": "Новые факты о человеке"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "get_contacts",
+        "description": "Найти контакты.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_weather",
+        "description": "Прогноз погоды.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string"},
+                "days": {"type": "integer", "maximum": 7},
+            },
+        },
+    },
+    {
+        "name": "log_habit",
+        "description": "Отметить выполнение привычки.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "habit_name": {"type": "string"},
+                "date": {"type": "string"},
+                "done": {"type": "boolean"},
+            },
+            "required": ["habit_name", "done"],
+        },
+    },
+    {
+        "name": "track_decision",
+        "description": (
+            "Track a decision the user is making or considering. "
+            "Use when user says 'I'm thinking of...', 'decided to...', 'should I...'. "
+            "Also search past decisions for similar situations and mention outcomes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "What the decision is about"},
+                "context": {"type": "string", "description": "Relevant context: why considering, pros/cons"},
+                "follow_up_days": {
+                    "type": "integer", "description": "Days until follow-up (default 30)",
+                    "minimum": 1, "maximum": 365,
+                },
+            },
+            "required": ["description"],
+        },
+    },
+]
+
+
+MAX_STR_LEN = 5000
+VALID_CATEGORIES = {
+    "contact", "health", "work", "personal",
+    "promise", "preference", "location", "learning",
+}
+VALID_PRIORITIES = {"low", "medium", "high"}
+
+
+def _truncate(val: str | None, max_len: int = MAX_STR_LEN) -> str | None:
+    if val is None:
+        return None
+    return str(val)[:max_len]
+
+
+def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Validate and sanitize tool arguments from LLM output."""
+    clean = {}
+    for k, v in args.items():
+        if isinstance(v, str):
+            clean[k] = _truncate(v)
+        elif isinstance(v, (int, float, bool)):
+            clean[k] = v
+        elif v is None:
+            clean[k] = v
+        else:
+            clean[k] = str(v)[:MAX_STR_LEN]
+
+    # Tool-specific validation
+    if name == "save_memory":
+        cat = clean.get("category", "")
+        if cat not in VALID_CATEGORIES:
+            clean["category"] = "personal"
+        imp = clean.get("importance", 5)
+        clean["importance"] = max(1, min(10, int(imp)))
+
+    if name in ("create_event", "create_reminder"):
+        priority = clean.get("priority", "medium")
+        if priority not in VALID_PRIORITIES:
+            clean["priority"] = "medium"
+
+    return clean
+
+
+class ToolExecutor:
+    def __init__(self, db: Database, memory: Memory,
+                 weather: WeatherClient | None = None):
+        self.db = db
+        self.memory = memory
+        self.weather = weather
+
+    async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+        handler = getattr(self, f"_handle_{name}", None)
+        if handler is None:
+            logger.warning("Unknown tool called: %s", name)
+            return f"Unknown tool: {name}"
+        try:
+            safe_args = _sanitize_args(name, arguments)
+            result = handler(**safe_args)
+            # Support both sync and async handlers (weather is async)
+            if inspect.isawaitable(result):
+                result = await result
+            logger.info("Tool %s OK", name)
+            return result
+        except Exception as e:
+            logger.error("Tool %s failed: %s", name, type(e).__name__)
+            return f"Error executing {name}: {type(e).__name__}"
+
+    async def _handle_save_memory(self, content: str, category: str, importance: int,
+                                  related_person: str | None = None,
+                                  related_date: str | None = None) -> str:
+        mid = await self.memory.save(content, category, importance,
+                                     related_person, related_date)
+        return f"Saved memory {mid}: {content[:60]}..."
+
+    async def _handle_search_memory(self, query: str,
+                                    category: str | None = None) -> str:
+        results = await self.memory.search(query, top_k=5, category=category)
+        if not results:
+            return "Nothing found in memory."
+        lines = []
+        for r in results:
+            lines.append(f"- [{r['category']}] {r['content']} (score={r['final_score']:.2f})")
+        return "\n".join(lines)
+
+    def _handle_create_event(self, title: str, start_at: str,
+                             end_at: str | None = None,
+                             location: str | None = None,
+                             related_person: str | None = None,
+                             description: str | None = None) -> str:
+        event = self.db.create_event(title, start_at, end_at, location,
+                                     description, related_person)
+        return f"Event created: {title} at {start_at}"
+
+    def _handle_get_events(self, date_from: str,
+                           date_to: str | None = None) -> str:
+        events = self.db.get_events(date_from, date_to)
+        if not events:
+            return f"No events for {date_from}"
+        lines = []
+        for e in events:
+            time_str = e["start_at"][11:16] if len(e["start_at"]) > 10 else ""
+            lines.append(f"- {time_str} {e['title']}")
+        return "\n".join(lines)
+
+    def _handle_create_reminder(self, text: str, trigger_at: str,
+                                priority: str = "medium") -> str:
+        reminder = self.db.create_reminder(text, trigger_at, priority)
+        return f"Reminder set: {text} at {trigger_at}"
+
+    def _handle_update_contact(self, name: str, relation: str | None = None,
+                               birthday: str | None = None,
+                               notes: str | None = None) -> str:
+        contact = self.db.upsert_contact(name, relation, birthday, notes)
+        return f"Contact updated: {name}"
+
+    def _handle_get_contacts(self, query: str) -> str:
+        contacts = self.db.get_contacts(query)
+        if not contacts:
+            return f"No contacts matching '{query}'"
+        lines = []
+        for c in contacts:
+            parts = [c["name"]]
+            if c.get("relation"):
+                parts.append(f"({c['relation']})")
+            if c.get("birthday"):
+                parts.append(f"ДР: {c['birthday']}")
+            if c.get("notes"):
+                parts.append(f"— {c['notes'][:80]}")
+            lines.append(" ".join(parts))
+        return "\n".join(lines)
+
+    async def _handle_get_weather(self, date: str | None = None,
+                                  days: int | None = None) -> str:
+        if not self.weather:
+            return "Weather not configured."
+        forecast = await self.weather.get_forecast(days=days or 1)
+        return self.weather.format_daily(forecast)
+
+    def _handle_log_habit(self, habit_name: str, done: bool,
+                          date: str | None = None) -> str:
+        result = self.db.log_habit(habit_name, done, date)
+        status = "done" if done else "skipped"
+        return f"Habit '{habit_name}' {status} for {result['date']}"
+
+    def _handle_track_decision(self, description: str,
+                               context: str | None = None,
+                               follow_up_days: int = 30) -> str:
+        # Check for similar past decisions
+        words = description.split() if description and description.strip() else []
+        past = self.db.get_past_decisions(words[0] if words else "", limit=3)
+        decision = self.db.create_decision(description, context, follow_up_days)
+
+        result = f"Decision tracked: {description}. Follow-up in {follow_up_days} days."
+        if past:
+            result += "\n\nSimilar past decisions:"
+            for p in past:
+                sentiment = p.get('outcome_sentiment', '?')
+                result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
+        return result

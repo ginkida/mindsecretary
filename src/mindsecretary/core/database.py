@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timedelta
+from pathlib import Path
+
+
+class Database:
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(str(db_path))
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self._init_tables()
+
+    def _init_tables(self):
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                title TEXT NOT NULL,
+                start_at TEXT NOT NULL,
+                end_at TEXT,
+                location TEXT,
+                description TEXT,
+                related_person TEXT,
+                recurring TEXT,
+                source TEXT DEFAULT 'voice',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_at);
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                text TEXT NOT NULL,
+                trigger_at TEXT NOT NULL,
+                priority TEXT DEFAULT 'medium',
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_at);
+            CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                name TEXT NOT NULL,
+                aliases TEXT,
+                relation TEXT,
+                birthday TEXT,
+                phone TEXT,
+                notes TEXT,
+                last_contact TEXT,
+                contact_frequency INTEGER,
+                mention_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS interactions (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                timestamp TEXT DEFAULT (datetime('now')),
+                direction TEXT,
+                message_type TEXT,
+                content TEXT NOT NULL,
+                voice_duration_sec REAL,
+                feedback TEXT,
+                feedback_at TEXT,
+                read_at TEXT,
+                response_time_sec REAL,
+                metadata TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(timestamp);
+
+            CREATE TABLE IF NOT EXISTS preferences (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                source TEXT DEFAULT 'default',
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS habits (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                name TEXT NOT NULL UNIQUE,
+                target TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS habit_log (
+                habit_id TEXT REFERENCES habits(id),
+                date TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 1,
+                notes TEXT,
+                PRIMARY KEY (habit_id, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS decisions (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                description TEXT NOT NULL,
+                context TEXT,
+                outcome TEXT,
+                outcome_sentiment TEXT,
+                follow_up_at TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now')),
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+            CREATE INDEX IF NOT EXISTS idx_decisions_followup ON decisions(follow_up_at);
+
+            CREATE TABLE IF NOT EXISTS diary_entries (
+                date TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                mood TEXT,
+                people TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS api_costs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                provider TEXT NOT NULL,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0
+            );
+            CREATE INDEX IF NOT EXISTS idx_costs_ts ON api_costs(timestamp);
+        """)
+        self.db.commit()
+
+    # --- Events ---
+
+    def create_event(self, title: str, start_at: str, end_at: str | None = None,
+                     location: str | None = None, description: str | None = None,
+                     related_person: str | None = None) -> dict:
+        cur = self.db.execute(
+            "INSERT INTO events (title, start_at, end_at, location, description, related_person) "
+            "VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
+            (title, start_at, end_at, location, description, related_person),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return dict(row)
+
+    def get_events(self, date_from: str, date_to: str | None = None) -> list[dict]:
+        if date_to is None:
+            date_to = date_from
+        rows = self.db.execute(
+            "SELECT * FROM events WHERE date(start_at) >= date(?) AND date(start_at) <= date(?) "
+            "ORDER BY start_at",
+            (date_from, date_to),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Reminders ---
+
+    def create_reminder(self, text: str, trigger_at: str,
+                        priority: str = "medium") -> dict:
+        cur = self.db.execute(
+            "INSERT INTO reminders (text, trigger_at, priority) "
+            "VALUES (?, ?, ?) RETURNING *",
+            (text, trigger_at, priority),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return dict(row)
+
+    def get_pending_reminders(self) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT * FROM reminders WHERE status = 'pending' ORDER BY trigger_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_due_reminders(self) -> list[dict]:
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M")
+        rows = self.db.execute(
+            "SELECT * FROM reminders WHERE status = 'pending' AND trigger_at <= ?",
+            (now,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_reminder_sent(self, reminder_id: str):
+        self.db.execute(
+            "UPDATE reminders SET status = 'sent' WHERE id = ?", (reminder_id,)
+        )
+        self.db.commit()
+
+    # --- Contacts ---
+
+    _CONTACT_FIELDS = frozenset({
+        "relation", "birthday", "phone", "notes",
+        "mention_count", "last_contact", "updated_at",
+    })
+
+    @staticmethod
+    def _escape_like(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def upsert_contact(self, name: str, relation: str | None = None,
+                       birthday: str | None = None, notes: str | None = None,
+                       phone: str | None = None) -> dict:
+        existing = self.db.execute(
+            "SELECT * FROM contacts WHERE lower(name) = lower(?)", (name,)
+        ).fetchone()
+
+        if existing:
+            existing = dict(existing)
+            updates: dict[str, str | int] = {}
+            if relation:
+                updates["relation"] = relation
+            if birthday:
+                updates["birthday"] = birthday
+            if phone:
+                updates["phone"] = phone
+            if notes:
+                old_notes = existing.get("notes") or ""
+                if notes not in old_notes:
+                    updates["notes"] = f"{old_notes}\n{notes}".strip()
+            updates["mention_count"] = (existing.get("mention_count") or 0) + 1
+            updates["last_contact"] = datetime.now().isoformat()
+            updates["updated_at"] = datetime.now().isoformat()
+
+            if updates:
+                # Validate column names against whitelist to prevent SQL injection
+                safe_keys = [k for k in updates if k in self._CONTACT_FIELDS]
+                safe_updates = {k: updates[k] for k in safe_keys}
+                sets = ", ".join(f"{k} = ?" for k in safe_updates)
+                vals = list(safe_updates.values()) + [existing["id"]]
+                self.db.execute(f"UPDATE contacts SET {sets} WHERE id = ?", vals)
+                self.db.commit()
+
+            return {**existing, **updates}
+
+        cur = self.db.execute(
+            "INSERT INTO contacts (name, relation, birthday, phone, notes, last_contact) "
+            "VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
+            (name, relation, birthday, phone, notes, datetime.now().isoformat()),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return dict(row)
+
+    def get_contacts(self, query: str) -> list[dict]:
+        escaped = self._escape_like(query.lower())
+        rows = self.db.execute(
+            "SELECT * FROM contacts WHERE lower(name) LIKE ? ESCAPE '\\' "
+            "OR lower(relation) LIKE ? ESCAPE '\\' "
+            "ORDER BY mention_count DESC",
+            (f"%{escaped}%", f"%{escaped}%"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_upcoming_birthdays(self, days: int = 7) -> list[dict]:
+        today = datetime.now()
+        dates = []
+        for i in range(days):
+            d = today + timedelta(days=i)
+            dates.append(d.strftime("%m-%d"))
+
+        placeholders = ",".join("?" * len(dates))
+        rows = self.db.execute(
+            f"SELECT * FROM contacts WHERE substr(birthday, -5) IN ({placeholders}) "
+            f"AND birthday IS NOT NULL",
+            dates,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Interactions ---
+
+    def log_interaction(self, direction: str, message_type: str, content: str,
+                        voice_duration_sec: float | None = None,
+                        metadata: dict | None = None) -> str:
+        cur = self.db.execute(
+            "INSERT INTO interactions (direction, message_type, content, "
+            "voice_duration_sec, metadata) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (direction, message_type, content, voice_duration_sec,
+             json.dumps(metadata) if metadata else None),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return row["id"]
+
+    def get_interactions(self, since: datetime | None = None,
+                         message_type: str | None = None,
+                         limit: int = 100) -> list[dict]:
+        where = "WHERE 1=1"
+        params: list = []
+        if since:
+            where += " AND timestamp >= ?"
+            params.append(since.isoformat())
+        if message_type:
+            where += " AND message_type = ?"
+            params.append(message_type)
+        rows = self.db.execute(
+            f"SELECT * FROM interactions {where} ORDER BY timestamp DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_messages(self, limit: int = 10) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT direction, content, timestamp FROM interactions "
+            "WHERE message_type IN ('voice', 'text', 'forward', 'chat') "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def count_notifications_today(self) -> int:
+        today = datetime.now().strftime("%Y-%m-%d")
+        row = self.db.execute(
+            "SELECT COUNT(*) as cnt FROM interactions "
+            "WHERE direction = 'out' AND message_type IN ('notification', 'briefing', 'reminder') "
+            "AND date(timestamp) = ?",
+            (today,),
+        ).fetchone()
+        return row["cnt"]
+
+    # --- Preferences ---
+
+    def get_preference(self, key: str) -> dict | None:
+        row = self.db.execute(
+            "SELECT * FROM preferences WHERE key = ?", (key,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_preference(self, key: str, value: str,
+                       confidence: float = 0.5, source: str = "default"):
+        self.db.execute(
+            "INSERT INTO preferences (key, value, confidence, source) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=?, confidence=?, source=?, "
+            "updated_at=datetime('now')",
+            (key, value, confidence, source, value, confidence, source),
+        )
+        self.db.commit()
+
+    # --- Habits ---
+
+    def log_habit(self, habit_name: str, done: bool,
+                  date: str | None = None, notes: str | None = None) -> dict:
+        date = date or datetime.now().strftime("%Y-%m-%d")
+
+        habit = self.db.execute(
+            "SELECT id FROM habits WHERE lower(name) = lower(?)", (habit_name,)
+        ).fetchone()
+
+        if not habit:
+            habit = self.db.execute(
+                "INSERT INTO habits (name) VALUES (?) RETURNING id", (habit_name,)
+            ).fetchone()
+
+        self.db.execute(
+            "INSERT INTO habit_log (habit_id, date, done, notes) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(habit_id, date) DO UPDATE SET done=?, notes=?",
+            (habit["id"], date, int(done), notes, int(done), notes),
+        )
+        self.db.commit()
+        return {"habit": habit_name, "date": date, "done": done}
+
+    # --- Decisions ---
+
+    def create_decision(self, description: str, context: str | None = None,
+                        follow_up_days: int = 30) -> dict:
+        follow_up_at = (datetime.now() + timedelta(days=follow_up_days)).isoformat()
+        cur = self.db.execute(
+            "INSERT INTO decisions (description, context, follow_up_at) "
+            "VALUES (?, ?, ?) RETURNING *",
+            (description, context, follow_up_at),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return dict(row)
+
+    def get_pending_decision_followups(self) -> list[dict]:
+        now = datetime.now().isoformat()
+        rows = self.db.execute(
+            "SELECT * FROM decisions WHERE status = 'pending' AND follow_up_at <= ?",
+            (now,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_decision(self, decision_id: str, outcome: str,
+                         sentiment: str = "neutral"):
+        self.db.execute(
+            "UPDATE decisions SET outcome = ?, outcome_sentiment = ?, "
+            "status = 'resolved', resolved_at = datetime('now') WHERE id = ?",
+            (outcome, sentiment, decision_id),
+        )
+        self.db.commit()
+
+    def get_past_decisions(self, query: str = "", limit: int = 5) -> list[dict]:
+        escaped = self._escape_like(query)
+        rows = self.db.execute(
+            "SELECT * FROM decisions WHERE status = 'resolved' "
+            "AND (description LIKE ? ESCAPE '\\' OR context LIKE ? ESCAPE '\\') "
+            "ORDER BY created_at DESC LIMIT ?",
+            (f"%{escaped}%", f"%{escaped}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Diary ---
+
+    def save_diary_entry(self, date: str, content: str, mood: str | None = None,
+                         people: str | None = None):
+        self.db.execute(
+            "INSERT INTO diary_entries (date, content, mood, people) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET content=?, mood=?, people=?",
+            (date, content, mood, people, content, mood, people),
+        )
+        self.db.commit()
+
+    def get_diary_entries(self, days: int = 7) -> list[dict]:
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = self.db.execute(
+            "SELECT * FROM diary_entries WHERE date >= ? ORDER BY date DESC",
+            (since,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- API Costs ---
+
+    # Prices per 1M tokens (input/output)
+    _PRICES = {
+        "anthropic": (3.00, 15.00),
+        "groq_stt": (0.0, 0.0),  # billed per minute, tracked separately
+        "voyage": (0.06, 0.0),
+    }
+
+    def log_cost(self, provider: str, input_tokens: int = 0,
+                 output_tokens: int = 0):
+        inp_price, out_price = self._PRICES.get(provider, (0, 0))
+        cost = (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
+        self.db.execute(
+            "INSERT INTO api_costs (provider, input_tokens, output_tokens, cost_usd) "
+            "VALUES (?, ?, ?, ?)",
+            (provider, input_tokens, output_tokens, cost),
+        )
+        self.db.commit()
+
+    def get_stats(self) -> dict:
+        """Get usage stats for /stats command."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        month_start = datetime.now().strftime("%Y-%m-01")
+
+        # Today's cost
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) as cost, "
+            "COALESCE(SUM(input_tokens), 0) as inp, "
+            "COALESCE(SUM(output_tokens), 0) as outp "
+            "FROM api_costs WHERE date(timestamp) = ?", (today,)
+        ).fetchone()
+        today_cost = row[0]
+        today_tokens = row[1] + row[2]
+
+        # Month cost
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) as cost "
+            "FROM api_costs WHERE date(timestamp) >= ?", (month_start,)
+        ).fetchone()
+        month_cost = row[0]
+
+        # Memory count
+        mem_count = self.db.execute(
+            "SELECT COUNT(*) FROM memories WHERE status = 'active'"
+        ).fetchone()[0]
+
+        # Contact count
+        contact_count = self.db.execute(
+            "SELECT COUNT(*) FROM contacts"
+        ).fetchone()[0]
+
+        # Interactions today
+        interactions_today = self.db.execute(
+            "SELECT COUNT(*) FROM interactions WHERE date(timestamp) = ?", (today,)
+        ).fetchone()[0]
+
+        return {
+            "today_cost": today_cost,
+            "today_tokens": today_tokens,
+            "month_cost": month_cost,
+            "memories": mem_count,
+            "contacts": contact_count,
+            "interactions_today": interactions_today,
+        }
+
+    def close(self):
+        self.db.close()

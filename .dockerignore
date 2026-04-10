@@ -1,0 +1,13 @@
+.env
+.git
+.gitignore
+.gokin
+.claude
+data/
+tests/
+*.md
+__pycache__
+*.pyc
+.venv
+*.egg-info
+*.zip

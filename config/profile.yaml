@@ -1,0 +1,31 @@
+identity:
+  name: "Иван"
+  city: "Москва"
+  timezone: "Europe/Moscow"
+  home_coords: [55.7558, 37.6173]
+  work_coords: [55.7517, 37.6178]
+
+schedule:
+  wake_up: "07:00"
+  work_start: "09:00"
+  work_end: "18:00"
+  sleep: "23:00"
+  commute_method: "метро"
+  commute_minutes: 45
+
+communication:
+  style: "кратко, по делу"
+  language: "ru"
+  notification_limit: 5
+  quiet_hours: ["23:00", "07:00"]
+
+priorities:
+  - "здоровье"
+  - "семья"
+  - "работа"
+  - "развитие"
+
+dislikes:
+  - "опаздывать"
+  - "пустая болтовня"
+  - "лишние уведомления"
