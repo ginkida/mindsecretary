@@ -218,6 +218,8 @@ class TelegramBot:
     async def _handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        if not self._check_user(update):
+            return
         msg_id = query.message.message_id
         interaction_id = self._reply_map.get(msg_id)
         if not interaction_id:

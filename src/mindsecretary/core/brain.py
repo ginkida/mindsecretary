@@ -130,9 +130,16 @@ class Brain:
         Mitigates prompt injection by stripping instruction-like patterns.
         """
         text = text[:max_len]
-        # Remove patterns that look like system instructions
-        for prefix in ("## ", "# ", "System:", "SYSTEM:", "Instructions:",
-                        "You are", "You must", "Ignore previous", "Forget"):
+        for prefix in (
+            # English
+            "## ", "# ", "System:", "SYSTEM:", "Instructions:",
+            "You are", "You must", "Ignore previous", "Forget",
+            "Assistant:", "Human:", "<system>", "</system>",
+            # Russian
+            "Системная инструкция", "Инструкция:", "Ты должен",
+            "Забудь предыдущие", "Забудь всё", "Игнорируй",
+            "Новая роль", "Новая задача", "Ты теперь",
+        ):
             text = text.replace(prefix, f"[{prefix.strip()}]")
         return text
 
