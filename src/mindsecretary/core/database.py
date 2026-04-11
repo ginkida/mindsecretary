@@ -205,7 +205,9 @@ class Database:
     })
 
     @staticmethod
-    def _escape_like(s: str) -> str:
+    def _escape_like(s: str | None) -> str:
+        if not s:
+            return ""
         return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def upsert_contact(self, name: str, relation: str | None = None,
@@ -306,14 +308,26 @@ class Database:
         self.db.commit()
         return row["id"]
 
+    # SQL-compatible timestamp format: matches SQLite's datetime('now') which
+    # produces space-separated strings like '2026-04-11 14:30:00'. Python's
+    # datetime.isoformat() produces T-separated strings, which compare
+    # LEXICOGRAPHICALLY WRONG against space-separated storage
+    # (' ' < 'T' in ASCII, so Python isoformat is always "less than" any
+    # same-minute SQL timestamp). Always use strftime for SQL params.
+    _SQL_TS_FMT = "%Y-%m-%d %H:%M:%S"
+
     def get_interactions(self, since: datetime | None = None,
+                         until: datetime | None = None,
                          message_type: str | None = None,
                          limit: int = 100) -> list[dict]:
         where = "WHERE 1=1"
         params: list = []
         if since:
             where += " AND timestamp >= ?"
-            params.append(since.isoformat())
+            params.append(since.strftime(self._SQL_TS_FMT))
+        if until:
+            where += " AND timestamp <= ?"
+            params.append(until.strftime(self._SQL_TS_FMT))
         if message_type:
             where += " AND message_type = ?"
             params.append(message_type)

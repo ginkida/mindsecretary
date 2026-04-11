@@ -97,15 +97,12 @@ def get_mood_trend(db: Database, days: int = 7) -> list[dict]:
     now = datetime.now()
     for i in range(days):
         day = now - timedelta(days=i)
-        day_start = day.replace(hour=0, minute=0, second=0)
-        day_end = day.replace(hour=23, minute=59, second=59)
-        interactions = db.get_interactions(since=day_start, limit=100)
-        # Filter to just this day
-        day_msgs = [
-            m for m in interactions
-            if m.get("timestamp", "") >= day_start.isoformat()
-            and m.get("timestamp", "") <= day_end.isoformat()
-        ]
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)
+        # get_interactions handles the correct SQL timestamp format internally
+        day_msgs = db.get_interactions(
+            since=day_start, until=day_end, limit=200,
+        )
         if day_msgs:
             mood = analyze_mood(day_msgs)
             results.append({

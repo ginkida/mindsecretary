@@ -46,12 +46,15 @@ class FeedbackTracker:
         """Summarize feedback over last N days."""
         since = datetime.now().replace(hour=0, minute=0, second=0)
         since = since - timedelta(days=days)
+        # Match SQL datetime('now') format (space-separated); see
+        # Database._SQL_TS_FMT docstring for why Python isoformat breaks here.
+        since_sql = since.strftime("%Y-%m-%d %H:%M:%S")
 
         rows = self.db.db.execute(
             "SELECT feedback, COUNT(*) FROM interactions "
             "WHERE direction = 'out' AND timestamp >= ? "
             "GROUP BY feedback",
-            (since.isoformat(),),
+            (since_sql,),
         ).fetchall()
 
         summary = {"positive": 0, "negative": 0, "ignored": 0, "total_out": 0}
@@ -69,7 +72,7 @@ class FeedbackTracker:
             "SELECT AVG(response_time_sec) FROM interactions "
             "WHERE direction = 'in' AND response_time_sec IS NOT NULL "
             "AND timestamp >= ?",
-            (since.isoformat(),),
+            (since_sql,),
         ).fetchone()
         summary["avg_response_time"] = row[0] if row[0] else None
 

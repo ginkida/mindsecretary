@@ -368,9 +368,15 @@ class ToolExecutor:
 
     def _handle_resolve_decision(self, description_hint: str, outcome: str,
                                  sentiment: str = "neutral") -> str:
+        if not description_hint or not description_hint.strip():
+            return "resolve_decision requires a non-empty description_hint"
+        if not outcome or not outcome.strip():
+            return "resolve_decision requires a non-empty outcome"
         if sentiment not in ("positive", "neutral", "negative"):
             sentiment = "neutral"
-        resolved = self.db.resolve_decision_by_hint(description_hint, outcome, sentiment)
+        resolved = self.db.resolve_decision_by_hint(
+            description_hint.strip(), outcome, sentiment,
+        )
         if not resolved:
             return f"No pending decision found matching '{description_hint}'"
         return f"Resolved decision: {resolved['description'][:80]} → {outcome[:80]}"
