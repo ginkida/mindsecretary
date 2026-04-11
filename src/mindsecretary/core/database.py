@@ -449,6 +449,31 @@ class Database:
         self.resolve_decision(row["id"], outcome, sentiment)
         return {"id": row["id"], "description": row["description"]}
 
+    def get_theme_clusters(self, days: int = 30, limit: int = 5) -> list[dict]:
+        """Cluster recent high-importance memories by related_person or category.
+
+        Returns top clusters ordered by total importance. Each cluster:
+          {"label": str, "count": int}
+        where label is a person name (preferred) or category name.
+        """
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = self.db.execute(
+            "SELECT "
+            "  COALESCE(NULLIF(related_person, ''), category) AS label, "
+            "  COUNT(*) AS cnt, "
+            "  SUM(importance) AS total_importance "
+            "FROM memories "
+            "WHERE status = 'active' "
+            "  AND importance >= 5 "
+            "  AND date(created_at) >= date(?) "
+            "GROUP BY label "
+            "HAVING cnt >= 2 "
+            "ORDER BY total_importance DESC, cnt DESC "
+            "LIMIT ?",
+            (since, limit),
+        ).fetchall()
+        return [{"label": r["label"], "count": r["cnt"]} for r in rows]
+
     def get_past_decisions(self, query: str = "", limit: int = 5) -> list[dict]:
         escaped = self._escape_like(query)
         rows = self.db.execute(

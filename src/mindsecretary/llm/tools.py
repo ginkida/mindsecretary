@@ -15,9 +15,10 @@ TOOL_DEFINITIONS = [
     {
         "name": "save_memory",
         "description": (
-            "Сохранить факт, обещание или наблюдение. Вызывай для КАЖДОГО "
-            "нового факта из сообщения пользователя. Из одного голосового "
-            "может быть несколько вызовов."
+            "Сохранить факт, переживание, обещание или наблюдение. "
+            "Для эмоций, настроения, личных переживаний используй "
+            "category='emotional'. Вызывай для КАЖДОГО нового факта или "
+            "важного переживания из сообщения."
         ),
         "input_schema": {
             "type": "object",
@@ -31,6 +32,7 @@ TOOL_DEFINITIONS = [
                     "enum": [
                         "contact", "health", "work", "personal",
                         "promise", "preference", "location", "learning",
+                        "emotional",
                     ],
                 },
                 "importance": {
@@ -47,7 +49,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "search_memory",
-        "description": "Семантический поиск по памяти — прошлое, люди, обещания.",
+        "description": "Семантический поиск по памяти — прошлое, люди, обещания, переживания.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -57,6 +59,7 @@ TOOL_DEFINITIONS = [
                     "enum": [
                         "contact", "health", "work", "personal",
                         "promise", "preference", "location", "learning",
+                        "emotional",
                     ],
                 },
             },
@@ -206,7 +209,7 @@ TOOL_DEFINITIONS = [
 MAX_STR_LEN = 5000
 VALID_CATEGORIES = {
     "contact", "health", "work", "personal",
-    "promise", "preference", "location", "learning",
+    "promise", "preference", "location", "learning", "emotional",
 }
 VALID_PRIORITIES = {"low", "medium", "high"}
 

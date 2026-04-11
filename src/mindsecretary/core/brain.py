@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
 from ..llm.router import ModelRouter
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
@@ -84,13 +85,14 @@ class Brain:
             total_tokens += inp + outp
             self.db.log_cost("anthropic", input_tokens=inp, output_tokens=outp)
 
-            if not response.tool_calls:
-                final_text = response.text or ""
-                break
-
-            # Preserve any text from this round
-            if response.text:
+            # Keep the latest non-empty text across rounds. This prevents empty
+            # text in a tool-only round from erasing the warm reply that was
+            # generated alongside earlier tool calls.
+            if response.text and response.text.strip():
                 final_text = response.text
+
+            if not response.tool_calls:
+                break
 
             # Build assistant message with tool calls (OpenAI format)
             assistant_msg = self._build_assistant_msg(response)
@@ -162,7 +164,7 @@ class Brain:
             for e in events
         ) or "Нет событий."
 
-        recent = self.db.get_recent_messages(limit=6)
+        recent = self.db.get_recent_messages(limit=8)
         recent_text = "\n".join(
             f"{'Ты' if m['direction'] == 'in' else 'Бот'}: "
             f"{self._sanitize_for_context(m['content'], 200)}"
@@ -175,6 +177,61 @@ class Brain:
             for d in pending_decisions
         ) or "Нет решений в процессе."
 
+        try:
+            trend = get_mood_trend(self.db, days=3)
+            mood_trend_text = ", ".join(
+                f"{m['date'][-5:]}: {m['label']}" for m in trend
+            ) or "Нет данных."
+        except Exception:
+            mood_trend_text = "Нет данных."
+
+        # Theme clusters: GROUP BY person/category over last 30 days
+        try:
+            clusters = self.db.get_theme_clusters(days=30, limit=5)
+            theme_clusters_text = ", ".join(
+                f"{self._sanitize_for_context(c['label'], 60)} ({c['count']})"
+                for c in clusters
+            ) or "Нет заметных тем."
+        except Exception:
+            theme_clusters_text = "Нет данных."
+
+        # Quiet contacts: drifting relationships
+        try:
+            alerts = check_contact_frequency(self.db)
+            filtered = [
+                a for a in alerts
+                if a.get("days_since", 0) > 30
+                and a.get("mention_count", 0) >= 3
+            ][:2]
+            quiet_contacts_text = "\n".join(
+                f"- {self._sanitize_for_context(a['name'], 60)}"
+                + (f" ({self._sanitize_for_context(a.get('relation', ''), 40)})"
+                   if a.get("relation") else "")
+                + f": не общались {a['days_since']} дней"
+                for a in filtered
+            ) or "Нет тревог."
+        except Exception:
+            quiet_contacts_text = "Нет данных."
+
+        # Upcoming birthdays: today + next 2 days
+        try:
+            upcoming_bdays = self.db.get_upcoming_birthdays(days=3)
+            today_md = now.strftime("%m-%d")
+            birthdays_lines = []
+            for c in upcoming_bdays[:3]:
+                bday = c.get("birthday") or ""
+                bday_md = bday[-5:] if len(bday) >= 5 else bday
+                name = self._sanitize_for_context(c["name"], 60)
+                relation = self._sanitize_for_context(c.get("relation") or "", 40)
+                rel_str = f" ({relation})" if relation else ""
+                if bday_md == today_md:
+                    birthdays_lines.append(f"- сегодня: {name}{rel_str}")
+                else:
+                    birthdays_lines.append(f"- {bday}: {name}{rel_str}")
+            birthdays_text = "\n".join(birthdays_lines) or "Нет ближайших."
+        except Exception:
+            birthdays_text = "Нет данных."
+
         return MAIN_SYSTEM_PROMPT.format(
             name=self.profile.name,
             profile=self.profile.to_yaml_str(),
@@ -185,6 +242,11 @@ class Brain:
             today_events=events_text,
             recent_messages=recent_text,
             pending_decisions=decisions_text,
+            mood_trend=mood_trend_text,
+            theme_clusters=theme_clusters_text,
+            quiet_contacts=quiet_contacts_text,
+            birthdays=birthdays_text,
+            style=self.profile.style,
         )
 
     @staticmethod

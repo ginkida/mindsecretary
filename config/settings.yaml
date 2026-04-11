@@ -1,6 +1,6 @@
 llm:
   model: "claude-sonnet-4-6-20250514"
-  max_tokens: 1024
+  max_tokens: 1500
   max_tool_rounds: 5
 
 stt:
