@@ -126,7 +126,19 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_costs_ts ON api_costs(timestamp);
         """)
+        self._run_migrations()
         self.db.commit()
+
+    def _run_migrations(self):
+        """Idempotent schema migrations (add columns to existing tables)."""
+        migrations = [
+            "ALTER TABLE contacts ADD COLUMN last_birthday_alert TEXT",
+        ]
+        for sql in migrations:
+            try:
+                self.db.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     # --- Events ---
 
@@ -250,7 +262,8 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_upcoming_birthdays(self, days: int = 7) -> list[dict]:
+    def get_upcoming_birthdays(self, days: int = 7,
+                               skip_recent_alerts: bool = False) -> list[dict]:
         today = datetime.now()
         dates = []
         for i in range(days):
@@ -258,12 +271,25 @@ class Database:
             dates.append(d.strftime("%m-%d"))
 
         placeholders = ",".join("?" * len(dates))
+        where_extra = ""
+        if skip_recent_alerts:
+            where_extra = (
+                " AND (last_birthday_alert IS NULL "
+                "OR last_birthday_alert < datetime('now', '-7 days'))"
+            )
         rows = self.db.execute(
             f"SELECT * FROM contacts WHERE substr(birthday, -5) IN ({placeholders}) "
-            f"AND birthday IS NOT NULL",
+            f"AND birthday IS NOT NULL{where_extra}",
             dates,
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def mark_birthday_alerted(self, contact_id: str):
+        self.db.execute(
+            "UPDATE contacts SET last_birthday_alert = datetime('now') WHERE id = ?",
+            (contact_id,),
+        )
+        self.db.commit()
 
     # --- Interactions ---
 
@@ -310,7 +336,7 @@ class Database:
         today = datetime.now().strftime("%Y-%m-%d")
         row = self.db.execute(
             "SELECT COUNT(*) as cnt FROM interactions "
-            "WHERE direction = 'out' AND message_type IN ('notification', 'briefing', 'reminder') "
+            "WHERE direction = 'out' AND message_type = 'notification' "
             "AND date(timestamp) = ?",
             (today,),
         ).fetchone()
@@ -380,14 +406,48 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def resolve_decision(self, decision_id: str, outcome: str,
-                         sentiment: str = "neutral"):
+    def get_pending_decisions(self, limit: int = 10) -> list[dict]:
+        """All currently pending decisions, newest first."""
+        rows = self.db.execute(
+            "SELECT * FROM decisions WHERE status = 'pending' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def push_decision_followup(self, decision_id: str, days: int = 14):
+        """Push the next follow-up date forward. Called after sending a follow-up."""
+        new_time = (datetime.now() + timedelta(days=days)).isoformat()
         self.db.execute(
+            "UPDATE decisions SET follow_up_at = ? WHERE id = ?",
+            (new_time, decision_id),
+        )
+        self.db.commit()
+
+    def resolve_decision(self, decision_id: str, outcome: str,
+                         sentiment: str = "neutral") -> bool:
+        cur = self.db.execute(
             "UPDATE decisions SET outcome = ?, outcome_sentiment = ?, "
             "status = 'resolved', resolved_at = datetime('now') WHERE id = ?",
             (outcome, sentiment, decision_id),
         )
         self.db.commit()
+        return cur.rowcount > 0
+
+    def resolve_decision_by_hint(self, description_hint: str, outcome: str,
+                                 sentiment: str = "neutral") -> dict | None:
+        """Find the most recent pending decision matching the hint and resolve it."""
+        escaped = self._escape_like(description_hint)
+        row = self.db.execute(
+            "SELECT id, description FROM decisions WHERE status = 'pending' "
+            "AND description LIKE ? ESCAPE '\\' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (f"%{escaped}%",),
+        ).fetchone()
+        if not row:
+            return None
+        self.resolve_decision(row["id"], outcome, sentiment)
+        return {"id": row["id"], "description": row["description"]}
 
     def get_past_decisions(self, query: str = "", limit: int = 5) -> list[dict]:
         escaped = self._escape_like(query)

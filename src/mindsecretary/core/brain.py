@@ -169,6 +169,12 @@ class Brain:
             for m in recent
         ) or "Начало разговора."
 
+        pending_decisions = self.db.get_pending_decisions(limit=5)
+        decisions_text = "\n".join(
+            f"- {self._sanitize_for_context(d['description'], 200)}"
+            for d in pending_decisions
+        ) or "Нет решений в процессе."
+
         return MAIN_SYSTEM_PROMPT.format(
             name=self.profile.name,
             profile=self.profile.to_yaml_str(),
@@ -178,6 +184,7 @@ class Brain:
             memories=memory_text,
             today_events=events_text,
             recent_messages=recent_text,
+            pending_decisions=decisions_text,
         )
 
     @staticmethod

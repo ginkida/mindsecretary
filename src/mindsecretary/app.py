@@ -130,6 +130,7 @@ def main():
         db=db,
         weather=weather,
         profile=config.profile,
+        settings=config.settings,
         send_fn=bot.send_message,
     )
     briefing = BriefingGenerator(

@@ -59,7 +59,7 @@ class Profile:
             commute_minutes=int(os.environ.get("PROFILE_COMMUTE_MIN", "45")),
             style=os.environ.get("PROFILE_STYLE", "кратко, по делу"),
             language=os.environ.get("PROFILE_LANGUAGE", "ru"),
-            notification_limit=int(os.environ.get("PROFILE_NOTIFY_LIMIT", "5")),
+            notification_limit=int(os.environ.get("PROFILE_NOTIFY_LIMIT", "10")),
             quiet_hours=[h.strip() for h in quiet_raw.split(",")],
             priorities=[p.strip() for p in prio_raw.split(",")],
             dislikes=[d.strip() for d in dislike_raw.split(",")],
@@ -128,6 +128,14 @@ class Settings:
     memory_top_k: int
     relevance_weight: float
     importance_weight: float
+    # Proactive job toggles (all default on)
+    morning_briefing: bool = True
+    evening_summary: bool = True
+    smart_questions: bool = True
+    decision_followups: bool = True
+    weekly_review: bool = True
+    weather_monitor: bool = True
+    birthday_alerts: bool = True
 
     @classmethod
     def from_yaml(cls, path: Path) -> Settings:
@@ -136,6 +144,7 @@ class Settings:
         stt = raw["stt"]
         emb = raw["embeddings"]
         mem = raw["memory"]
+        proactive = raw.get("proactive", {})
         return cls(
             model=llm["model"],
             max_tokens=llm["max_tokens"],
@@ -146,6 +155,13 @@ class Settings:
             memory_top_k=mem["search_top_k"],
             relevance_weight=mem["relevance_weight"],
             importance_weight=mem["importance_weight"],
+            morning_briefing=proactive.get("morning_briefing", True),
+            evening_summary=proactive.get("evening_summary", True),
+            smart_questions=proactive.get("smart_questions", True),
+            decision_followups=proactive.get("decision_followups", True),
+            weekly_review=proactive.get("weekly_review", True),
+            weather_monitor=proactive.get("weather_monitor", True),
+            birthday_alerts=proactive.get("birthday_alerts", True),
         )
 
 

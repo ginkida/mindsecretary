@@ -18,8 +18,8 @@ memory:
 proactive:
   morning_briefing: true
   evening_summary: true
-  post_event_followup: true
-  pre_meeting_briefing: true
+  smart_questions: true
+  decision_followups: true
+  weekly_review: true
   weather_monitor: true
-  reminder_check_interval_min: 5
-  weather_check_interval_min: 60
+  birthday_alerts: true

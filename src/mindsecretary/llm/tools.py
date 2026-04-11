@@ -174,6 +174,32 @@ TOOL_DEFINITIONS = [
             "required": ["description"],
         },
     },
+    {
+        "name": "resolve_decision",
+        "description": (
+            "Mark a pending decision as resolved with its outcome. Call when the user "
+            "tells you how a previously tracked decision turned out. Match by a keyword "
+            "from the original decision description."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description_hint": {
+                    "type": "string",
+                    "description": "Keyword/phrase from the original decision (e.g. 'велосипед')",
+                },
+                "outcome": {
+                    "type": "string",
+                    "description": "What actually happened",
+                },
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "neutral", "negative"],
+                },
+            },
+            "required": ["description_hint", "outcome"],
+        },
+    },
 ]
 
 
@@ -336,3 +362,12 @@ class ToolExecutor:
                 sentiment = p.get('outcome_sentiment', '?')
                 result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
         return result
+
+    def _handle_resolve_decision(self, description_hint: str, outcome: str,
+                                 sentiment: str = "neutral") -> str:
+        if sentiment not in ("positive", "neutral", "negative"):
+            sentiment = "neutral"
+        resolved = self.db.resolve_decision_by_hint(description_hint, outcome, sentiment)
+        if not resolved:
+            return f"No pending decision found matching '{description_hint}'"
+        return f"Resolved decision: {resolved['description'][:80]} → {outcome[:80]}"

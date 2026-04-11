@@ -16,7 +16,7 @@ schedule:
 communication:
   style: "кратко, по делу"
   language: "ru"
-  notification_limit: 5
+  notification_limit: 10
   quiet_hours: ["23:00", "07:00"]
 
 priorities:
