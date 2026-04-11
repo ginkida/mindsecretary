@@ -1,6 +1,25 @@
-# MindSecretary
+<p align="center">
+  <img src="assets/mascot.png" alt="MindSecretary mascot — a secretarybird holding a stopwatch next to a calendar" width="480">
+</p>
 
-Voice-first personal AI secretary as a Telegram bot. Send voice messages, text, photos, or forwards — the bot extracts every fact, event, promise, and contact update, stores them in semantic memory, and proactively reminds, briefs, and analyzes patterns in your life.
+<h1 align="center">MindSecretary</h1>
+
+<p align="center">
+  Voice-first personal AI secretary as a Telegram bot.
+  <br>
+  Speak freely — it remembers everything, creates events, tracks promises, and analyzes your week.
+</p>
+
+<p align="center">
+  <a href="https://github.com/ginkida/mindsecretary/releases"><img src="https://img.shields.io/github/v/release/ginkida/mindsecretary?color=4c1" alt="Release"></a>
+  <a href="https://github.com/ginkida/mindsecretary/pkgs/container/mindsecretary"><img src="https://img.shields.io/badge/ghcr.io-mindsecretary-4c1" alt="Container"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/ginkida/mindsecretary" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
+</p>
+
+---
+
+Send voice messages, text, photos, or forwards — the bot extracts every fact, event, promise, and contact update, stores them in semantic memory, and proactively reminds, briefs, and analyzes patterns in your life.
 
 Single-user. Runs in Docker. All data in one SQLite file. ~$2/month.
 
