@@ -213,6 +213,24 @@ class Brain:
         except Exception:
             quiet_contacts_text = "Нет данных."
 
+        # Daily goals
+        try:
+            goals = self.db.get_daily_goals()
+            if goals:
+                goals_lines = []
+                for g in goals:
+                    status_emoji = {"pending": "⬜", "completed": "✅", "skipped": "⏭", "partial": "🟡"}.get(g["status"], "⬜")
+                    prio = {"high": "!", "medium": "", "low": ""}.get(g.get("priority", ""), "")
+                    line = f"- {status_emoji} {self._sanitize_for_context(g['title'], 150)}"
+                    if prio:
+                        line += f" ({prio})"
+                    goals_lines.append(line)
+                today_goals_text = "\n".join(goals_lines)
+            else:
+                today_goals_text = "Не поставлены."
+        except Exception:
+            today_goals_text = "Нет данных."
+
         # Upcoming birthdays: today + next 2 days
         try:
             upcoming_bdays = self.db.get_upcoming_birthdays(days=3)
@@ -240,6 +258,7 @@ class Brain:
             time=now.strftime("%H:%M"),
             memories=memory_text,
             today_events=events_text,
+            today_goals=today_goals_text,
             recent_messages=recent_text,
             pending_decisions=decisions_text,
             mood_trend=mood_trend_text,

@@ -178,6 +178,49 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "set_daily_goal",
+        "description": (
+            "Записать цель на сегодня. Вызывай когда пользователь ставит себе "
+            "задачу или цель на день: 'хочу сегодня...', 'план на день...', "
+            "'нужно сделать...'. Для КАЖДОЙ цели вызывай отдельно."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Короткое название цели"},
+                "description": {"type": "string", "description": "Детали (если есть)"},
+                "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "complete_daily_goal",
+        "description": (
+            "Отметить цель дня как выполненную, пропущенную или частично "
+            "выполненную. Вызывай когда пользователь говорит что сделал или "
+            "не сделал что-то из целей дня."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_hint": {
+                    "type": "string",
+                    "description": "Ключевое слово из названия цели (напр. 'зал', 'отчёт')",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["completed", "skipped", "partial"],
+                },
+                "reflection": {
+                    "type": "string",
+                    "description": "Что помогло или помешало (если озвучено)",
+                },
+            },
+            "required": ["goal_hint", "status"],
+        },
+    },
+    {
         "name": "resolve_decision",
         "description": (
             "Mark a pending decision as resolved with its outcome. Call when the user "
@@ -365,6 +408,22 @@ class ToolExecutor:
                 sentiment = p.get('outcome_sentiment', '?')
                 result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
         return result
+
+    def _handle_set_daily_goal(self, title: str, description: str | None = None,
+                               priority: str = "medium") -> str:
+        goal = self.db.create_daily_goal(title, description, priority)
+        prio_ru = {"high": "высокий", "medium": "средний", "low": "низкий"}.get(priority, priority)
+        return f"Goal set: {title} (приоритет: {prio_ru})"
+
+    def _handle_complete_daily_goal(self, goal_hint: str, status: str = "completed",
+                                    reflection: str | None = None) -> str:
+        if not goal_hint or not goal_hint.strip():
+            return "complete_daily_goal requires a non-empty goal_hint"
+        result = self.db.complete_daily_goal_by_hint(goal_hint.strip(), status, reflection)
+        if not result:
+            return f"No pending goal found matching '{goal_hint}' for today"
+        status_ru = {"completed": "выполнена", "skipped": "пропущена", "partial": "частично"}.get(status, status)
+        return f"Goal '{result['title']}' marked as {status_ru}"
 
     def _handle_resolve_decision(self, description_hint: str, outcome: str,
                                  sentiment: str = "neutral") -> str:

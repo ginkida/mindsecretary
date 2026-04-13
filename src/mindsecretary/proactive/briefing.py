@@ -145,12 +145,28 @@ class BriefingGenerator:
         completed = [i for i in interactions
                      if i.get("message_type") == "reminder" and i.get("direction") == "out"]
 
+        # Daily goals
+        goals = self.db.get_daily_goals(today)
+        if goals:
+            goals_lines = []
+            for g in goals:
+                status_label = {"pending": "не отмечена", "completed": "выполнена",
+                                "skipped": "пропущена", "partial": "частично"}.get(g["status"], g["status"])
+                line = f"- {g['title']} [{status_label}]"
+                if g.get("reflection"):
+                    line += f" — {g['reflection'][:100]}"
+                goals_lines.append(line)
+            goals_text = "\n".join(goals_lines)
+        else:
+            goals_text = "Цели не были поставлены."
+
         prompt = EVENING_SYSTEM_PROMPT.format(
             name=self.profile.name,
             date=today,
             interactions=interactions_text,
             events=events_text,
             completed=f"{len(completed)} напоминаний отправлено",
+            daily_goals=goals_text,
             weather_tomorrow=weather_tomorrow,
             events_tomorrow=events_tomorrow_text,
         )

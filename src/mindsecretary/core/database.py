@@ -116,6 +116,20 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS daily_goals (
+                id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
+                date TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                priority TEXT DEFAULT 'medium',
+                status TEXT DEFAULT 'pending',
+                reflection TEXT,
+                completed_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_goals_date ON daily_goals(date);
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON daily_goals(status);
+
             CREATE TABLE IF NOT EXISTS api_costs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT DEFAULT (datetime('now')),
@@ -517,6 +531,58 @@ class Database:
             (since,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Daily Goals ---
+
+    def create_daily_goal(self, title: str, description: str | None = None,
+                          priority: str = "medium",
+                          date: str | None = None) -> dict:
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        if priority not in ("high", "medium", "low"):
+            priority = "medium"
+        cur = self.db.execute(
+            "INSERT INTO daily_goals (date, title, description, priority) "
+            "VALUES (?, ?, ?, ?) RETURNING *",
+            (date, title, description, priority),
+        )
+        row = cur.fetchone()
+        self.db.commit()
+        return dict(row)
+
+    def get_daily_goals(self, date: str | None = None) -> list[dict]:
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        rows = self.db.execute(
+            "SELECT * FROM daily_goals WHERE date = ? ORDER BY "
+            "CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
+            "created_at",
+            (date,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def complete_daily_goal_by_hint(self, hint: str, status: str = "completed",
+                                    reflection: str | None = None) -> dict | None:
+        """Find today's pending goal by keyword and mark it."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if status not in ("completed", "skipped", "partial"):
+            status = "completed"
+        escaped = self._escape_like(hint)
+        row = self.db.execute(
+            "SELECT id, title FROM daily_goals "
+            "WHERE date = ? AND status = 'pending' "
+            "AND title LIKE ? ESCAPE '\\' "
+            "ORDER BY created_at LIMIT 1",
+            (today, f"%{escaped}%"),
+        ).fetchone()
+        if not row:
+            return None
+        completed_at = datetime.now().strftime(self._SQL_TS_FMT) if status == "completed" else None
+        self.db.execute(
+            "UPDATE daily_goals SET status = ?, reflection = ?, completed_at = ? "
+            "WHERE id = ?",
+            (status, reflection, completed_at, row["id"]),
+        )
+        self.db.commit()
+        return {"id": row["id"], "title": row["title"], "status": status}
 
     # --- API Costs ---
 
