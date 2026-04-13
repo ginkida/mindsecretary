@@ -5,9 +5,9 @@
 <h1 align="center">MindSecretary</h1>
 
 <p align="center">
-  Voice-first personal AI secretary as a Telegram bot.
+  Voice-first personal AI secretary and companion as a Telegram bot.
   <br>
-  Speak freely — it remembers everything, creates events, tracks promises, and analyzes your week.
+  Speak freely — it remembers everything, helps you think, tracks your goals, and analyzes your week.
 </p>
 
 <p align="center">
@@ -19,9 +19,9 @@
 
 ---
 
-Send voice messages, text, photos, or forwards — the bot extracts every fact, event, promise, and contact update, stores them in semantic memory, and proactively reminds, briefs, and analyzes patterns in your life.
+Send voice messages, text, photos, or forwards — the bot extracts facts, events, promises, and contact updates, stores them in semantic memory, and proactively reminds, briefs, and analyzes patterns in your life. When you just want to talk — it listens, responds with specificity, and connects what you say to what it already knows about you.
 
-Single-user. Runs in Docker. All data in one SQLite file. ~$2/month.
+Single-user. Runs in Docker. Long polling (no webhooks, no public IP needed). All data in one SQLite file. ~$2/month.
 
 ## How It Works
 
@@ -37,13 +37,13 @@ Forwarded message ────────────────────�
                                     1. Voyage AI embed(message)
                                        → SQLite cosine search
                                        → relevant memories
-                                    2. SQLite query → today's events,
-                                       reminders, recent messages
+                                    2. SQLite query → events, goals,
+                                       reminders, mood, themes
                                     3. Build system prompt with
-                                       profile + context
+                                       profile + full context
                                     4. Claude Sonnet + tool calls
                                     5. Execute tools (save_memory,
-                                       create_event, update_contact...)
+                                       create_event, set_daily_goal...)
                                     6. Loop until done (max 5 rounds)
                                                  ▼
                                           Response → Telegram
@@ -56,21 +56,26 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 
 | Feature | Description |
 |---------|-------------|
+| **Companion mode** | Dual personality: secretary for tasks, warm companion for personal conversations. Responds with specificity, not clichés. Can gently disagree when it sees contradictions with your past. |
 | **Voice-first input** | Speak freely; Groq Whisper transcribes, Claude extracts every fact and action |
 | **Photo input** | Send photos (business cards, receipts, screenshots) — Claude vision extracts data |
+| **Daily goals** | Set goals in the morning, track throughout the day, review together in the evening |
 | **Semantic memory** | Voyage AI embeddings in SQLite; cosine similarity finds relevant context even with different phrasing |
-| **Personal CRM** | Tracks people: last contact, topics, promises, relationship context |
+| **Personal CRM** | Tracks people: last contact, topics, promises, relationship context. Alerts on drifting relationships |
 | **Calendar** | Bot IS the calendar — events stored in SQLite, no external sync needed |
-| **Decision tracker** | Tracks decisions with follow-ups; surfaces past similar decisions and outcomes |
+| **Decision tracker** | Tracks decisions with follow-ups (+14 days); surfaces past similar decisions and outcomes |
 | **Auto-diary** | Daily diary entry generated from interactions, mood analysis, relationship alerts |
 | **Smart questions** | Midday proactive question to fill knowledge gaps about your life |
-| **Morning briefing** | Weather + events + promises + birthdays + relevant memories |
-| **Evening summary** | What happened, what's tomorrow, auto-diary entry |
-| **Weekly review** | Behavioral patterns, promise tracking, habit progress, insights |
-| **Mood analysis** | Keyword-based Russian sentiment detection from message tone |
+| **Morning briefing** | Weather + events + goals prompt + promises + birthdays + relevant memories |
+| **Evening summary** | What happened, goal review, what's tomorrow, auto-diary entry |
+| **Weekly review** | Behavioral patterns, promise tracking, habit progress, insights saved as learnings |
+| **Mood tracking** | Keyword-based Russian sentiment detection; 3-day trend visible to LLM in every conversation |
+| **Theme clusters** | Automatically groups recent memories by person/topic to show what's on your mind |
 | **Weather monitoring** | Alerts when rain appears in forecast |
-| **Birthday alerts** | Upcoming birthdays from contact database |
+| **Birthday alerts** | Upcoming birthdays with 7-day deduplication per contact |
 | **Habit tracking** | Daily habit log with weekly review |
+| **Quiet hours** | Proactive messages respect `PROFILE_QUIET_HOURS` (reminders still fire) |
+| **Notification limit** | Daily cap via `PROFILE_NOTIFY_LIMIT` (default 10) |
 | **Feedback loop** | Thumbs up/down on every response; used in weekly analysis |
 
 ## Tech Stack
@@ -81,9 +86,9 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **STT** | Groq Whisper large-v3 (`groq` SDK) | Voice → text, optimized for Russian |
 | **Embeddings** | Voyage AI voyage-3 (`voyageai` SDK) | Semantic memory search |
 | **Vector search** | numpy cosine similarity | <10ms over thousands of records |
-| **Database** | SQLite (WAL mode) | Single file: vectors, events, contacts, everything |
-| **Bot** | python-telegram-bot v22 | Async handlers for voice, text, photo, forwards |
-| **Scheduler** | APScheduler (AsyncIO) | 8 proactive scheduled jobs |
+| **Database** | SQLite (WAL mode) | Single file: vectors, events, contacts, goals, everything |
+| **Bot** | python-telegram-bot v22 | Async handlers for voice, text, photo, forwards. Long polling |
+| **Scheduler** | APScheduler (AsyncIO) | 8 proactive scheduled jobs (each toggleable via config) |
 | **Weather** | Open-Meteo (free, no key) | Forecast via `httpx` |
 | **Language** | Python 3.10+ | Fully async (asyncio) |
 
@@ -107,6 +112,8 @@ cp .env.example .env
 # 3. Run
 docker compose up -d
 ```
+
+No webhooks, public IP, or SSL needed — the bot uses long polling.
 
 ### Option B: Build from source
 
@@ -145,13 +152,30 @@ PROFILE_NAME=...               # Your name (required)
 | `PROFILE_COMMUTE_MIN` | 45 | Commute minutes |
 | `PROFILE_STYLE` | кратко, по делу | Bot communication style |
 | `PROFILE_LANGUAGE` | ru | Language |
-| `PROFILE_NOTIFY_LIMIT` | 5 | Max notifications/day |
-| `PROFILE_QUIET_HOURS` | 23:00,07:00 | Do not disturb window |
+| `PROFILE_NOTIFY_LIMIT` | 10 | Max proactive notifications/day |
+| `PROFILE_QUIET_HOURS` | 23:00,07:00 | Do not disturb window (proactive only; reminders still fire) |
 | `PROFILE_PRIORITIES` | здоровье,семья,работа,развитие | Life priorities |
 | `PROFILE_DISLIKES` | опаздывать,пустая болтовня,лишние уведомления | Things to avoid |
 
 Profile can also be defined in `config/profile.yaml` (env vars take priority).
-Model settings are in `config/settings.yaml`.
+Model and proactive job settings are in `config/settings.yaml`.
+
+### Proactive Job Toggles (`config/settings.yaml`)
+
+Each proactive job can be disabled independently:
+
+```yaml
+proactive:
+  morning_briefing: true
+  evening_summary: true
+  smart_questions: true
+  decision_followups: true
+  weekly_review: true
+  weather_monitor: true
+  birthday_alerts: true
+```
+
+Reminder checking is always on (core feature, not toggleable).
 
 ## Telegram Commands
 
@@ -166,11 +190,11 @@ Model settings are in `config/settings.yaml`.
 
 ## LLM Tools
 
-The LLM has access to 10 tools, called automatically based on message content:
+The LLM has access to 13 tools, called automatically based on message content:
 
 | Tool | Description |
 |------|-------------|
-| `save_memory` | Store a fact with category, importance (1-10), related person/date |
+| `save_memory` | Store a fact or feeling with category, importance (1-10), related person/date |
 | `search_memory` | Semantic search over all memories, optionally filtered by category |
 | `create_event` | Calendar event with title, time, location, related person |
 | `get_events` | Query events by date range |
@@ -180,20 +204,26 @@ The LLM has access to 10 tools, called automatically based on message content:
 | `get_weather` | Weather forecast (1-7 days) |
 | `log_habit` | Mark habit done/skipped for a date |
 | `track_decision` | Track a decision with context; surfaces similar past decisions |
+| `resolve_decision` | Close a tracked decision with outcome and sentiment |
+| `set_daily_goal` | Create a goal for today with title, priority, description |
+| `complete_daily_goal` | Mark a daily goal as completed/skipped/partial with reflection |
 
-Memory categories: `contact`, `health`, `work`, `personal`, `promise`, `preference`, `location`, `learning`.
+Memory categories: `contact`, `health`, `work`, `personal`, `promise`, `preference`, `location`, `learning`, `emotional`.
 
 ## Scheduled Jobs
 
+All proactive jobs respect quiet hours and the daily notification limit.
+Each can be toggled off in `config/settings.yaml`. Reminders always fire.
+
 | Job | Schedule | Uses LLM | Description |
 |-----|----------|----------|-------------|
-| `reminder_check` | Every 5 min | No | Send due reminders |
-| `birthday_check` | Daily 09:00 | No | Alert on upcoming birthdays (3-day window) |
+| `reminder_check` | Every 5 min | No | Send due reminders (bypasses quiet hours) |
+| `birthday_check` | Daily 09:00 | No | Alert on upcoming birthdays (7-day dedup per contact) |
 | `weather_monitor` | Every 60 min | No | Alert when rain appears in forecast |
-| `morning_prompt` | At `PROFILE_WAKE_UP` | Yes | Briefing: weather + events + promises + memories |
+| `morning_prompt` | At `PROFILE_WAKE_UP` | Yes | Briefing + "What are your goals today?" |
 | `smart_question` | Daily 13:00 | Yes | One targeted question to fill knowledge gaps |
-| `decision_followup` | Daily 10:00 | No | Follow up on past decisions |
-| `evening_prompt` | Daily 21:00 | Yes | Day summary + auto-diary entry |
+| `decision_followup` | Daily 10:00 | No | Follow up on past decisions (+14 day repeat) |
+| `evening_prompt` | Daily 21:00 | Yes | Day summary + goal review + auto-diary entry |
 | `weekly_review` | Sunday 20:00 | Yes | Pattern analysis → insights → learnings saved to memory |
 
 ## Database Schema
@@ -205,9 +235,10 @@ Single SQLite file: `data/mindsecretary.db`
 | `memories` | content, embedding (BLOB), category, importance, related_person, status | Semantic memory with Voyage AI vectors |
 | `events` | title, start_at, end_at, location, related_person, recurring | Calendar (bot is the calendar) |
 | `reminders` | text, trigger_at, priority, status | Time-triggered reminders |
-| `contacts` | name, relation, birthday, notes, last_contact, mention_count | Personal CRM |
+| `contacts` | name, relation, birthday, notes, last_contact, mention_count, last_birthday_alert | Personal CRM |
 | `interactions` | direction, message_type, content, feedback, voice_duration_sec | Full message log (in/out) |
 | `decisions` | description, context, outcome, outcome_sentiment, follow_up_at, status | Decision tracking with follow-ups |
+| `daily_goals` | date, title, description, priority, status, reflection, completed_at | Daily goal tracking |
 | `diary_entries` | date, content, mood, people | Auto-generated daily diary |
 | `preferences` | key, value, confidence, source | Learned user preferences |
 | `habits` | name, target | Habit definitions |
@@ -225,31 +256,33 @@ mindsecretary/
 ├── SECURITY.md                    # Security policy
 ├── config/
 │   ├── profile.yaml               # User profile (YAML fallback, env vars override)
-│   └── settings.yaml              # Model, STT, embedding, memory search settings
+│   └── settings.yaml              # Model, STT, embedding, memory, proactive toggles
 ├── scripts/
 │   └── backup.sh                  # SQLite online backup with 30-day rotation
 ├── .github/
-│   └── dependabot.yml             # Weekly pip dependency updates
+│   ├── dependabot.yml             # Weekly pip dependency updates
+│   └── workflows/
+│       └── docker-publish.yml     # Build & push to ghcr.io on release
 └── src/mindsecretary/
     ├── app.py                     # Entry point: wires all components, runs bot
     ├── core/
     │   ├── brain.py               # Orchestrator: context → LLM → tool execution loop
     │   ├── config.py              # Profile (env/yaml) + Settings dataclasses
-    │   ├── database.py            # SQLite: all tables, CRUD, cost tracking
+    │   ├── database.py            # SQLite: all tables, CRUD, cost tracking, goals
     │   └── memory.py              # Voyage AI embeddings + async cosine search
     ├── llm/
     │   ├── client.py              # AnthropicClient (Claude Sonnet via Anthropic SDK)
     │   ├── router.py              # Model router (single client wrapper)
     │   ├── prompts.py             # System prompts: main, briefing, evening, weekly, diary
-    │   └── tools.py               # 10 tool definitions + argument validation + executor
+    │   └── tools.py               # 13 tool definitions + argument validation + executor
     ├── voice/
     │   └── stt.py                 # Groq Whisper large-v3 speech-to-text
     ├── interfaces/
     │   └── telegram.py            # Telegram bot: voice/text/photo/forward handlers, commands
     ├── proactive/
-    │   ├── scheduler.py           # APScheduler: 8 scheduled jobs
+    │   ├── scheduler.py           # APScheduler: 8 jobs, quiet hours, notification limit
     │   ├── briefing.py            # Morning/evening/diary generation via LLM
-    │   ├── monitor.py             # Reminder, birthday, weather checks (no LLM)
+    │   ├── monitor.py             # Reminder checks (no LLM)
     │   └── smart_questions.py     # Midday knowledge-gap questions via LLM
     ├── learning/
     │   ├── tracker.py             # Feedback tracking (positive/negative/response time)
@@ -265,16 +298,17 @@ mindsecretary/
 docker compose up -d               # Start
 docker compose logs -f              # Logs
 docker compose down                 # Stop
+docker compose pull && docker compose up -d  # Update to latest
 ./scripts/backup.sh                 # Backup SQLite (safe while running)
-git pull && docker compose up -d --build  # Update
 ```
 
 ## Security
 
 - **Auth**: Telegram user ID check on every handler (including callback queries)
 - **SQL injection**: Parameterized queries everywhere, column name whitelists for dynamic queries, LIKE wildcard escaping
-- **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event content before system prompt injection
+- **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event/goal content before system prompt injection. Role-lock in system prompt against memory-based hijacking.
 - **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, processing timeout 90s
+- **Proactive limits**: Quiet hours enforcement, daily notification cap, birthday dedup (7 days)
 - **Docker**: Non-root user, read-only config volume
 - **Secrets**: `.env` gitignored, no secrets in logs
 - **GitHub**: Secret scanning + push protection, Dependabot alerts + auto-fix, branch protection on main
