@@ -223,9 +223,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "resolve_decision",
         "description": (
-            "Mark a pending decision as resolved with its outcome. Call when the user "
-            "tells you how a previously tracked decision turned out. Match by a keyword "
-            "from the original decision description."
+            "Отметить решение как закрытое с итогом. Вызывай когда пользователь "
+            "рассказывает чем закончилось решение, которое отслеживалось. "
+            "Совпадение по ключевому слову из описания решения."
         ),
         "input_schema": {
             "type": "object",

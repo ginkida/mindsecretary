@@ -145,16 +145,17 @@ class BriefingGenerator:
         completed = [i for i in interactions
                      if i.get("message_type") == "reminder" and i.get("direction") == "out"]
 
-        # Daily goals
+        # Daily goals (sanitize user-origin text before prompt injection)
         goals = self.db.get_daily_goals(today)
         if goals:
             goals_lines = []
             for g in goals:
                 status_label = {"pending": "не отмечена", "completed": "выполнена",
                                 "skipped": "пропущена", "partial": "частично"}.get(g["status"], g["status"])
-                line = f"- {g['title']} [{status_label}]"
+                title = (g["title"] or "")[:150]
+                line = f"- {title} [{status_label}]"
                 if g.get("reflection"):
-                    line += f" — {g['reflection'][:100]}"
+                    line += f" — {(g['reflection'] or '')[:100]}"
                 goals_lines.append(line)
             goals_text = "\n".join(goals_lines)
         else:
@@ -175,7 +176,7 @@ class BriefingGenerator:
             response = await self.router.chat(
                 system=prompt,
                 messages=[{"role": "user", "content": "Сгенерируй вечерний итог."}],
-                max_tokens=600,
+                max_tokens=800,
             )
             text = response.text
             if text:
