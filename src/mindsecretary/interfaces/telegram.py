@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -129,6 +131,7 @@ class TelegramBot:
             "/people — твои контакты\n"
             "/goals — цели на сегодня\n"
             "/habits — привычки и streaks\n"
+            "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание",
         )
@@ -229,6 +232,43 @@ class TelegramBot:
         self.brain.memory.delete(top["id"])
         await update.message.reply_text(
             f"🗑 Удалено: {top['content'][:200]}"
+        )
+
+    async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        await update.message.reply_text("⏳ Готовлю экспорт...")
+
+        db = self.brain.db
+        data = {
+            "exported_at": datetime.now().isoformat(),
+            "memories": db.db.execute(
+                "SELECT id, content, category, importance, related_person, "
+                "related_date, created_at FROM memories WHERE status = 'active' "
+                "ORDER BY created_at DESC"
+            ).fetchall(),
+            "contacts": db.get_contacts(""),
+            "diary": db.get_diary_entries(days=365),
+            "events": db.db.execute(
+                "SELECT * FROM events ORDER BY start_at DESC LIMIT 500"
+            ).fetchall(),
+            "decisions": db.db.execute(
+                "SELECT * FROM decisions ORDER BY created_at DESC LIMIT 200"
+            ).fetchall(),
+        }
+        # Convert sqlite3.Row objects to dicts
+        for key in ("memories", "events", "decisions"):
+            data[key] = [dict(r) for r in data[key]]
+
+        json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        doc = io.BytesIO(json_bytes)
+        doc.name = f"mindsecretary_export_{datetime.now().strftime('%Y%m%d')}.json"
+
+        await update.message.reply_document(
+            document=doc,
+            caption=f"📦 Экспорт: {len(data['memories'])} воспоминаний, "
+                    f"{len(data['contacts'])} контактов, "
+                    f"{len(data['diary'])} записей дневника",
         )
 
     async def _handle_habits(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -481,6 +521,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("forget", self._handle_forget))
         self.app.add_handler(CommandHandler("goals", self._handle_goals))
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
+        self.app.add_handler(CommandHandler("export", self._handle_export))
 
         # Feedback buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_feedback, pattern="^fb_"))

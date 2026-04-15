@@ -151,6 +151,7 @@ class Database:
         """Idempotent schema migrations (add columns to existing tables)."""
         migrations = [
             "ALTER TABLE contacts ADD COLUMN last_birthday_alert TEXT",
+            "ALTER TABLE reminders ADD COLUMN recurrence TEXT",
         ]
         for sql in migrations:
             try:
@@ -188,11 +189,12 @@ class Database:
     # --- Reminders ---
 
     def create_reminder(self, text: str, trigger_at: str,
-                        priority: str = "medium") -> dict:
+                        priority: str = "medium",
+                        recurrence: str | None = None) -> dict:
         cur = self.db.execute(
-            "INSERT INTO reminders (text, trigger_at, priority) "
-            "VALUES (?, ?, ?) RETURNING *",
-            (text, trigger_at, priority),
+            "INSERT INTO reminders (text, trigger_at, priority, recurrence) "
+            "VALUES (?, ?, ?, ?) RETURNING *",
+            (text, trigger_at, priority, recurrence),
         )
         row = cur.fetchone()
         self.db.commit()
@@ -212,16 +214,40 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    _RECURRENCE_DELTAS = {
+        "daily": timedelta(days=1),
+        "weekly": timedelta(weeks=1),
+        "monthly": timedelta(days=30),
+    }
+
     def mark_reminder_sent(self, reminder_id: str):
+        row = self.db.execute(
+            "SELECT text, trigger_at, priority, recurrence FROM reminders WHERE id = ?",
+            (reminder_id,),
+        ).fetchone()
         self.db.execute(
             "UPDATE reminders SET status = 'sent' WHERE id = ?", (reminder_id,)
         )
+        # Auto-create next occurrence for recurring reminders
+        if row and row["recurrence"] in self._RECURRENCE_DELTAS:
+            delta = self._RECURRENCE_DELTAS[row["recurrence"]]
+            try:
+                old_trigger = datetime.fromisoformat(
+                    row["trigger_at"].replace(" ", "T")
+                )
+                next_trigger = old_trigger + delta
+                self.create_reminder(
+                    row["text"], next_trigger.strftime(self._SQL_TS_FMT),
+                    row["priority"], row["recurrence"],
+                )
+            except (ValueError, TypeError):
+                pass  # Can't parse trigger_at — skip recurrence
         self.db.commit()
 
     # --- Contacts ---
 
     _CONTACT_FIELDS = frozenset({
-        "relation", "birthday", "phone", "notes",
+        "relation", "birthday", "phone", "notes", "aliases",
         "mention_count", "last_contact", "updated_at",
     })
 
@@ -237,6 +263,13 @@ class Database:
         existing = self.db.execute(
             "SELECT * FROM contacts WHERE lower(name) = lower(?)", (name,)
         ).fetchone()
+        # Also check aliases (comma-separated) for fuzzy matching
+        if not existing:
+            escaped = self._escape_like(name.lower())
+            existing = self.db.execute(
+                "SELECT * FROM contacts WHERE lower(aliases) LIKE ? ESCAPE '\\'",
+                (f"%{escaped}%",),
+            ).fetchone()
 
         if existing:
             existing = dict(existing)

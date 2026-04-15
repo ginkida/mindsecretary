@@ -97,13 +97,18 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "create_reminder",
-        "description": "Создать напоминание.",
+        "description": "Создать напоминание. Для повторяющихся — укажи recurrence.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "text": {"type": "string"},
                 "trigger_at": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
                 "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+                "recurrence": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "monthly"],
+                    "description": "Повторение: daily/weekly/monthly (опционально)",
+                },
             },
             "required": ["text", "trigger_at"],
         },
@@ -355,9 +360,13 @@ class ToolExecutor:
         return "\n".join(lines)
 
     def _handle_create_reminder(self, text: str, trigger_at: str,
-                                priority: str = "medium") -> str:
-        reminder = self.db.create_reminder(text, trigger_at, priority)
-        return f"Reminder set: {text} at {trigger_at}"
+                                priority: str = "medium",
+                                recurrence: str | None = None) -> str:
+        if recurrence and recurrence not in ("daily", "weekly", "monthly"):
+            recurrence = None
+        self.db.create_reminder(text, trigger_at, priority, recurrence)
+        rec_str = f" (повтор: {recurrence})" if recurrence else ""
+        return f"Reminder set: {text} at {trigger_at}{rec_str}"
 
     def _handle_update_contact(self, name: str, relation: str | None = None,
                                birthday: str | None = None,

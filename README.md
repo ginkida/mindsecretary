@@ -60,8 +60,8 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Voice-first input** | Speak freely; Groq Whisper transcribes, Claude extracts every fact and action |
 | **Photo input** | Send photos (business cards, receipts, screenshots) — Claude vision extracts data |
 | **Daily goals** | Set goals in the morning, track throughout the day, review together in the evening |
-| **Semantic memory** | Voyage AI embeddings in SQLite; cosine similarity finds relevant context even with different phrasing |
-| **Personal CRM** | Tracks people: last contact, topics, promises, relationship context. Alerts on drifting relationships |
+| **Semantic memory** | Voyage AI embeddings in SQLite; vectorized cosine similarity, automatic dedup (>0.92 threshold), recency decay on old memories |
+| **Personal CRM** | Tracks people: last contact, topics, promises, relationship context. Alias fuzzy matching. Alerts on drifting relationships |
 | **Calendar** | Bot IS the calendar — events stored in SQLite, no external sync needed |
 | **Decision tracker** | Tracks decisions with follow-ups (+14 days); surfaces past similar decisions and outcomes |
 | **Auto-diary** | Daily diary entry generated from interactions, mood analysis, relationship alerts |
@@ -73,7 +73,8 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Theme clusters** | Automatically groups recent memories by person/topic to show what's on your mind |
 | **Weather monitoring** | Alerts when rain appears in forecast |
 | **Birthday alerts** | Upcoming birthdays with 7-day deduplication per contact |
-| **Habit tracking** | Daily habit log with weekly review |
+| **Habit tracking** | Daily habit log with streak tracking and weekly completion rate (`/habits`) |
+| **Data export** | `/export` sends all memories, contacts, diary, events as JSON file |
 | **Quiet hours** | Proactive messages respect `PROFILE_QUIET_HOURS` (reminders still fire) |
 | **Notification limit** | Daily cap via `PROFILE_NOTIFY_LIMIT` (default 10) |
 | **Feedback loop** | Thumbs up/down on every response; used in weekly analysis |
@@ -200,6 +201,9 @@ tuning:
 | `/diary` | Last 3 diary entries |
 | `/people` | Contact list with last contact dates |
 | `/review` | Trigger weekly review on demand |
+| `/goals` | Today's daily goals with status |
+| `/habits` | Habit streaks and weekly completion rate |
+| `/export` | Export all data as JSON file |
 | `/forget <query>` | Delete the closest matching memory |
 
 ## LLM Tools
@@ -212,7 +216,7 @@ The LLM has access to 13 tools, called automatically based on message content:
 | `search_memory` | Semantic search over all memories, optionally filtered by category |
 | `create_event` | Calendar event with title, time, location, related person |
 | `get_events` | Query events by date range |
-| `create_reminder` | Time-triggered reminder with priority |
+| `create_reminder` | Time-triggered reminder with optional recurrence (daily/weekly/monthly) |
 | `update_contact` | Create/update person: relation, birthday, notes (appended) |
 | `get_contacts` | Search contacts by name or relation |
 | `get_weather` | Weather forecast (1-7 days) |
