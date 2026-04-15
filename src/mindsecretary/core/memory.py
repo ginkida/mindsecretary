@@ -226,6 +226,23 @@ class Memory:
         )
         self.db.commit()
 
+    def get_last_deleted(self) -> dict | None:
+        """Get the most recently deleted memory (for /undo)."""
+        row = self.db.execute(
+            "SELECT id, content, category FROM memories "
+            "WHERE status = 'deleted' ORDER BY last_accessed DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def restore(self, memory_id: str) -> bool:
+        """Restore a deleted memory back to active."""
+        cur = self.db.execute(
+            "UPDATE memories SET status = 'active' WHERE id = ? AND status = 'deleted'",
+            (memory_id,),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
     def count(self) -> int:
         row = self.db.execute(
             "SELECT COUNT(*) FROM memories WHERE status = 'active'"

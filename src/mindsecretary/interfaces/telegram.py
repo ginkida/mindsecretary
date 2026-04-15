@@ -35,6 +35,7 @@ FEEDBACK_KB = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("👍", callback_data="fb_positive"),
         InlineKeyboardButton("👎", callback_data="fb_negative"),
+        InlineKeyboardButton("📌", callback_data="pin"),
     ]
 ])
 
@@ -132,24 +133,50 @@ class TelegramBot:
             "/goals — цели на сегодня\n"
             "/habits — привычки и streaks\n"
             "/search — поиск по памяти\n"
+            "/undo — восстановить удалённое\n"
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание",
         )
+        # Show notification count
+        try:
+            count = self.brain.db.count_notifications_today()
+            limit = self.brain.profile.notification_limit
+            if count > 0:
+                await update.message.reply_text(f"📬 Уведомлений сегодня: {count}/{limit}")
+        except Exception:
+            pass
 
     async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
         stats = self.brain.db.get_stats()
-        await update.message.reply_text(
-            f"📊 *Статистика*\n\n"
-            f"💰 Сегодня: ${stats['today_cost']:.4f} ({stats['today_tokens']:,} tokens)\n"
-            f"💰 Месяц: ${stats['month_cost']:.4f}\n\n"
-            f"🧠 Воспоминаний: {stats['memories']}\n"
-            f"👤 Контактов: {stats['contacts']}\n"
+        lines = [
+            "📊 *Статистика*\n",
+            f"💰 Сегодня: ${stats['today_cost']:.4f} ({stats['today_tokens']:,} tokens)",
+            f"💰 Месяц: ${stats['month_cost']:.4f}",
+        ]
+        # Per-provider breakdown
+        providers = stats.get("providers", {})
+        if providers:
+            lines.append("")
+            for p, d in sorted(providers.items()):
+                lines.append(f"  {p}: ${d['cost']:.4f} ({d['tokens']:,} tok)")
+        # 7-day trend
+        trend = stats.get("week_trend", [])
+        if trend:
+            trend_str = " ".join(f"${d['cost']:.2f}" for d in trend[-7:])
+            lines.append(f"\n📈 7 дней: {trend_str}")
+        lines.extend([
+            f"\n🧠 Воспоминаний: {stats['memories']}",
+            f"👤 Контактов: {stats['contacts']}",
             f"💬 Взаимодействий сегодня: {stats['interactions_today']}",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        ])
+        text = "\n".join(lines)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
 
     async def _handle_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
@@ -270,6 +297,18 @@ class TelegramBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
+    async def _handle_undo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        last = self.brain.memory.get_last_deleted()
+        if not last:
+            await update.message.reply_text("Нечего восстанавливать.")
+            return
+        self.brain.memory.restore(last["id"])
+        await update.message.reply_text(
+            f"♻️ Восстановлено: {last['content'][:200]}"
+        )
+
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
@@ -348,7 +387,18 @@ class TelegramBot:
         except Exception:
             await update.message.reply_text(text)
 
-    # --- Feedback callback ---
+    # --- Callback handlers ---
+
+    async def _handle_pin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer("📌")
+        if not self._check_user(update):
+            return
+        try:
+            await query.message.pin(disable_notification=True)
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            await query.answer("Не удалось закрепить", show_alert=True)
 
     async def _handle_forget_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -571,12 +621,14 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("people", self._handle_people))
         self.app.add_handler(CommandHandler("review", self._handle_review))
         self.app.add_handler(CommandHandler("search", self._handle_search))
+        self.app.add_handler(CommandHandler("undo", self._handle_undo))
         self.app.add_handler(CommandHandler("forget", self._handle_forget))
         self.app.add_handler(CommandHandler("goals", self._handle_goals))
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
         self.app.add_handler(CommandHandler("export", self._handle_export))
 
         # Feedback buttons
+        self.app.add_handler(CallbackQueryHandler(self._handle_pin, pattern="^pin$"))
         self.app.add_handler(CallbackQueryHandler(self._handle_feedback, pattern="^fb_"))
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))
 

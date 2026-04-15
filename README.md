@@ -77,7 +77,8 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Data export** | `/export` sends all memories, contacts, diary, events as JSON file |
 | **Quiet hours** | Proactive messages respect `PROFILE_QUIET_HOURS` (reminders still fire) |
 | **Notification limit** | Daily cap via `PROFILE_NOTIFY_LIMIT` (default 10) |
-| **Feedback loop** | Thumbs up/down on every response; used in weekly analysis |
+| **Feedback loop** | Thumbs up/down + 📌 pin on every response; used in weekly analysis |
+| **Notification awareness** | Shows count in `/start`; warns when approaching daily limit |
 
 ## Tech Stack
 
@@ -204,7 +205,9 @@ tuning:
 | `/goals` | Today's daily goals with status |
 | `/habits` | Habit streaks and weekly completion rate |
 | `/export` | Export all data as JSON file |
-| `/forget <query>` | Delete the closest matching memory |
+| `/search <query>` | Direct semantic memory search with scores |
+| `/undo` | Restore the last deleted memory |
+| `/forget <query>` | Delete the closest matching memory (with confirmation) |
 
 ## LLM Tools
 
@@ -334,7 +337,7 @@ docker compose pull && docker compose up -d  # Update to latest
 - **Auth**: Telegram user ID check on every handler (including callback queries)
 - **SQL injection**: Parameterized queries everywhere, column name whitelists for dynamic queries, LIKE wildcard escaping
 - **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event/goal content before system prompt injection. Role-lock in system prompt against memory-based hijacking.
-- **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, `/forget` query 500 chars, processing timeout configurable (default 90s)
+- **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, `/forget` query 500 chars, processing timeout configurable (default 90s). STT retries 3x with exponential backoff
 - **Proactive limits**: Quiet hours enforcement, daily notification cap, birthday dedup (7 days)
 - **Docker**: Non-root user, read-only config volume
 - **Secrets**: `.env` gitignored, no secrets in logs

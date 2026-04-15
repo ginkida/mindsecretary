@@ -722,6 +722,26 @@ class Database:
             "SELECT COUNT(*) FROM interactions WHERE date(timestamp) = ?", (today,)
         ).fetchone()[0]
 
+        # Per-provider breakdown (today)
+        provider_rows = self.db.execute(
+            "SELECT provider, COALESCE(SUM(cost_usd), 0) as cost, "
+            "COALESCE(SUM(input_tokens + output_tokens), 0) as tokens "
+            "FROM api_costs WHERE date(timestamp) = ? GROUP BY provider",
+            (today,),
+        ).fetchall()
+        providers = {r["provider"]: {"cost": r["cost"], "tokens": r["tokens"]}
+                     for r in provider_rows}
+
+        # 7-day cost trend
+        week_start = (self._now() - timedelta(days=6)).strftime("%Y-%m-%d")
+        trend_rows = self.db.execute(
+            "SELECT date(timestamp) as day, COALESCE(SUM(cost_usd), 0) as cost "
+            "FROM api_costs WHERE date(timestamp) >= ? "
+            "GROUP BY day ORDER BY day",
+            (week_start,),
+        ).fetchall()
+        week_trend = [{"date": r["day"], "cost": r["cost"]} for r in trend_rows]
+
         return {
             "today_cost": today_cost,
             "today_tokens": today_tokens,
@@ -729,6 +749,8 @@ class Database:
             "memories": mem_count,
             "contacts": contact_count,
             "interactions_today": interactions_today,
+            "providers": providers,
+            "week_trend": week_trend,
         }
 
     def close(self):

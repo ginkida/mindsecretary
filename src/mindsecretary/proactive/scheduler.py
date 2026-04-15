@@ -68,12 +68,16 @@ class ProactiveScheduler:
             return False
         try:
             count = self.db.count_notifications_today()
-            if count >= self.profile.notification_limit:
+            limit = self.profile.notification_limit
+            if count >= limit:
                 logger.info(
                     "Skipping proactive (%s): notification limit %d/%d",
-                    kind, count, self.profile.notification_limit,
+                    kind, count, limit,
                 )
                 return False
+            # Warn when approaching limit (80%+)
+            if count >= limit * 0.8:
+                text += f"\n\n⚠️ Уведомлений сегодня: {count + 1}/{limit}"
         except Exception:
             pass  # Don't block sends if counting fails
         try:
