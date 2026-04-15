@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Healthcheck: verify process is alive and DB is accessible."""
 import sqlite3
 import subprocess

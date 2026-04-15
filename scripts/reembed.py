@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Re-embed memories saved with zero-vector fallback.
 
 When the Voyage API was down, memories were stored with a zero embedding.

@@ -5,7 +5,7 @@ import base64
 import io
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode

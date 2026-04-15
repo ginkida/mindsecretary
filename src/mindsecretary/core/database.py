@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import tz_now
-from .enums import Priority, Sentiment, Status
+from .enums import Priority, Status
 
 
 class Database:
