@@ -9,16 +9,26 @@ from ..core.enums import MoodLabel
 
 logger = logging.getLogger(__name__)
 
-# Simple Russian sentiment signals
+# Sentiment signals — Russian + English for bilingual users
 POSITIVE_SIGNALS = {
+    # Russian
     "отлично", "круто", "здорово", "класс", "супер", "ура", "кайф", "рад",
     "получилось", "успел", "доволен", "нравится", "люблю", "счастлив", "хорошо",
     "прекрасно", "замечательно", "удачно", "наконец-то",
+    # English
+    "great", "awesome", "amazing", "excellent", "wonderful", "happy", "love",
+    "perfect", "fantastic", "glad", "excited", "succeeded", "finally", "nice",
+    "beautiful", "brilliant", "yay", "cool",
 }
 NEGATIVE_SIGNALS = {
+    # Russian
     "устал", "плохо", "ужас", "кошмар", "злюсь", "бесит", "надоело", "тяжело",
     "болит", "стресс", "проблема", "сломал", "забыл", "опоздал", "провал",
     "жалею", "грустно", "тоска", "скучно", "раздражает", "невыносимо",
+    # English
+    "tired", "bad", "terrible", "awful", "angry", "annoyed", "bored", "hard",
+    "hurts", "stress", "problem", "broke", "forgot", "late", "failed",
+    "regret", "sad", "depressed", "frustrated", "exhausted", "horrible",
 }
 NEUTRAL_THRESHOLD = 0.1
 

@@ -148,11 +148,20 @@ class WeeklyReflection:
         for learning in learnings:
             if not isinstance(learning, dict) or "content" not in learning:
                 continue
+            content = learning["content"]
             confidence = learning.get("confidence", 0.5)
             importance = max(1, min(10, int(confidence * 10)))
             try:
+                # Check if a similar learning already exists
+                existing = await self.memory.search(
+                    content, top_k=1, category="learning",
+                )
+                if existing and existing[0].get("score", 0) > 0.85:
+                    logger.info("Skipping duplicate learning: %.2f sim with '%s'",
+                                existing[0]["score"], existing[0]["content"][:60])
+                    continue
                 await self.memory.save(
-                    content=learning["content"],
+                    content=content,
                     category="learning",
                     importance=importance,
                 )

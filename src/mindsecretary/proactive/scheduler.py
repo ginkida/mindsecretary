@@ -215,12 +215,17 @@ class ProactiveScheduler:
                 if text:
                     await self._send_proactive(text, kind="morning_briefing")
                     return
+                logger.warning("Morning briefing returned None, sending fallback")
             await self._send_proactive(
-                "☀️ Доброе утро! Что сегодня в планах?",
+                "☀️ Доброе утро! Брифинг пока недоступен — расскажи, что сегодня в планах?",
                 kind="morning_briefing",
             )
         except Exception as e:
             logger.error("Morning prompt failed: %s", e)
+            await self._send_proactive(
+                "☀️ Доброе утро! (брифинг не удался — расскажи сам, что в планах)",
+                kind="morning_briefing",
+            )
 
     async def _smart_question(self):
         """Midday: ask one targeted question to fill knowledge gaps."""
@@ -270,12 +275,17 @@ class ProactiveScheduler:
                     logger.info("Diary entry saved.")
                 return
 
+            logger.warning("Evening briefing returned None, sending fallback")
             await self._send_proactive(
-                "🌙 Что важного было сегодня?",
+                "🌙 Вечерний обзор пока недоступен. Что важного было сегодня?",
                 kind="evening_summary",
             )
         except Exception as e:
             logger.error("Evening prompt failed: %s", e)
+            await self._send_proactive(
+                "🌙 Вечерний обзор не удался. Расскажи сам — что было важного?",
+                kind="evening_summary",
+            )
 
     async def _weekly_review(self):
         try:

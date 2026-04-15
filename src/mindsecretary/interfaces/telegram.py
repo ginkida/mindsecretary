@@ -131,6 +131,7 @@ class TelegramBot:
             "/people — твои контакты\n"
             "/goals — цели на сегодня\n"
             "/habits — привычки и streaks\n"
+            "/search — поиск по памяти\n"
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание",
@@ -209,6 +210,35 @@ class TelegramBot:
                 await self._reply(update, text, with_feedback=False)
                 return
         await update.message.reply_text("Недостаточно данных для обзора.")
+
+    async def _handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        query = " ".join(context.args) if context.args else ""
+        if not query:
+            await update.message.reply_text(
+                "Использование: /search <запрос>\n"
+                "Пример: /search встреча с Алексеем",
+            )
+            return
+        if len(query) > 500:
+            await update.message.reply_text("Слишком длинный запрос (макс 500 символов).")
+            return
+        results = await self.brain.memory.search(query, top_k=5)
+        if not results:
+            await update.message.reply_text("Ничего не нашёл.")
+            return
+        lines = ["🔍 *Результаты поиска*\n"]
+        for r in results:
+            score = r.get("final_score", r.get("score", 0))
+            cat = r.get("category", "?")
+            person = f" ({r['related_person']})" if r.get("related_person") else ""
+            lines.append(f"• [{cat}] {r['content'][:150]}{person}\n  _score: {score:.2f}_")
+        text = "\n".join(lines)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
 
     async def _handle_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
@@ -540,6 +570,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("diary", self._handle_diary))
         self.app.add_handler(CommandHandler("people", self._handle_people))
         self.app.add_handler(CommandHandler("review", self._handle_review))
+        self.app.add_handler(CommandHandler("search", self._handle_search))
         self.app.add_handler(CommandHandler("forget", self._handle_forget))
         self.app.add_handler(CommandHandler("goals", self._handle_goals))
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
