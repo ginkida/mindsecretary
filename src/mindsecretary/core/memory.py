@@ -57,6 +57,8 @@ class Memory:
         )
         return np.array(result.embeddings[0], dtype=np.float32)
 
+    _DEDUP_THRESHOLD = 0.92
+
     async def save(self, content: str, category: str, importance: int = 5,
                    related_person: str | None = None,
                    related_date: str | None = None) -> str:
@@ -65,9 +67,22 @@ class Memory:
             embedding = (await self._embed([content]))[0]
         except Exception as e:
             logger.error("Voyage embed failed, saving with zero vector: %s", e)
-            # Store with zero embedding so the memory isn't lost.
-            # It won't appear in similarity search but is preserved in DB.
             embedding = np.zeros(1024, dtype=np.float32)
+
+        # Dedup: check if a very similar memory already exists in same category.
+        # If so, update its importance (keep the higher) instead of duplicating.
+        if np.any(embedding):  # skip dedup for zero-vector fallbacks
+            dup = self._find_duplicate(embedding, category)
+            if dup:
+                new_imp = max(importance, dup["importance"])
+                self.db.execute(
+                    "UPDATE memories SET importance = ?, last_accessed = datetime('now') "
+                    "WHERE id = ?",
+                    (new_imp, dup["id"]),
+                )
+                self.db.commit()
+                logger.info("Memory dedup: updated %s instead of creating new", dup["id"])
+                return dup["id"]
 
         self.db.execute(
             "INSERT INTO memories (id, content, embedding, category, importance, "
@@ -77,6 +92,31 @@ class Memory:
         )
         self.db.commit()
         return memory_id
+
+    def _find_duplicate(self, embedding: np.ndarray, category: str) -> dict | None:
+        """Find an existing memory with very high cosine similarity."""
+        rows = self.db.execute(
+            "SELECT id, embedding, importance FROM memories "
+            "WHERE status = 'active' AND category = ?",
+            (category,),
+        ).fetchall()
+        if not rows:
+            return None
+
+        emb_matrix = np.stack([
+            np.frombuffer(r["embedding"], dtype=np.float32) for r in rows
+        ])
+        norms = np.linalg.norm(emb_matrix, axis=1)
+        emb_norm = np.linalg.norm(embedding)
+        safe_denom = norms * emb_norm
+        safe_denom[safe_denom < 1e-8] = 1.0
+        sims = emb_matrix @ embedding / safe_denom
+
+        best_idx = int(np.argmax(sims))
+        if sims[best_idx] >= self._DEDUP_THRESHOLD:
+            return {"id": rows[best_idx]["id"],
+                    "importance": rows[best_idx]["importance"]}
+        return None
 
     async def search(self, query: str, top_k: int = 8,
                      category: str | None = None,

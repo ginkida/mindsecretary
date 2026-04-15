@@ -37,6 +37,19 @@ FEEDBACK_KB = InlineKeyboardMarkup([
 ])
 
 
+def _fix_markdown(text: str) -> str:
+    """Fix common Markdown issues that cause Telegram parse errors.
+
+    Ensures paired formatting chars (* _ `) and escapes orphans.
+    """
+    for ch in ("*", "_", "`"):
+        if text.count(ch) % 2 != 0:
+            # Odd count → escape the last occurrence to make it even
+            idx = text.rfind(ch)
+            text = text[:idx] + "\\" + text[idx:]
+    return text
+
+
 def _split_message(text: str, limit: int = TG_MSG_LIMIT) -> list[str]:
     """Split long text into Telegram-safe chunks."""
     if len(text) <= limit:
@@ -80,7 +93,7 @@ class TelegramBot:
             kb = FEEDBACK_KB if (with_feedback and i == len(parts) - 1) else None
             try:
                 sent = await update.message.reply_text(
-                    part, reply_markup=kb, parse_mode=ParseMode.MARKDOWN,
+                    _fix_markdown(part), reply_markup=kb, parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception:
                 # Fallback without markdown if parsing fails
@@ -114,6 +127,8 @@ class TelegramBot:
             "/stats — расходы и статистика\n"
             "/diary — записи дневника\n"
             "/people — твои контакты\n"
+            "/goals — цели на сегодня\n"
+            "/habits — привычки и streaks\n"
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание",
         )
@@ -215,6 +230,47 @@ class TelegramBot:
         await update.message.reply_text(
             f"🗑 Удалено: {top['content'][:200]}"
         )
+
+    async def _handle_habits(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        stats = self.brain.db.get_habit_stats()
+        if not stats:
+            await update.message.reply_text("Привычек пока нет. Скажи мне что отслеживать!")
+            return
+        lines = ["📊 *Привычки*\n"]
+        for h in stats:
+            streak_str = f"🔥 {h['streak']}д" if h['streak'] > 0 else "—"
+            lines.append(f"• *{h['name']}* — {streak_str} | неделя: {h['week_rate']}%")
+        text = "\n".join(lines)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
+
+    async def _handle_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        goals = self.brain.db.get_daily_goals()
+        if not goals:
+            await update.message.reply_text("На сегодня целей нет. Скажи мне, что планируешь!")
+            return
+        lines = ["🎯 *Цели на сегодня*\n"]
+        for g in goals:
+            emoji = {"pending": "⬜", "completed": "✅",
+                     "skipped": "⏭", "partial": "🟡"}.get(g["status"], "⬜")
+            prio = " ❗" if g.get("priority") == "high" else ""
+            line = f"{emoji} {g['title']}{prio}"
+            if g.get("reflection"):
+                line += f"\n   _{g['reflection'][:80]}_"
+            lines.append(line)
+        done = sum(1 for g in goals if g["status"] == "completed")
+        lines.append(f"\n✅ {done}/{len(goals)} выполнено")
+        text = "\n".join(lines)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
 
     # --- Feedback callback ---
 
@@ -423,6 +479,8 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("people", self._handle_people))
         self.app.add_handler(CommandHandler("review", self._handle_review))
         self.app.add_handler(CommandHandler("forget", self._handle_forget))
+        self.app.add_handler(CommandHandler("goals", self._handle_goals))
+        self.app.add_handler(CommandHandler("habits", self._handle_habits))
 
         # Feedback buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_feedback, pattern="^fb_"))
@@ -442,7 +500,7 @@ class TelegramBot:
         for part in _split_message(text):
             try:
                 await self.app.bot.send_message(
-                    chat_id=self.allowed_user_id, text=part,
+                    chat_id=self.allowed_user_id, text=_fix_markdown(part),
                     parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception:

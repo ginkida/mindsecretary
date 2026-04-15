@@ -420,6 +420,42 @@ class Database:
         self.db.commit()
         return {"habit": habit_name, "date": date, "done": done}
 
+    def get_habit_stats(self) -> list[dict]:
+        """Get all habits with current streak and 7-day completion rate."""
+        habits = self.db.execute(
+            "SELECT id, name FROM habits ORDER BY name"
+        ).fetchall()
+        results = []
+        today = self._now().strftime("%Y-%m-%d")
+        for h in habits:
+            # Current streak: consecutive days with done=1, counting back from today
+            logs = self.db.execute(
+                "SELECT date, done FROM habit_log WHERE habit_id = ? "
+                "AND date <= ? ORDER BY date DESC LIMIT 60",
+                (h["id"], today),
+            ).fetchall()
+            streak = 0
+            for log in logs:
+                if log["done"]:
+                    streak += 1
+                else:
+                    break
+            # 7-day rate
+            week_start = (self._now() - timedelta(days=6)).strftime("%Y-%m-%d")
+            week_logs = self.db.execute(
+                "SELECT COUNT(*) as cnt FROM habit_log "
+                "WHERE habit_id = ? AND date >= ? AND done = 1",
+                (h["id"], week_start),
+            ).fetchone()
+            week_done = week_logs["cnt"]
+            results.append({
+                "name": h["name"],
+                "streak": streak,
+                "week_done": week_done,
+                "week_rate": round(week_done / 7 * 100),
+            })
+        return results
+
     # --- Decisions ---
 
     def create_decision(self, description: str, context: str | None = None,
