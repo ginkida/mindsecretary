@@ -220,7 +220,9 @@ class Memory:
 
     def delete(self, memory_id: str):
         self.db.execute(
-            "UPDATE memories SET status = 'deleted' WHERE id = ?", (memory_id,)
+            "UPDATE memories SET status = 'deleted', "
+            "last_accessed = datetime('now') WHERE id = ?",
+            (memory_id,),
         )
         self.db.commit()
 

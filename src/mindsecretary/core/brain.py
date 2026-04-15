@@ -197,7 +197,8 @@ class Brain:
             return ", ".join(
                 f"{m['date'][-5:]}: {m['label']}" for m in trend
             ) or "Нет данных."
-        except Exception:
+        except Exception as e:
+            logger.warning("Section mood_trend failed: %s", e)
             return "Нет данных."
 
     def _section_theme_clusters(self, s) -> str:
@@ -206,7 +207,8 @@ class Brain:
             return ", ".join(
                 f"{s(c['label'], 60)} ({c['count']})" for c in clusters
             ) or "Нет заметных тем."
-        except Exception:
+        except Exception as e:
+            logger.warning("Section theme_clusters failed: %s", e)
             return "Нет данных."
 
     def _section_quiet_contacts(self, s) -> str:
@@ -223,7 +225,8 @@ class Brain:
                 + f": не общались {a['days_since']} дней"
                 for a in filtered
             ) or "Нет тревог."
-        except Exception:
+        except Exception as e:
+            logger.warning("Section quiet_contacts failed: %s", e)
             return "Нет данных."
 
     def _section_goals(self, s) -> str:
@@ -241,7 +244,8 @@ class Brain:
                     line += f" ({prio})"
                 lines.append(line)
             return "\n".join(lines)
-        except Exception:
+        except Exception as e:
+            logger.warning("Section goals failed: %s", e)
             return "Нет данных."
 
     def _section_birthdays(self, now: datetime, s) -> str:
@@ -260,7 +264,8 @@ class Brain:
                 else:
                     lines.append(f"- {bday}: {name}{rel_str}")
             return "\n".join(lines) or "Нет ближайших."
-        except Exception:
+        except Exception as e:
+            logger.warning("Section birthdays failed: %s", e)
             return "Нет данных."
 
     @staticmethod

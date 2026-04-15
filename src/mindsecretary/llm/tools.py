@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from datetime import datetime
 from typing import Any
 
 from ..core.database import Database
@@ -294,6 +295,20 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         priority = clean.get("priority", "medium")
         if priority not in VALID_PRIORITIES:
             clean["priority"] = "medium"
+
+    # Validate datetime fields — try to parse, normalize to space-separated format
+    _DT_FIELDS = {
+        "create_event": ("start_at", "end_at"),
+        "create_reminder": ("trigger_at",),
+    }
+    for field in _DT_FIELDS.get(name, ()):
+        val = clean.get(field)
+        if val:
+            try:
+                parsed = datetime.fromisoformat(val.replace(" ", "T"))
+                clean[field] = parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                pass  # Leave as-is, DB will store the raw string
 
     return clean
 

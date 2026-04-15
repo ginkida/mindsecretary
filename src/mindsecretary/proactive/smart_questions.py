@@ -51,12 +51,28 @@ class SmartQuestions:
         self.memory = memory
         self.db = db
         self.min_interactions = min_interactions
-        self._last_asked: datetime | None = None
+
+    def _get_last_asked(self) -> datetime | None:
+        pref = self.db.get_preference("smart_question_last_asked")
+        if pref:
+            try:
+                return datetime.fromisoformat(pref["value"])
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def _set_last_asked(self):
+        self.db.set_preference(
+            "smart_question_last_asked",
+            datetime.now().isoformat(),
+            confidence=1.0, source="system",
+        )
 
     async def generate_question(self) -> str | None:
         """Generate one smart question. Returns None if nothing to ask."""
-        # Don't ask more than once per 8 hours
-        if self._last_asked and datetime.now() - self._last_asked < timedelta(hours=8):
+        # Don't ask more than once per 8 hours (persists across restarts)
+        last_asked = self._get_last_asked()
+        if last_asked and datetime.now() - last_asked < timedelta(hours=8):
             return None
 
         # Need at least some interactions before asking
@@ -98,7 +114,7 @@ class SmartQuestions:
             if not text or text == "SKIP":
                 return None
 
-            self._last_asked = datetime.now()
+            self._set_last_asked()
             self.db.log_interaction(
                 direction="out", message_type="smart_question", content=text,
             )

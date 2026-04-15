@@ -59,6 +59,7 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
 
             CREATE TABLE IF NOT EXISTS interactions (
                 id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
@@ -74,6 +75,7 @@ class Database:
                 metadata TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_interactions_ts_type ON interactions(timestamp, message_type, direction);
 
             CREATE TABLE IF NOT EXISTS preferences (
                 key TEXT PRIMARY KEY,

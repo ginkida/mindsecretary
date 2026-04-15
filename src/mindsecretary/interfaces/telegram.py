@@ -227,11 +227,17 @@ class TelegramBot:
         if not results:
             await update.message.reply_text("Не нашёл такого в памяти.")
             return
-        # Delete the top match
         top = results[0]
-        self.brain.memory.delete(top["id"])
+        confirm_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Да, удалить", callback_data=f"forget_yes:{top['id']}"),
+                InlineKeyboardButton("Отмена", callback_data="forget_no"),
+            ]
+        ])
         await update.message.reply_text(
-            f"🗑 Удалено: {top['content'][:200]}"
+            f"Удалить это?\n\n_{top['content'][:300]}_",
+            reply_markup=confirm_kb,
+            parse_mode=ParseMode.MARKDOWN,
         )
 
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -313,6 +319,22 @@ class TelegramBot:
             await update.message.reply_text(text)
 
     # --- Feedback callback ---
+
+    async def _handle_forget_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        if not self._check_user(update):
+            return
+        if query.data == "forget_no":
+            await query.edit_message_text("Отменено.")
+            return
+        # forget_yes:<memory_id>
+        memory_id = query.data.split(":", 1)[1] if ":" in query.data else ""
+        if memory_id:
+            self.brain.memory.delete(memory_id)
+            await query.edit_message_text(f"🗑 Удалено.")
+        else:
+            await query.edit_message_text("Ошибка: ID не найден.")
 
     async def _handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -525,6 +547,7 @@ class TelegramBot:
 
         # Feedback buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_feedback, pattern="^fb_"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))
 
         # Messages (order matters: forwarded first, then photo, voice, text)
         self.app.add_handler(MessageHandler(filters.FORWARDED, self._handle_forward))
