@@ -55,13 +55,6 @@ class Memory:
         )
         return np.array(result.embeddings[0], dtype=np.float32)
 
-    @staticmethod
-    def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-        denom = np.linalg.norm(a) * np.linalg.norm(b)
-        if denom < 1e-8:
-            return 0.0
-        return float(np.dot(a, b) / denom)
-
     async def save(self, content: str, category: str, importance: int = 5,
                    related_person: str | None = None,
                    related_date: str | None = None) -> str:
@@ -69,8 +62,10 @@ class Memory:
         try:
             embedding = (await self._embed([content]))[0]
         except Exception as e:
-            logger.error("Voyage embed failed: %s", e)
-            raise
+            logger.error("Voyage embed failed, saving with zero vector: %s", e)
+            # Store with zero embedding so the memory isn't lost.
+            # It won't appear in similarity search but is preserved in DB.
+            embedding = np.zeros(1024, dtype=np.float32)
 
         self.db.execute(
             "INSERT INTO memories (id, content, embedding, category, importance, "
@@ -109,34 +104,42 @@ class Memory:
         if not rows:
             return []
 
-        results = []
-        for row in rows:
-            raw = row[2] if isinstance(row, (list, tuple)) else row["embedding"]
-            emb = np.frombuffer(raw, dtype=np.float32)
-            score = self._cosine_sim(query_emb, emb)
+        # Vectorized cosine similarity: build matrix of all embeddings,
+        # compute all scores in one numpy operation instead of per-row loop.
+        emb_matrix = np.stack([
+            np.frombuffer(row["embedding"], dtype=np.float32) for row in rows
+        ])
+        norms = np.linalg.norm(emb_matrix, axis=1)
+        query_norm = np.linalg.norm(query_emb)
 
-            def _get(key, idx):
-                return row[idx] if isinstance(row, (list, tuple)) else row[key]
+        # Avoid division by zero for zero-vector fallback embeddings
+        safe_denom = norms * query_norm
+        safe_denom[safe_denom < 1e-8] = 1.0
+        cosine_scores = emb_matrix @ query_emb / safe_denom
 
-            results.append({
-                "id": _get("id", 0),
-                "content": _get("content", 1),
-                "score": score,
-                "category": _get("category", 3),
-                "importance": _get("importance", 4),
-                "related_person": _get("related_person", 5),
-                "related_date": _get("related_date", 6),
-                "created_at": _get("created_at", 7),
+        # Compute final scores incorporating importance weight
+        importances = np.array([row["importance"] for row in rows], dtype=np.float32)
+        final_scores = cosine_scores * self.relevance_w + (importances / 10) * self.importance_w
+
+        # Get top-k indices without full sort (O(n) partial sort vs O(n log n))
+        k = min(top_k, len(rows))
+        top_indices = np.argpartition(final_scores, -k)[-k:]
+        top_indices = top_indices[np.argsort(final_scores[top_indices])[::-1]]
+
+        top = []
+        for idx in top_indices:
+            row = rows[idx]
+            top.append({
+                "id": row["id"],
+                "content": row["content"],
+                "score": float(cosine_scores[idx]),
+                "category": row["category"],
+                "importance": row["importance"],
+                "related_person": row["related_person"],
+                "related_date": row["related_date"],
+                "created_at": row["created_at"],
+                "final_score": float(final_scores[idx]),
             })
-
-        for r in results:
-            r["final_score"] = (
-                r["score"] * self.relevance_w
-                + (r["importance"] / 10) * self.importance_w
-            )
-
-        results.sort(key=lambda x: x["final_score"], reverse=True)
-        top = results[:top_k]
 
         if top:
             ids = [r["id"] for r in top]
@@ -157,11 +160,7 @@ class Memory:
             "ORDER BY importance DESC",
             (category,),
         ).fetchall()
-        return [
-            {"id": r[0], "content": r[1], "category": r[2],
-             "importance": r[3], "related_person": r[4], "related_date": r[5]}
-            for r in rows
-        ]
+        return [dict(r) for r in rows]
 
     def delete(self, memory_id: str):
         self.db.execute(

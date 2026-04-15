@@ -85,7 +85,7 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **LLM** | Claude Sonnet 4.6 (`anthropic` SDK) | All chat, tool use, briefings, weekly review |
 | **STT** | Groq Whisper large-v3 (`groq` SDK) | Voice → text, optimized for Russian |
 | **Embeddings** | Voyage AI voyage-3 (`voyageai` SDK) | Semantic memory search |
-| **Vector search** | numpy cosine similarity | <10ms over thousands of records |
+| **Vector search** | numpy vectorized cosine similarity | Batch matrix ops + O(n) partial sort for top-k |
 | **Database** | SQLite (WAL mode) | Single file: vectors, events, contacts, goals, everything |
 | **Bot** | python-telegram-bot v22 | Async handlers for voice, text, photo, forwards. Long polling |
 | **Scheduler** | APScheduler (AsyncIO) | 8 proactive scheduled jobs (each toggleable via config) |
@@ -177,6 +177,20 @@ proactive:
 
 Reminder checking is always on (core feature, not toggleable).
 
+### Tunable Thresholds (`config/settings.yaml`)
+
+Intervals, timeouts, and detection thresholds are configurable:
+
+```yaml
+tuning:
+  reminder_check_minutes: 5       # How often to check for due reminders
+  weather_check_minutes: 60       # Weather polling interval
+  process_timeout_sec: 90         # Max time for LLM processing per message
+  quiet_contact_days: 30          # Days without contact before alert
+  quiet_contact_min_mentions: 3   # Min past mentions to trigger alert
+  smart_question_min_interactions: 5  # Min interactions before asking questions
+```
+
 ## Telegram Commands
 
 | Command | Description |
@@ -258,7 +272,8 @@ mindsecretary/
 │   ├── profile.yaml               # User profile (YAML fallback, env vars override)
 │   └── settings.yaml              # Model, STT, embedding, memory, proactive toggles
 ├── scripts/
-│   └── backup.sh                  # SQLite online backup with 30-day rotation
+│   ├── backup.sh                  # SQLite online backup with 30-day rotation
+│   └── healthcheck.py             # Docker healthcheck: process alive + DB accessible
 ├── .github/
 │   ├── dependabot.yml             # Weekly pip dependency updates
 │   └── workflows/
@@ -269,7 +284,8 @@ mindsecretary/
     │   ├── brain.py               # Orchestrator: context → LLM → tool execution loop
     │   ├── config.py              # Profile (env/yaml) + Settings dataclasses
     │   ├── database.py            # SQLite: all tables, CRUD, cost tracking, goals
-    │   └── memory.py              # Voyage AI embeddings + async cosine search
+    │   ├── enums.py               # Status, Priority, Sentiment, Feedback enums
+    │   └── memory.py              # Voyage AI embeddings + vectorized cosine search
     ├── llm/
     │   ├── client.py              # AnthropicClient (Claude Sonnet via Anthropic SDK)
     │   ├── router.py              # Model router (single client wrapper)
@@ -290,6 +306,13 @@ mindsecretary/
     │   └── mood.py                # Russian keyword-based mood analysis + contact frequency
     └── integrations/
         └── weather.py             # Open-Meteo API client (free, no key)
+tests/
+├── conftest.py                    # Shared fixtures (temp database)
+├── test_brain.py                  # Sanitization tests
+├── test_database.py               # CRUD + timestamp format tests
+├── test_mood.py                   # Mood analysis tests
+├── test_scheduler.py              # Quiet hours logic tests
+└── test_tools.py                  # Argument sanitization tests
 ```
 
 ## Operations
@@ -307,7 +330,7 @@ docker compose pull && docker compose up -d  # Update to latest
 - **Auth**: Telegram user ID check on every handler (including callback queries)
 - **SQL injection**: Parameterized queries everywhere, column name whitelists for dynamic queries, LIKE wildcard escaping
 - **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event/goal content before system prompt injection. Role-lock in system prompt against memory-based hijacking.
-- **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, processing timeout 90s
+- **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, `/forget` query 500 chars, processing timeout configurable (default 90s)
 - **Proactive limits**: Quiet hours enforcement, daily notification cap, birthday dedup (7 days)
 - **Docker**: Non-root user, read-only config volume
 - **Secrets**: `.env` gitignored, no secrets in logs

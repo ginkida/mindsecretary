@@ -10,7 +10,7 @@ services:
       - ./data:/app/data
       - ./config:/app/config:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python", "scripts/healthcheck.py"]
       interval: 60s
-      timeout: 5s
+      timeout: 10s
       retries: 3

@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .enums import Priority, Sentiment, Status
+
 
 class Database:
     def __init__(self, db_path: Path):
@@ -198,7 +200,7 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_due_reminders(self) -> list[dict]:
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M")
+        now = datetime.now().strftime(self._SQL_TS_FMT)
         rows = self.db.execute(
             "SELECT * FROM reminders WHERE status = 'pending' AND trigger_at <= ?",
             (now,),
@@ -245,8 +247,8 @@ class Database:
                 if notes not in old_notes:
                     updates["notes"] = f"{old_notes}\n{notes}".strip()
             updates["mention_count"] = (existing.get("mention_count") or 0) + 1
-            updates["last_contact"] = datetime.now().isoformat()
-            updates["updated_at"] = datetime.now().isoformat()
+            updates["last_contact"] = datetime.now().strftime(self._SQL_TS_FMT)
+            updates["updated_at"] = datetime.now().strftime(self._SQL_TS_FMT)
 
             if updates:
                 # Validate column names against whitelist to prevent SQL injection
@@ -262,7 +264,8 @@ class Database:
         cur = self.db.execute(
             "INSERT INTO contacts (name, relation, birthday, phone, notes, last_contact) "
             "VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
-            (name, relation, birthday, phone, notes, datetime.now().isoformat()),
+            (name, relation, birthday, phone, notes,
+             datetime.now().strftime(self._SQL_TS_FMT)),
         )
         row = cur.fetchone()
         self.db.commit()
@@ -416,7 +419,9 @@ class Database:
 
     def create_decision(self, description: str, context: str | None = None,
                         follow_up_days: int = 30) -> dict:
-        follow_up_at = (datetime.now() + timedelta(days=follow_up_days)).isoformat()
+        follow_up_at = (datetime.now() + timedelta(days=follow_up_days)).strftime(
+            self._SQL_TS_FMT
+        )
         cur = self.db.execute(
             "INSERT INTO decisions (description, context, follow_up_at) "
             "VALUES (?, ?, ?) RETURNING *",
@@ -427,7 +432,7 @@ class Database:
         return dict(row)
 
     def get_pending_decision_followups(self) -> list[dict]:
-        now = datetime.now().isoformat()
+        now = datetime.now().strftime(self._SQL_TS_FMT)
         rows = self.db.execute(
             "SELECT * FROM decisions WHERE status = 'pending' AND follow_up_at <= ?",
             (now,),
@@ -445,7 +450,7 @@ class Database:
 
     def push_decision_followup(self, decision_id: str, days: int = 14):
         """Push the next follow-up date forward. Called after sending a follow-up."""
-        new_time = (datetime.now() + timedelta(days=days)).isoformat()
+        new_time = (datetime.now() + timedelta(days=days)).strftime(self._SQL_TS_FMT)
         self.db.execute(
             "UPDATE decisions SET follow_up_at = ? WHERE id = ?",
             (new_time, decision_id),
@@ -538,8 +543,8 @@ class Database:
                           priority: str = "medium",
                           date: str | None = None) -> dict:
         date = date or datetime.now().strftime("%Y-%m-%d")
-        if priority not in ("high", "medium", "low"):
-            priority = "medium"
+        if priority not in (Priority.HIGH, Priority.MEDIUM, Priority.LOW):
+            priority = Priority.MEDIUM
         cur = self.db.execute(
             "INSERT INTO daily_goals (date, title, description, priority) "
             "VALUES (?, ?, ?, ?) RETURNING *",
@@ -563,8 +568,8 @@ class Database:
                                     reflection: str | None = None) -> dict | None:
         """Find today's pending goal by keyword and mark it."""
         today = datetime.now().strftime("%Y-%m-%d")
-        if status not in ("completed", "skipped", "partial"):
-            status = "completed"
+        if status not in (Status.COMPLETED, Status.SKIPPED, Status.PARTIAL):
+            status = Status.COMPLETED
         escaped = self._escape_like(hint)
         row = self.db.execute(
             "SELECT id, title FROM daily_goals "

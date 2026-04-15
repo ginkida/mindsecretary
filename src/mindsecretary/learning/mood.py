@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 
 from ..core.database import Database
+from ..core.enums import MoodLabel
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,11 @@ def analyze_mood(messages: list[dict]) -> dict:
     Returns: {"score": -1.0..1.0, "label": str, "signals": list, "stats": dict}
     """
     if not messages:
-        return {"score": 0.0, "label": "unknown", "signals": [], "stats": {}}
+        return {"score": 0.0, "label": MoodLabel.UNKNOWN, "signals": [], "stats": {}}
 
     user_msgs = [m for m in messages if m.get("direction") == "in"]
     if not user_msgs:
-        return {"score": 0.0, "label": "unknown", "signals": [], "stats": {}}
+        return {"score": 0.0, "label": MoodLabel.UNKNOWN, "signals": [], "stats": {}}
 
     total_len = 0
     total_words = 0
@@ -72,11 +73,11 @@ def analyze_mood(messages: list[dict]) -> dict:
     score = max(-1.0, min(1.0, score))
 
     if score > 0.3:
-        label = "positive"
+        label = MoodLabel.POSITIVE
     elif score < -0.3:
-        label = "negative"
+        label = MoodLabel.NEGATIVE
     else:
-        label = "neutral"
+        label = MoodLabel.NEUTRAL
 
     return {
         "score": round(score, 2),

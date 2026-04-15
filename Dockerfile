@@ -22,7 +22,7 @@ USER app
 
 VOLUME ["/app/data", "/app/config"]
 
-HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
-    CMD pgrep -f "mindsecretary.app" > /dev/null || exit 1
+HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
+    CMD python scripts/healthcheck.py
 
 CMD ["python", "-m", "mindsecretary.app"]

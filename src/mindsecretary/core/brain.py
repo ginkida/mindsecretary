@@ -9,16 +9,12 @@ from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
 from ..llm.router import ModelRouter
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
+from . import DAYS_RU
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
 
 logger = logging.getLogger(__name__)
-
-DAYS_RU = {
-    0: "Понедельник", 1: "Вторник", 2: "Среда", 3: "Четверг",
-    4: "Пятница", 5: "Суббота", 6: "Воскресенье",
-}
 
 
 @dataclass
@@ -147,108 +143,7 @@ class Brain:
 
     async def _build_system_prompt(self, user_message: str) -> str:
         now = datetime.now()
-
-        memories = await self.memory.search(user_message, top_k=self.settings.memory_top_k)
-        memory_text = "\n".join(
-            f"- [{m['category']}] {self._sanitize_for_context(m['content'])}"
-            for m in memories
-        ) or "Пока ничего не запомнил."
-
-        today_str = now.strftime("%Y-%m-%d")
-        events = self.db.get_events(today_str)
-        events_text = "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} "
-            f"{self._sanitize_for_context(e['title'], 200)}"
-            + (f" ({self._sanitize_for_context(e['related_person'] or '', 100)})"
-               if e.get("related_person") else "")
-            for e in events
-        ) or "Нет событий."
-
-        recent = self.db.get_recent_messages(limit=8)
-        recent_text = "\n".join(
-            f"{'Ты' if m['direction'] == 'in' else 'Бот'}: "
-            f"{self._sanitize_for_context(m['content'], 200)}"
-            for m in recent
-        ) or "Начало разговора."
-
-        pending_decisions = self.db.get_pending_decisions(limit=5)
-        decisions_text = "\n".join(
-            f"- {self._sanitize_for_context(d['description'], 200)}"
-            for d in pending_decisions
-        ) or "Нет решений в процессе."
-
-        try:
-            trend = get_mood_trend(self.db, days=3)
-            mood_trend_text = ", ".join(
-                f"{m['date'][-5:]}: {m['label']}" for m in trend
-            ) or "Нет данных."
-        except Exception:
-            mood_trend_text = "Нет данных."
-
-        # Theme clusters: GROUP BY person/category over last 30 days
-        try:
-            clusters = self.db.get_theme_clusters(days=30, limit=5)
-            theme_clusters_text = ", ".join(
-                f"{self._sanitize_for_context(c['label'], 60)} ({c['count']})"
-                for c in clusters
-            ) or "Нет заметных тем."
-        except Exception:
-            theme_clusters_text = "Нет данных."
-
-        # Quiet contacts: drifting relationships
-        try:
-            alerts = check_contact_frequency(self.db)
-            filtered = [
-                a for a in alerts
-                if a.get("days_since", 0) > 30
-                and a.get("mention_count", 0) >= 3
-            ][:2]
-            quiet_contacts_text = "\n".join(
-                f"- {self._sanitize_for_context(a['name'], 60)}"
-                + (f" ({self._sanitize_for_context(a.get('relation', ''), 40)})"
-                   if a.get("relation") else "")
-                + f": не общались {a['days_since']} дней"
-                for a in filtered
-            ) or "Нет тревог."
-        except Exception:
-            quiet_contacts_text = "Нет данных."
-
-        # Daily goals
-        try:
-            goals = self.db.get_daily_goals()
-            if goals:
-                goals_lines = []
-                for g in goals:
-                    status_emoji = {"pending": "⬜", "completed": "✅", "skipped": "⏭", "partial": "🟡"}.get(g["status"], "⬜")
-                    prio = {"high": "!", "medium": "", "low": ""}.get(g.get("priority", ""), "")
-                    line = f"- {status_emoji} {self._sanitize_for_context(g['title'], 150)}"
-                    if prio:
-                        line += f" ({prio})"
-                    goals_lines.append(line)
-                today_goals_text = "\n".join(goals_lines)
-            else:
-                today_goals_text = "Не поставлены."
-        except Exception:
-            today_goals_text = "Нет данных."
-
-        # Upcoming birthdays: today + next 2 days
-        try:
-            upcoming_bdays = self.db.get_upcoming_birthdays(days=3)
-            today_md = now.strftime("%m-%d")
-            birthdays_lines = []
-            for c in upcoming_bdays[:3]:
-                bday = c.get("birthday") or ""
-                bday_md = bday[-5:] if len(bday) >= 5 else bday
-                name = self._sanitize_for_context(c["name"], 60)
-                relation = self._sanitize_for_context(c.get("relation") or "", 40)
-                rel_str = f" ({relation})" if relation else ""
-                if bday_md == today_md:
-                    birthdays_lines.append(f"- сегодня: {name}{rel_str}")
-                else:
-                    birthdays_lines.append(f"- {bday}: {name}{rel_str}")
-            birthdays_text = "\n".join(birthdays_lines) or "Нет ближайших."
-        except Exception:
-            birthdays_text = "Нет данных."
+        s = self._sanitize_for_context
 
         return MAIN_SYSTEM_PROMPT.format(
             name=self.profile.name,
@@ -256,17 +151,117 @@ class Brain:
             date=now.strftime("%Y-%m-%d"),
             day_of_week=DAYS_RU[now.weekday()],
             time=now.strftime("%H:%M"),
-            memories=memory_text,
-            today_events=events_text,
-            today_goals=today_goals_text,
-            recent_messages=recent_text,
-            pending_decisions=decisions_text,
-            mood_trend=mood_trend_text,
-            theme_clusters=theme_clusters_text,
-            quiet_contacts=quiet_contacts_text,
-            birthdays=birthdays_text,
+            memories=await self._section_memories(user_message, s),
+            today_events=self._section_events(now, s),
+            today_goals=self._section_goals(s),
+            recent_messages=self._section_recent(s),
+            pending_decisions=self._section_decisions(s),
+            mood_trend=self._section_mood_trend(),
+            theme_clusters=self._section_theme_clusters(s),
+            quiet_contacts=self._section_quiet_contacts(s),
+            birthdays=self._section_birthdays(now, s),
             style=self.profile.style,
         )
+
+    async def _section_memories(self, user_message: str, s) -> str:
+        memories = await self.memory.search(user_message, top_k=self.settings.memory_top_k)
+        return "\n".join(
+            f"- [{m['category']}] {s(m['content'])}" for m in memories
+        ) or "Пока ничего не запомнил."
+
+    def _section_events(self, now: datetime, s) -> str:
+        events = self.db.get_events(now.strftime("%Y-%m-%d"))
+        return "\n".join(
+            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} "
+            f"{s(e['title'], 200)}"
+            + (f" ({s(e['related_person'] or '', 100)})" if e.get("related_person") else "")
+            for e in events
+        ) or "Нет событий."
+
+    def _section_recent(self, s) -> str:
+        recent = self.db.get_recent_messages(limit=8)
+        return "\n".join(
+            f"{'Ты' if m['direction'] == 'in' else 'Бот'}: {s(m['content'], 200)}"
+            for m in recent
+        ) or "Начало разговора."
+
+    def _section_decisions(self, s) -> str:
+        decisions = self.db.get_pending_decisions(limit=5)
+        return "\n".join(
+            f"- {s(d['description'], 200)}" for d in decisions
+        ) or "Нет решений в процессе."
+
+    def _section_mood_trend(self) -> str:
+        try:
+            trend = get_mood_trend(self.db, days=3)
+            return ", ".join(
+                f"{m['date'][-5:]}: {m['label']}" for m in trend
+            ) or "Нет данных."
+        except Exception:
+            return "Нет данных."
+
+    def _section_theme_clusters(self, s) -> str:
+        try:
+            clusters = self.db.get_theme_clusters(days=30, limit=5)
+            return ", ".join(
+                f"{s(c['label'], 60)} ({c['count']})" for c in clusters
+            ) or "Нет заметных тем."
+        except Exception:
+            return "Нет данных."
+
+    def _section_quiet_contacts(self, s) -> str:
+        try:
+            alerts = check_contact_frequency(self.db)
+            filtered = [
+                a for a in alerts
+                if a.get("days_since", 0) > self.settings.quiet_contact_days
+                and a.get("mention_count", 0) >= self.settings.quiet_contact_min_mentions
+            ][:2]
+            return "\n".join(
+                f"- {s(a['name'], 60)}"
+                + (f" ({s(a.get('relation', ''), 40)})" if a.get("relation") else "")
+                + f": не общались {a['days_since']} дней"
+                for a in filtered
+            ) or "Нет тревог."
+        except Exception:
+            return "Нет данных."
+
+    def _section_goals(self, s) -> str:
+        try:
+            goals = self.db.get_daily_goals()
+            if not goals:
+                return "Не поставлены."
+            lines = []
+            for g in goals:
+                emoji = {"pending": "⬜", "completed": "✅",
+                         "skipped": "⏭", "partial": "🟡"}.get(g["status"], "⬜")
+                prio = {"high": "!"}.get(g.get("priority", ""), "")
+                line = f"- {emoji} {s(g['title'], 150)}"
+                if prio:
+                    line += f" ({prio})"
+                lines.append(line)
+            return "\n".join(lines)
+        except Exception:
+            return "Нет данных."
+
+    def _section_birthdays(self, now: datetime, s) -> str:
+        try:
+            upcoming = self.db.get_upcoming_birthdays(days=3)
+            today_md = now.strftime("%m-%d")
+            lines = []
+            for c in upcoming[:3]:
+                bday = c.get("birthday") or ""
+                bday_md = bday[-5:] if len(bday) >= 5 else bday
+                name = s(c["name"], 60)
+                relation = s(c.get("relation") or "", 40)
+                rel_str = f" ({relation})" if relation else ""
+                if bday_md == today_md:
+                    lines.append(f"- сегодня: {name}{rel_str}")
+                else:
+                    lines.append(f"- {bday}: {name}{rel_str}")
+            return "\n".join(lines) or "Нет ближайших."
+        except Exception:
+            return "Нет данных."
 
     @staticmethod
     def _build_assistant_msg(response) -> dict:

@@ -146,6 +146,7 @@ def main():
     )
     proactive.smart_questions = SmartQuestions(
         router=router, memory=memory, db=db,
+        min_interactions=config.settings.smart_question_min_interactions,
     )
 
     # Give bot access to scheduler for /review command

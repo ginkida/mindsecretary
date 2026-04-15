@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 
 from ..core.brain import Brain
+from ..core.enums import Feedback
 from ..voice.stt import GroqSTT
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,6 @@ MAX_VOICE_DURATION = 600
 MAX_PHOTO_SIZE = 10 * 1024 * 1024
 MAX_TEXT_LENGTH = 10_000
 DOWNLOAD_TIMEOUT = 30.0
-PROCESS_TIMEOUT = 90.0
 TG_MSG_LIMIT = 4096
 
 FEEDBACK_KB = InlineKeyboardMarkup([
@@ -90,9 +90,9 @@ class TelegramBot:
                 interaction_id = self.brain.db.log_interaction(
                     direction="out", message_type="reply_ref", content="",
                 )
-                if len(self._reply_map) > 1000:
-                    for key in list(self._reply_map)[:500]:
-                        del self._reply_map[key]
+                if len(self._reply_map) >= 200:
+                    # Keep only the newest 100 entries (dict preserves insertion order)
+                    self._reply_map = dict(list(self._reply_map.items())[-100:])
                 self._reply_map[sent.message_id] = interaction_id
 
     async def _typing(self, update: Update):
@@ -202,6 +202,9 @@ class TelegramBot:
                 "Пример: /forget аллергия на орехи",
             )
             return
+        if len(query) > 500:
+            await update.message.reply_text("Слишком длинный запрос (макс 500 символов).")
+            return
         results = await self.brain.memory.search(query, top_k=3)
         if not results:
             await update.message.reply_text("Не нашёл такого в памяти.")
@@ -224,7 +227,7 @@ class TelegramBot:
         interaction_id = self._reply_map.get(msg_id)
         if not interaction_id:
             return
-        feedback = "positive" if query.data == "fb_positive" else "negative"
+        feedback = Feedback.POSITIVE if query.data == "fb_positive" else Feedback.NEGATIVE
         self.brain.db.db.execute(
             "UPDATE interactions SET feedback = ?, feedback_at = datetime('now') WHERE id = ?",
             (feedback, interaction_id),
@@ -286,7 +289,7 @@ class TelegramBot:
                     user_message=transcript, message_type="voice",
                     metadata={"duration_sec": voice.duration},
                 ),
-                timeout=PROCESS_TIMEOUT,
+                timeout=self.brain.settings.process_timeout_sec,
             )
             await self._reply(update, response.text)
         except asyncio.TimeoutError:
@@ -336,7 +339,7 @@ class TelegramBot:
                     user_message=caption, message_type="photo",
                     image_base64=image_b64,
                 ),
-                timeout=PROCESS_TIMEOUT,
+                timeout=self.brain.settings.process_timeout_sec,
             )
             await self._reply(update, response.text)
         except asyncio.TimeoutError:
@@ -359,7 +362,7 @@ class TelegramBot:
         try:
             response = await asyncio.wait_for(
                 self.brain.process(user_message=text, message_type="text"),
-                timeout=PROCESS_TIMEOUT,
+                timeout=self.brain.settings.process_timeout_sec,
             )
             await self._reply(update, response.text)
         except asyncio.TimeoutError:
@@ -399,7 +402,7 @@ class TelegramBot:
         try:
             response = await asyncio.wait_for(
                 self.brain.process(user_message=full_text, message_type="forward"),
-                timeout=PROCESS_TIMEOUT,
+                timeout=self.brain.settings.process_timeout_sec,
             )
             await self._reply(update, response.text)
         except asyncio.TimeoutError:

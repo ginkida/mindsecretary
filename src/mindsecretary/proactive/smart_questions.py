@@ -45,10 +45,12 @@ GAPS_PROMPT = """\
 class SmartQuestions:
     """Generate targeted questions to fill knowledge gaps."""
 
-    def __init__(self, router: ModelRouter, memory: Memory, db: Database):
+    def __init__(self, router: ModelRouter, memory: Memory, db: Database,
+                 min_interactions: int = 5):
         self.router = router
         self.memory = memory
         self.db = db
+        self.min_interactions = min_interactions
         self._last_asked: datetime | None = None
 
     async def generate_question(self) -> str | None:
@@ -61,7 +63,7 @@ class SmartQuestions:
         recent = self.db.get_interactions(
             since=datetime.now() - timedelta(days=7), limit=30,
         )
-        if len(recent) < 5:
+        if len(recent) < self.min_interactions:
             return None
 
         contacts = self.db.get_contacts("")

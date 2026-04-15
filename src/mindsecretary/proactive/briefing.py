@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from ..core import DAYS_RU
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -12,11 +13,6 @@ from ..llm.prompts import BRIEFING_SYSTEM_PROMPT, DIARY_SYSTEM_PROMPT, EVENING_S
 from ..llm.router import ModelRouter
 
 logger = logging.getLogger(__name__)
-
-DAYS_RU = {
-    0: "Понедельник", 1: "Вторник", 2: "Среда", 3: "Четверг",
-    4: "Пятница", 5: "Суббота", 6: "Воскресенье",
-}
 
 
 class BriefingGenerator:
@@ -138,8 +134,8 @@ class BriefingGenerator:
                 if len(daily) > 1:
                     d = daily[1]
                     weather_tomorrow = f"{d['temp_min']}..{d['temp_max']}°C, {d['condition']}"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Weather for evening summary failed: %s", e)
 
         # Count completed reminders
         completed = [i for i in interactions

@@ -93,7 +93,7 @@ class ProactiveScheduler:
     def start(self):
         # Reminders — always on, bypass quiet hours (user intent)
         self.scheduler.add_job(
-            self._check_reminders, "interval", minutes=5,
+            self._check_reminders, "interval", minutes=self.settings.reminder_check_minutes,
             id="reminder_check", replace_existing=True,
         )
 
@@ -105,7 +105,7 @@ class ProactiveScheduler:
 
         if self.weather and self.settings.weather_monitor:
             self.scheduler.add_job(
-                self._check_weather, "interval", minutes=60,
+                self._check_weather, "interval", minutes=self.settings.weather_check_minutes,
                 id="weather_monitor", replace_existing=True,
             )
 

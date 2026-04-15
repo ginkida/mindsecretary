@@ -23,3 +23,12 @@ proactive:
   weekly_review: true
   weather_monitor: true
   birthday_alerts: true
+
+# Tunable intervals and thresholds (defaults shown)
+tuning:
+  reminder_check_minutes: 5
+  weather_check_minutes: 60
+  process_timeout_sec: 90
+  quiet_contact_days: 30
+  quiet_contact_min_mentions: 3
+  smart_question_min_interactions: 5

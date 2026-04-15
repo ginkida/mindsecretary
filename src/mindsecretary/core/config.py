@@ -136,6 +136,13 @@ class Settings:
     weekly_review: bool = True
     weather_monitor: bool = True
     birthday_alerts: bool = True
+    # Tunable intervals and thresholds
+    reminder_check_minutes: int = 5
+    weather_check_minutes: int = 60
+    process_timeout_sec: int = 90
+    quiet_contact_days: int = 30
+    quiet_contact_min_mentions: int = 3
+    smart_question_min_interactions: int = 5
 
     @classmethod
     def from_yaml(cls, path: Path) -> Settings:
@@ -145,6 +152,7 @@ class Settings:
         emb = raw["embeddings"]
         mem = raw["memory"]
         proactive = raw.get("proactive", {})
+        tuning = raw.get("tuning", {})
         return cls(
             model=llm["model"],
             max_tokens=llm["max_tokens"],
@@ -162,6 +170,12 @@ class Settings:
             weekly_review=proactive.get("weekly_review", True),
             weather_monitor=proactive.get("weather_monitor", True),
             birthday_alerts=proactive.get("birthday_alerts", True),
+            reminder_check_minutes=tuning.get("reminder_check_minutes", 5),
+            weather_check_minutes=tuning.get("weather_check_minutes", 60),
+            process_timeout_sec=tuning.get("process_timeout_sec", 90),
+            quiet_contact_days=tuning.get("quiet_contact_days", 30),
+            quiet_contact_min_mentions=tuning.get("quiet_contact_min_mentions", 3),
+            smart_question_min_interactions=tuning.get("smart_question_min_interactions", 5),
         )
 
 
