@@ -15,6 +15,7 @@ def _make_scheduler(quiet_hours: list[str], notification_limit: int = 10):
     profile.quiet_hours = quiet_hours
     profile.notification_limit = notification_limit
     profile.wake_up = "07:00"
+    profile.timezone = "Europe/Moscow"
 
     settings = MagicMock()
     settings.morning_briefing = False
@@ -63,34 +64,35 @@ class TestParseQuietHours:
 
 
 class TestInQuietHours:
+    def _patch_now(self, hour, minute=0):
+        """Patch tz_now in the scheduler module to return a fixed time."""
+        from datetime import datetime
+        fake_dt = datetime(2026, 4, 15, hour, minute, 0)
+        return patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_dt)
+
     def test_same_day_inside(self):
         s = _make_scheduler(["12:00", "14:00"])
-        with patch("mindsecretary.proactive.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value.time.return_value = time(13, 0)
+        with self._patch_now(13):
             assert s._in_quiet_hours() is True
 
     def test_same_day_outside(self):
         s = _make_scheduler(["12:00", "14:00"])
-        with patch("mindsecretary.proactive.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value.time.return_value = time(11, 0)
+        with self._patch_now(11):
             assert s._in_quiet_hours() is False
 
     def test_midnight_wrap_late_night(self):
         s = _make_scheduler(["23:00", "07:00"])
-        with patch("mindsecretary.proactive.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value.time.return_value = time(23, 30)
+        with self._patch_now(23, 30):
             assert s._in_quiet_hours() is True
 
     def test_midnight_wrap_early_morning(self):
         s = _make_scheduler(["23:00", "07:00"])
-        with patch("mindsecretary.proactive.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value.time.return_value = time(5, 0)
+        with self._patch_now(5):
             assert s._in_quiet_hours() is True
 
     def test_midnight_wrap_daytime(self):
         s = _make_scheduler(["23:00", "07:00"])
-        with patch("mindsecretary.proactive.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value.time.return_value = time(12, 0)
+        with self._patch_now(12):
             assert s._in_quiet_hours() is False
 
     def test_equal_start_end_always_off(self):

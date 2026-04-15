@@ -67,7 +67,7 @@ def main():
 
     # --- Database ---
     logger.info("Initializing database...")
-    db = Database(config.db_path)
+    db = Database(config.db_path, timezone=config.profile.timezone)
 
     # --- Memory (shared DB connection) ---
     logger.info("Initializing memory (Voyage AI)...")

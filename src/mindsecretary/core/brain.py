@@ -9,7 +9,7 @@ from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
 from ..llm.router import ModelRouter
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
-from . import DAYS_RU
+from . import DAYS_RU, tz_now
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
@@ -142,7 +142,7 @@ class Brain:
         return text
 
     async def _build_system_prompt(self, user_message: str) -> str:
-        now = datetime.now()
+        now = tz_now(self.profile.timezone)
         s = self._sanitize_for_context
 
         return MAIN_SYSTEM_PROMPT.format(

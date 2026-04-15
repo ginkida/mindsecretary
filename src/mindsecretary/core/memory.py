@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import sqlite3
 import uuid
+from datetime import datetime
 
 import numpy as np
 import voyageai
@@ -96,7 +98,7 @@ class Memory:
 
         rows = self.db.execute(
             f"SELECT id, content, embedding, category, importance, "
-            f"related_person, related_date, created_at "
+            f"related_person, related_date, created_at, last_accessed "
             f"FROM memories {where}",
             params,
         ).fetchall()
@@ -120,6 +122,20 @@ class Memory:
         # Compute final scores incorporating importance weight
         importances = np.array([row["importance"] for row in rows], dtype=np.float32)
         final_scores = cosine_scores * self.relevance_w + (importances / 10) * self.importance_w
+
+        # Recency decay: memories not accessed recently get dampened.
+        # Uses last_accessed (or created_at as fallback).
+        # Decay from 1.0 (just accessed) to 0.5 floor over ~90 days.
+        now = datetime.now()
+        decay_half_life = 90.0  # days
+        for i, row in enumerate(rows):
+            ref = row["last_accessed"] or row["created_at"]
+            try:
+                ref_dt = datetime.fromisoformat(ref.replace(" ", "T") if ref else "")
+                days_old = max(0.0, (now - ref_dt).total_seconds() / 86400)
+            except (ValueError, TypeError):
+                days_old = 0.0
+            final_scores[i] *= 0.5 + 0.5 * math.exp(-days_old / decay_half_life)
 
         # Get top-k indices without full sort (O(n) partial sort vs O(n log n))
         k = min(top_k, len(rows))

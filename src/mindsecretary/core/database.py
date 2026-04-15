@@ -5,15 +5,17 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import tz_now
 from .enums import Priority, Sentiment, Status
 
 
 class Database:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, timezone: str | None = None):
         self.db = sqlite3.connect(str(db_path))
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        self._timezone = timezone
         self._init_tables()
 
     def _init_tables(self):
@@ -156,6 +158,9 @@ class Database:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+    def _now(self) -> datetime:
+        return tz_now(self._timezone)
+
     # --- Events ---
 
     def create_event(self, title: str, start_at: str, end_at: str | None = None,
@@ -200,7 +205,7 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_due_reminders(self) -> list[dict]:
-        now = datetime.now().strftime(self._SQL_TS_FMT)
+        now = self._now().strftime(self._SQL_TS_FMT)
         rows = self.db.execute(
             "SELECT * FROM reminders WHERE status = 'pending' AND trigger_at <= ?",
             (now,),
@@ -247,8 +252,8 @@ class Database:
                 if notes not in old_notes:
                     updates["notes"] = f"{old_notes}\n{notes}".strip()
             updates["mention_count"] = (existing.get("mention_count") or 0) + 1
-            updates["last_contact"] = datetime.now().strftime(self._SQL_TS_FMT)
-            updates["updated_at"] = datetime.now().strftime(self._SQL_TS_FMT)
+            updates["last_contact"] = self._now().strftime(self._SQL_TS_FMT)
+            updates["updated_at"] = self._now().strftime(self._SQL_TS_FMT)
 
             if updates:
                 # Validate column names against whitelist to prevent SQL injection
@@ -265,7 +270,7 @@ class Database:
             "INSERT INTO contacts (name, relation, birthday, phone, notes, last_contact) "
             "VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
             (name, relation, birthday, phone, notes,
-             datetime.now().strftime(self._SQL_TS_FMT)),
+             self._now().strftime(self._SQL_TS_FMT)),
         )
         row = cur.fetchone()
         self.db.commit()
@@ -283,7 +288,7 @@ class Database:
 
     def get_upcoming_birthdays(self, days: int = 7,
                                skip_recent_alerts: bool = False) -> list[dict]:
-        today = datetime.now()
+        today = self._now()
         dates = []
         for i in range(days):
             d = today + timedelta(days=i)
@@ -364,7 +369,7 @@ class Database:
         return [dict(r) for r in reversed(rows)]
 
     def count_notifications_today(self) -> int:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = self._now().strftime("%Y-%m-%d")
         row = self.db.execute(
             "SELECT COUNT(*) as cnt FROM interactions "
             "WHERE direction = 'out' AND message_type = 'notification' "
@@ -396,7 +401,7 @@ class Database:
 
     def log_habit(self, habit_name: str, done: bool,
                   date: str | None = None, notes: str | None = None) -> dict:
-        date = date or datetime.now().strftime("%Y-%m-%d")
+        date = date or self._now().strftime("%Y-%m-%d")
 
         habit = self.db.execute(
             "SELECT id FROM habits WHERE lower(name) = lower(?)", (habit_name,)
@@ -419,7 +424,7 @@ class Database:
 
     def create_decision(self, description: str, context: str | None = None,
                         follow_up_days: int = 30) -> dict:
-        follow_up_at = (datetime.now() + timedelta(days=follow_up_days)).strftime(
+        follow_up_at = (self._now() + timedelta(days=follow_up_days)).strftime(
             self._SQL_TS_FMT
         )
         cur = self.db.execute(
@@ -432,7 +437,7 @@ class Database:
         return dict(row)
 
     def get_pending_decision_followups(self) -> list[dict]:
-        now = datetime.now().strftime(self._SQL_TS_FMT)
+        now = self._now().strftime(self._SQL_TS_FMT)
         rows = self.db.execute(
             "SELECT * FROM decisions WHERE status = 'pending' AND follow_up_at <= ?",
             (now,),
@@ -450,7 +455,7 @@ class Database:
 
     def push_decision_followup(self, decision_id: str, days: int = 14):
         """Push the next follow-up date forward. Called after sending a follow-up."""
-        new_time = (datetime.now() + timedelta(days=days)).strftime(self._SQL_TS_FMT)
+        new_time = (self._now() + timedelta(days=days)).strftime(self._SQL_TS_FMT)
         self.db.execute(
             "UPDATE decisions SET follow_up_at = ? WHERE id = ?",
             (new_time, decision_id),
@@ -489,7 +494,7 @@ class Database:
           {"label": str, "count": int}
         where label is a person name (preferred) or category name.
         """
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        since = (self._now() - timedelta(days=days)).strftime("%Y-%m-%d")
         rows = self.db.execute(
             "SELECT "
             "  COALESCE(NULLIF(related_person, ''), category) AS label, "
@@ -530,7 +535,7 @@ class Database:
         self.db.commit()
 
     def get_diary_entries(self, days: int = 7) -> list[dict]:
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        since = (self._now() - timedelta(days=days)).strftime("%Y-%m-%d")
         rows = self.db.execute(
             "SELECT * FROM diary_entries WHERE date >= ? ORDER BY date DESC",
             (since,),
@@ -542,7 +547,7 @@ class Database:
     def create_daily_goal(self, title: str, description: str | None = None,
                           priority: str = "medium",
                           date: str | None = None) -> dict:
-        date = date or datetime.now().strftime("%Y-%m-%d")
+        date = date or self._now().strftime("%Y-%m-%d")
         if priority not in (Priority.HIGH, Priority.MEDIUM, Priority.LOW):
             priority = Priority.MEDIUM
         cur = self.db.execute(
@@ -555,7 +560,7 @@ class Database:
         return dict(row)
 
     def get_daily_goals(self, date: str | None = None) -> list[dict]:
-        date = date or datetime.now().strftime("%Y-%m-%d")
+        date = date or self._now().strftime("%Y-%m-%d")
         rows = self.db.execute(
             "SELECT * FROM daily_goals WHERE date = ? ORDER BY "
             "CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
@@ -567,7 +572,7 @@ class Database:
     def complete_daily_goal_by_hint(self, hint: str, status: str = "completed",
                                     reflection: str | None = None) -> dict | None:
         """Find today's pending goal by keyword and mark it."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = self._now().strftime("%Y-%m-%d")
         if status not in (Status.COMPLETED, Status.SKIPPED, Status.PARTIAL):
             status = Status.COMPLETED
         escaped = self._escape_like(hint)
@@ -580,7 +585,7 @@ class Database:
         ).fetchone()
         if not row:
             return None
-        completed_at = datetime.now().strftime(self._SQL_TS_FMT) if status == "completed" else None
+        completed_at = self._now().strftime(self._SQL_TS_FMT) if status == "completed" else None
         self.db.execute(
             "UPDATE daily_goals SET status = ?, reflection = ?, completed_at = ? "
             "WHERE id = ?",
@@ -611,8 +616,8 @@ class Database:
 
     def get_stats(self) -> dict:
         """Get usage stats for /stats command."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        month_start = datetime.now().strftime("%Y-%m-01")
+        today = self._now().strftime("%Y-%m-%d")
+        month_start = self._now().strftime("%Y-%m-01")
 
         # Today's cost
         row = self.db.execute(

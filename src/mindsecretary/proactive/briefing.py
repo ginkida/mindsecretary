@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from ..core import DAYS_RU
+from ..core import DAYS_RU, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -26,7 +26,7 @@ class BriefingGenerator:
 
     async def generate_morning(self) -> str | None:
         """Generate morning briefing text."""
-        now = datetime.now()
+        now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -102,7 +102,7 @@ class BriefingGenerator:
 
     async def generate_evening(self) -> str | None:
         """Generate evening summary text."""
-        now = datetime.now()
+        now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -186,7 +186,7 @@ class BriefingGenerator:
 
     async def generate_diary(self) -> str | None:
         """Generate auto-diary entry from the day's interactions."""
-        now = datetime.now()
+        now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         today_start = now.replace(hour=0, minute=0, second=0)
 

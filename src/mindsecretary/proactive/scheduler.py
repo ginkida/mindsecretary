@@ -5,6 +5,7 @@ from datetime import datetime, time
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from ..core import tz_now
 from ..core.config import Profile, Settings
 from ..core.database import Database
 from ..integrations.weather import WeatherClient
@@ -47,7 +48,7 @@ class ProactiveScheduler:
         start, end = self._parse_quiet_hours()
         if start is None or end is None or start == end:
             return False
-        now = datetime.now().time()
+        now = tz_now(self.profile.timezone).time()
         if start < end:
             # Same-day window (e.g. 12:00-14:00)
             return start <= now < end
@@ -162,7 +163,7 @@ class ProactiveScheduler:
     async def _check_birthdays(self):
         """Daily birthday alert with 7-day dedup per contact."""
         try:
-            today_md = datetime.now().strftime("%m-%d")
+            today_md = tz_now(self.profile.timezone).strftime("%m-%d")
             upcoming = self.db.get_upcoming_birthdays(days=3, skip_recent_alerts=True)
             for c in upcoming:
                 bday = c.get("birthday", "") or ""
