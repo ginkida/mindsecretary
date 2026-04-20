@@ -96,36 +96,62 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 
 ## Quick Start
 
-### Option A: From pre-built image (recommended)
+Prerequisites: Docker + Docker Compose. Nothing else — no webhooks, public IP, or SSL needed (long polling).
+
+### 1. Get API keys (5 minutes)
+
+| Service | Where | Free tier |
+|---------|-------|-----------|
+| Anthropic Claude | [console.anthropic.com](https://console.anthropic.com) → API Keys | $5 free credit |
+| Groq (STT) | [console.groq.com](https://console.groq.com) → API Keys | Generous free tier |
+| Voyage AI (embeddings) | [dash.voyageai.com](https://dash.voyageai.com) → API Keys | 200M free tokens |
+| Telegram bot | Message [@BotFather](https://t.me/BotFather) → `/newbot` | Free |
+| Your Telegram ID | Message [@userinfobot](https://t.me/userinfobot) → it replies with your numeric ID | Free |
+
+### 2. Set up the project (Option A — pre-built image)
 
 ```bash
-# 1. Create a directory and download configs
+# Create a directory for the bot
 mkdir mindsecretary && cd mindsecretary
-curl -LO https://raw.githubusercontent.com/ginkida/mindsecretary/main/.env.example
+
+# Download the compose file + env template + default configs
 curl -LO https://raw.githubusercontent.com/ginkida/mindsecretary/main/docker-compose.yaml
-mkdir -p config
+curl -LO https://raw.githubusercontent.com/ginkida/mindsecretary/main/.env.example
+mkdir -p config data
 curl -Lo config/profile.yaml https://raw.githubusercontent.com/ginkida/mindsecretary/main/config/profile.yaml
 curl -Lo config/settings.yaml https://raw.githubusercontent.com/ginkida/mindsecretary/main/config/settings.yaml
 
-# 2. Configure
+# Configure
 cp .env.example .env
-# Edit .env — fill in API keys and profile
+chmod 600 .env              # protect your API keys from other local users
+nano .env                   # fill in the 6 required values (see below)
 
-# 3. Run
+# Start
 docker compose up -d
+docker compose logs -f      # follow startup logs, ctrl-c to detach
 ```
 
-No webhooks, public IP, or SSL needed — the bot uses long polling.
-
-### Option B: Build from source
+### 2. Set up the project (Option B — build from source)
 
 ```bash
 git clone https://github.com/ginkida/mindsecretary.git
 cd mindsecretary
 cp .env.example .env
-# Edit .env — fill in API keys and profile
+chmod 600 .env
+nano .env                   # fill in the 6 required values
 docker compose up -d --build
 ```
+
+### 3. Verify
+
+```bash
+docker compose ps                  # mindsecretary should be "running (healthy)"
+docker compose logs | tail -30     # look for "Proactive scheduler started with N jobs"
+```
+
+Then open Telegram, find your bot, send `/start`. You should see the welcome message with available commands.
+
+If something went wrong, see [Troubleshooting](#troubleshooting) below.
 
 ### Required Environment Variables
 
@@ -181,7 +207,7 @@ Reminder checking is always on (core feature, not toggleable).
 
 ### Tunable Thresholds (`config/settings.yaml`)
 
-Intervals, timeouts, and detection thresholds are configurable:
+Intervals, timeouts, detection thresholds, and safety limits are configurable:
 
 ```yaml
 tuning:
@@ -190,7 +216,12 @@ tuning:
   process_timeout_sec: 90         # Max time for LLM processing per message
   quiet_contact_days: 30          # Days without contact before alert
   quiet_contact_min_mentions: 3   # Min past mentions to trigger alert
-  smart_question_min_interactions: 5  # Min interactions before asking questions
+  smart_question_min_interactions: 5  # Min interactions before midday question
+
+  # Safety limits
+  daily_cost_limit_usd: 5.0       # Bot refuses LLM calls once daily spend crosses this
+  rate_limit_per_minute: 20       # Max inbound messages/min (DoS protection)
+  data_retention_days: 90         # Weekly cleanup deletes interactions/api_costs older than this
 ```
 
 ## Telegram Commands
@@ -204,19 +235,23 @@ tuning:
 | `/review` | Trigger weekly review on demand |
 | `/goals` | Today's daily goals with status |
 | `/habits` | Habit streaks and weekly completion rate |
-| `/export` | Export all data as JSON file |
 | `/search <query>` | Direct semantic memory search with scores |
+| `/memory [query]` | Inspect what's remembered — match reason, confidence, source |
+| `/loops` | Show current open items (overdue reminders, upcoming events, pending goals, due decisions) |
+| `/export` | Export all data as JSON file |
 | `/undo` | Restore the last deleted memory |
 | `/forget <query>` | Delete the closest matching memory (with confirmation) |
 
 ## LLM Tools
 
-The LLM has access to 13 tools, called automatically based on message content:
+The LLM has 16 tools at its disposal (15 custom + 1 Anthropic-native), called automatically based on message content:
 
 | Tool | Description |
 |------|-------------|
 | `save_memory` | Store a fact or feeling with category, importance (1-10), related person/date |
 | `search_memory` | Semantic search over all memories, optionally filtered by category |
+| `get_recent_memories` | List recent memories with source info (used for "what do you remember?") |
+| `get_open_loops` | Snapshot of overdue reminders, upcoming events, pending goals, due decisions |
 | `create_event` | Calendar event with title, time, location, related person |
 | `get_events` | Query events by date range |
 | `create_reminder` | Time-triggered reminder with optional recurrence (daily/weekly/monthly) |
@@ -228,8 +263,11 @@ The LLM has access to 13 tools, called automatically based on message content:
 | `resolve_decision` | Close a tracked decision with outcome and sentiment |
 | `set_daily_goal` | Create a goal for today with title, priority, description |
 | `complete_daily_goal` | Mark a daily goal as completed/skipped/partial with reflection |
+| `web_search` | Anthropic native server-side web search — for time-sensitive queries (currency, news, live data). Billed separately ($10 / 1000 searches) |
 
 Memory categories: `contact`, `health`, `work`, `personal`, `promise`, `preference`, `location`, `learning`, `emotional`.
+
+Every saved memory carries provenance — `source_type` (text / voice / photo / forward), `source_ref` (pointer to originating interaction), and a `confidence` score by source.
 
 ## Scheduled Jobs
 
@@ -241,11 +279,12 @@ Each can be toggled off in `config/settings.yaml`. Reminders always fire.
 | `reminder_check` | Every 5 min | No | Send due reminders (bypasses quiet hours) |
 | `birthday_check` | Daily 09:00 | No | Alert on upcoming birthdays (7-day dedup per contact) |
 | `weather_monitor` | Every 60 min | No | Alert when rain appears in forecast |
-| `morning_prompt` | At `PROFILE_WAKE_UP` | Yes | Briefing + "What are your goals today?" |
-| `smart_question` | Daily 13:00 | Yes | One targeted question to fill knowledge gaps |
+| `morning_prompt` | At `PROFILE_WAKE_UP` | Yes | Briefing (with open loops) + "What are your goals today?" |
+| `smart_question` | Daily 13:00 | Yes | Action nudge (22h dedup) or knowledge-gap question |
 | `decision_followup` | Daily 10:00 | No | Follow up on past decisions (+14 day repeat) |
 | `evening_prompt` | Daily 21:00 | Yes | Day summary + goal review + auto-diary entry |
 | `weekly_review` | Sunday 20:00 | Yes | Pattern analysis → insights → learnings saved to memory |
+| `cleanup_old_data` | Sunday 03:00 | No | Delete interactions / api_costs older than `data_retention_days` |
 
 ## Database Schema
 
@@ -253,7 +292,7 @@ Single SQLite file: `data/mindsecretary.db`
 
 | Table | Key columns | Purpose |
 |-------|-------------|---------|
-| `memories` | content, embedding (BLOB), category, importance, related_person, status | Semantic memory with Voyage AI vectors |
+| `memories` | content, embedding (BLOB), category, importance, related_person, source_type, source_ref, confidence, status | Semantic memory with Voyage AI vectors + provenance |
 | `events` | title, start_at, end_at, location, related_person, recurring | Calendar (bot is the calendar) |
 | `reminders` | text, trigger_at, priority, status | Time-triggered reminders |
 | `contacts` | name, relation, birthday, notes, last_contact, mention_count, last_birthday_alert | Personal CRM |
@@ -271,76 +310,150 @@ Single SQLite file: `data/mindsecretary.db`
 ```
 mindsecretary/
 ├── pyproject.toml                 # Package config, dependencies, entry point
-├── Dockerfile                     # Python 3.12-slim, non-root user
+├── Dockerfile                     # Python 3.12-slim, non-root user, MINDSECRETARY_ROOT=/app
 ├── docker-compose.yaml            # Single service with data/config volumes
 ├── .env.example                   # Template for API keys and profile
 ├── SECURITY.md                    # Security policy
 ├── config/
 │   ├── profile.yaml               # User profile (YAML fallback, env vars override)
-│   └── settings.yaml              # Model, STT, embedding, memory, proactive toggles
+│   └── settings.yaml              # Model, STT, embeddings, proactive toggles, safety limits
+├── migrations/                    # Numbered .sql files, applied via PRAGMA user_version
+│   └── README.md                  # Migration convention
 ├── scripts/
 │   ├── backup.sh                  # SQLite online backup with 30-day rotation
-│   └── healthcheck.py             # Docker healthcheck: process alive + DB accessible
+│   ├── healthcheck.py             # Docker healthcheck: process alive + DB accessible
+│   └── reembed.py                 # Rescue: re-embed memories marked embed_failed / zero-vector
 ├── .github/
 │   ├── dependabot.yml             # Weekly pip dependency updates
 │   └── workflows/
+│       ├── test.yml               # pytest on push/PR (Python 3.10/3.11/3.12)
 │       └── docker-publish.yml     # Build & push to ghcr.io on release
 └── src/mindsecretary/
     ├── app.py                     # Entry point: wires all components, runs bot
     ├── core/
-    │   ├── brain.py               # Orchestrator: context → LLM → tool execution loop
-    │   ├── config.py              # Profile (env/yaml) + Settings dataclasses
-    │   ├── database.py            # SQLite: all tables, CRUD, cost tracking, goals
+    │   ├── brain.py               # Orchestrator: context → LLM → tool execution loop + cost breaker
+    │   ├── config.py              # Profile + Settings + AppConfig (project-root resolution)
+    │   ├── database.py            # SQLite: all tables, CRUD, cost, cleanup, migrations
     │   ├── enums.py               # Status, Priority, Sentiment, Feedback enums
-    │   └── memory.py              # Voyage AI embeddings + vectorized cosine search
+    │   ├── memory.py              # Voyage embeddings + vectorized cosine + embed_failed quarantine
+    │   └── prompt_safety.py       # sanitize_for_context — defense against prompt injection
     ├── llm/
-    │   ├── client.py              # AnthropicClient (Claude Sonnet via Anthropic SDK)
+    │   ├── client.py              # AnthropicClient with retry + stop_reason warning
     │   ├── router.py              # Model router (single client wrapper)
     │   ├── prompts.py             # System prompts: main, briefing, evening, weekly, diary
-    │   └── tools.py               # 13 tool definitions + argument validation + executor
+    │   └── tools.py               # 16 tool definitions + argument validation + executor
     ├── voice/
-    │   └── stt.py                 # Groq Whisper large-v3 speech-to-text
+    │   └── stt.py                 # Groq Whisper large-v3, 3x retry with exp-backoff
     ├── interfaces/
-    │   └── telegram.py            # Telegram bot: voice/text/photo/forward handlers, commands
+    │   └── telegram.py            # Telegram bot: handlers, commands, rate limit
     ├── proactive/
-    │   ├── scheduler.py           # APScheduler: 8 jobs, quiet hours, notification limit
-    │   ├── briefing.py            # Morning/evening/diary generation via LLM
+    │   ├── scheduler.py           # APScheduler: 9 jobs, quiet hours, notification limit
+    │   ├── briefing.py            # Morning (with open loops) / evening / diary via LLM
     │   ├── monitor.py             # Reminder checks (no LLM)
-    │   └── smart_questions.py     # Midday knowledge-gap questions via LLM
+    │   └── smart_questions.py     # Midday knowledge-gap questions / action nudge
     ├── learning/
     │   ├── tracker.py             # Feedback tracking (positive/negative/response time)
     │   ├── reflection.py          # Weekly review: patterns → insights → learnings to memory
     │   └── mood.py                # Russian keyword-based mood analysis + contact frequency
     └── integrations/
         └── weather.py             # Open-Meteo API client (free, no key)
-tests/
+tests/                             # 129 tests (pytest + pytest-asyncio)
 ├── conftest.py                    # Shared fixtures (temp database)
-├── test_brain.py                  # Sanitization tests
-├── test_database.py               # CRUD + timestamp format tests
-├── test_mood.py                   # Mood analysis tests
-├── test_scheduler.py              # Quiet hours logic tests
-└── test_tools.py                  # Argument sanitization tests
+├── test_brain.py                  # Sanitization
+├── test_database.py               # CRUD + timestamp + cleanup + migrations
+├── test_habits.py                 # Habit tracking
+├── test_integration.py            # Brain.process end-to-end with mocked LLM
+├── test_llm_client.py             # Anthropic client retry + stop_reason
+├── test_mood.py                   # Mood analysis
+├── test_scheduler.py              # Quiet hours + action nudge
+├── test_telegram.py               # Telegram handler auth + rate limit
+├── test_tools.py                  # Argument sanitization
+└── test_tools_datetime.py         # Datetime validation
 ```
 
 ## Operations
 
 ```bash
-docker compose up -d               # Start
-docker compose logs -f              # Logs
-docker compose down                 # Stop
-docker compose pull && docker compose up -d  # Update to latest
-./scripts/backup.sh                 # Backup SQLite (safe while running)
+docker compose up -d                             # Start
+docker compose logs -f                           # Follow logs
+docker compose logs --tail=100 mindsecretary    # Last 100 log lines
+docker compose ps                                # Health status
+docker compose down                              # Stop
+docker compose pull && docker compose up -d      # Update to latest
+docker compose exec mindsecretary python scripts/reembed.py --dry-run   # Rescue failed embeddings
+./scripts/backup.sh                              # Backup SQLite (safe while running)
 ```
+
+## Troubleshooting
+
+### Bot starts but doesn't respond in Telegram
+
+1. Check `TELEGRAM_USER_ID` in `.env` matches your actual numeric ID — message [@userinfobot](https://t.me/userinfobot) to double-check.
+2. Check logs: `docker compose logs | grep -i "unauthorized"`. If you see "Unauthorized: user N", the `N` is what you sent — copy it into `TELEGRAM_USER_ID`.
+3. Make sure you started a chat with your bot first (send any message). Telegram won't deliver anything until the user initiates.
+
+### `.env` permissions warning at startup
+
+```
+.env permissions are 0664 — API keys readable beyond owner. Run: chmod 600 .env
+```
+
+That's exactly what to do — `chmod 600 .env`. The warning is loud but non-fatal; API keys in `.env` are world-readable under default umask. Only your user needs to read them.
+
+### `Permission denied` writing to `/app/data` (Linux hosts)
+
+The container's `app` user has UID 1000 by default. If your host user has a different UID, bind mounts on Linux reject writes. Fix by pinning the container UID in your `docker-compose.yaml`:
+
+```yaml
+services:
+  mindsecretary:
+    user: "${UID}:${GID}"   # or explicit numbers like "1001:1001"
+    # ... rest unchanged
+```
+
+Then `UID=$(id -u) GID=$(id -g) docker compose up -d`. macOS + Docker Desktop handles UID mapping automatically, no changes needed.
+
+### "Cost limit hit" messages when you haven't spent much
+
+The default daily limit is `$5.00`. If you intentionally want a bigger ceiling, bump it in `config/settings.yaml`:
+
+```yaml
+tuning:
+  daily_cost_limit_usd: 20.0
+```
+
+Then `docker compose restart`. The limit resets at the start of each local day.
+
+### "Too many retries" or STT failures
+
+Voice → text goes through Groq. If Groq is briefly down, STT retries 3x with 1s / 2s / 4s backoff before giving up. The Anthropic LLM call has the same 3x retry. If you see sustained failures: check `docker compose logs | grep -iE "failed|error"` — type names (like `APIConnectionError`, `RateLimitError`) in the logs point to the right fix.
+
+### "no such column: source_type" or similar schema errors
+
+You're running an old DB image against a newer schema. The bot auto-migrates on startup (both the numbered SQL migrations in `migrations/` and an idempotent `ALTER TABLE` in `memory.py`). If the error persists, your container isn't restarting cleanly — `docker compose down && docker compose pull && docker compose up -d`.
+
+### How do I wipe and start over?
+
+```bash
+docker compose down
+rm -rf data/
+docker compose up -d
+```
+
+Your `.env` and `config/` are preserved; only the SQLite file + logs are deleted. Make a backup first (`./scripts/backup.sh`) if there's anything worth keeping.
 
 ## Security
 
 - **Auth**: Telegram user ID check on every handler (including callback queries)
+- **Rate limit**: Per-minute cap on inbound messages (20/min default) — protects against a compromised Telegram session
+- **Cost circuit breaker**: Bot refuses LLM calls once daily spend crosses `daily_cost_limit_usd` (default $5/day)
 - **SQL injection**: Parameterized queries everywhere, column name whitelists for dynamic queries, LIKE wildcard escaping
-- **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event/goal content before system prompt injection. Role-lock in system prompt against memory-based hijacking.
-- **Input limits**: Voice 25 MB / 10 min, photo 10 MB, text 10K chars, `/forget` query 500 chars, processing timeout configurable (default 90s). STT retries 3x with exponential backoff
-- **Proactive limits**: Quiet hours enforcement, daily notification cap, birthday dedup (7 days)
-- **Docker**: Non-root user, read-only config volume
-- **Secrets**: `.env` gitignored, no secrets in logs
+- **Prompt injection**: Instruction-like patterns (EN + RU) stripped from memory/event/goal content before system-prompt injection. Role-lock stanza in MAIN, BRIEFING, EVENING, WEEKLY, DIARY, and GAPS prompts. Every user-origin field passes through `sanitize_for_context`.
+- **Input limits**: Voice 25 MB / 10 min, transcript 30K chars, photo 10 MB, text 10K chars, `/forget` query 500 chars, tool-calls capped at 10 per round, LLM rounds capped at 5, processing timeout 90s. STT and LLM both retry 3x with exp-backoff on transient errors
+- **Proactive limits**: Quiet hours enforcement, daily notification cap, birthday dedup (7 days), midday action nudge dedup (22h)
+- **Docker**: Non-root user, read-only config volume, explicit `MINDSECRETARY_ROOT=/app`
+- **Secrets**: `.env` gitignored, startup warning if `.env` is world/group-readable, logs use `type(e).__name__` instead of `str(e)` to avoid leaking request IDs / URLs / coords
+- **Data retention**: Weekly cleanup job deletes interactions and api_costs older than `data_retention_days` (default 90)
 - **GitHub**: Secret scanning + push protection, Dependabot alerts + auto-fix, branch protection on main
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
