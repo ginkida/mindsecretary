@@ -32,3 +32,9 @@ tuning:
   quiet_contact_days: 30
   quiet_contact_min_mentions: 3
   smart_question_min_interactions: 5
+  # Cost circuit breaker — bot refuses LLM calls once daily spend crosses this
+  daily_cost_limit_usd: 5.0
+  # Rate limit — max messages per minute for the authorized user
+  rate_limit_per_minute: 20
+  # How long to keep interactions and api_costs rows (cleaned weekly)
+  data_retention_days: 90

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,15 +9,43 @@ from pathlib import Path
 from . import tz_now
 from .enums import Priority, Status
 
+logger = logging.getLogger(__name__)
+
 
 class Database:
-    def __init__(self, db_path: Path, timezone: str | None = None):
+    def __init__(self, db_path: Path, timezone: str | None = None,
+                 migrations_dir: Path | None = None):
         self.db = sqlite3.connect(str(db_path))
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self._timezone = timezone
         self._init_tables()
+        if migrations_dir is None:
+            migrations_dir = Path(__file__).resolve().parents[3] / "migrations"
+        self._apply_migrations(migrations_dir)
+
+    def _apply_migrations(self, migrations_dir: Path):
+        """Apply pending SQL migrations from `migrations_dir` in lexical order.
+
+        The current migration level is tracked via SQLite's PRAGMA user_version
+        (a simple integer stored in the DB header). Each applied file bumps
+        it by 1. New installs: `_init_tables` creates the current schema,
+        then migrations apply on top.
+        """
+        if not migrations_dir.exists():
+            return
+        files = sorted(p for p in migrations_dir.glob("*.sql") if p.is_file())
+        if not files:
+            return
+        current = self.db.execute("PRAGMA user_version").fetchone()[0]
+        for idx, path in enumerate(files, start=1):
+            if idx <= current:
+                continue
+            logger.info("Applying migration %s", path.name)
+            self.db.executescript(path.read_text(encoding="utf-8"))
+            self.db.execute(f"PRAGMA user_version = {idx}")
+            self.db.commit()
 
     def _init_tables(self):
         self.db.executescript("""
@@ -684,6 +713,40 @@ class Database:
             (provider, input_tokens, output_tokens, cost),
         )
         self.db.commit()
+
+    def get_today_cost(self) -> float:
+        """Total API cost (USD) accumulated today. Used by cost circuit breaker."""
+        today = self._now().strftime("%Y-%m-%d")
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM api_costs WHERE date(timestamp) = ?",
+            (today,),
+        ).fetchone()
+        return float(row[0])
+
+    def cleanup_old_data(self, days: int = 90) -> dict:
+        """Delete interactions and api_costs older than `days`.
+
+        Also hard-deletes soft-deleted memories that crossed the retention
+        horizon. Returns a dict of rows deleted per table.
+        """
+        cutoff = (self._now() - timedelta(days=days)).isoformat()
+        counts: dict[str, int] = {}
+
+        cur = self.db.execute("DELETE FROM interactions WHERE timestamp < ?", (cutoff,))
+        counts["interactions"] = cur.rowcount
+
+        cur = self.db.execute("DELETE FROM api_costs WHERE timestamp < ?", (cutoff,))
+        counts["api_costs"] = cur.rowcount
+
+        cur = self.db.execute(
+            "DELETE FROM memories WHERE status = 'deleted' AND "
+            "COALESCE(last_accessed, created_at) < ?",
+            (cutoff,),
+        )
+        counts["memories"] = cur.rowcount
+
+        self.db.commit()
+        return counts
 
     def get_stats(self) -> dict:
         """Get usage stats for /stats command."""

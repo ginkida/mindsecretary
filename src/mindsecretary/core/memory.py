@@ -63,15 +63,17 @@ class Memory:
                    related_person: str | None = None,
                    related_date: str | None = None) -> str:
         memory_id = uuid.uuid4().hex[:8]
+        embed_failed = False
         try:
             embedding = (await self._embed([content]))[0]
         except Exception as e:
-            logger.error("Voyage embed failed (%s), saving with zero vector", type(e).__name__)
+            logger.error("Voyage embed failed (%s), saving with status=embed_failed", type(e).__name__)
             embedding = np.zeros(1024, dtype=np.float32)
+            embed_failed = True
 
         # Dedup: check if a very similar memory already exists in same category.
         # If so, update its importance (keep the higher) instead of duplicating.
-        if np.any(embedding):  # skip dedup for zero-vector fallbacks
+        if not embed_failed and np.any(embedding):
             dup = self._find_duplicate(embedding, category)
             if dup:
                 new_imp = max(importance, dup["importance"])
@@ -84,11 +86,15 @@ class Memory:
                 logger.info("Memory dedup: updated %s instead of creating new", dup["id"])
                 return dup["id"]
 
+        # Embed-failed rows get status='embed_failed' so they don't pollute
+        # search results. reembed.py / manual reembedding can promote them
+        # back to 'active' once embeddings are fixed.
+        status = "embed_failed" if embed_failed else "active"
         self.db.execute(
             "INSERT INTO memories (id, content, embedding, category, importance, "
-            "related_person, related_date) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "related_person, related_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (memory_id, content, embedding.tobytes(), category, importance,
-             related_person, related_date),
+             related_person, related_date, status),
         )
         self.db.commit()
         return memory_id

@@ -253,6 +253,15 @@ TOOL_DEFINITIONS = [
             "required": ["description_hint", "outcome"],
         },
     },
+    # Anthropic native server-side web search. Claude runs the search itself
+    # and embeds results + citations into its text response. No client-side
+    # handler needed. Billed separately ($10 / 1000 searches) — not tracked
+    # in api_costs (which only captures token costs).
+    {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 3,
+    },
 ]
 
 

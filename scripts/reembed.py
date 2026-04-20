@@ -17,31 +17,37 @@ from pathlib import Path
 import numpy as np
 
 
-def find_zero_vectors(db: sqlite3.Connection) -> list[dict]:
-    """Find memories whose embedding is all zeros."""
+def find_stale_memories(db: sqlite3.Connection) -> list[dict]:
+    """Find memories needing re-embedding: explicit status='embed_failed'
+    OR legacy zero-vector rows with status='active'."""
     rows = db.execute(
-        "SELECT id, content, category FROM memories WHERE status = 'active'"
+        "SELECT id, content, category, embedding, status FROM memories "
+        "WHERE status IN ('embed_failed', 'active')"
     ).fetchall()
-    zero = []
+    stale = []
     for row in rows:
+        if row["status"] == "embed_failed":
+            stale.append({"id": row["id"], "content": row["content"],
+                          "category": row["category"]})
+            continue
         emb = np.frombuffer(row["embedding"], dtype=np.float32)
         if np.allclose(emb, 0):
-            zero.append({"id": row["id"], "content": row["content"],
-                         "category": row["category"]})
-    return zero
+            stale.append({"id": row["id"], "content": row["content"],
+                          "category": row["category"]})
+    return stale
 
 
 def reembed(db_path: Path, dry_run: bool = False):
     db = sqlite3.connect(str(db_path))
     db.row_factory = sqlite3.Row
 
-    zero_mems = find_zero_vectors(db)
-    if not zero_mems:
-        print("No zero-vector memories found.")
+    stale_mems = find_stale_memories(db)
+    if not stale_mems:
+        print("No stale memories found.")
         return 0
 
-    print(f"Found {len(zero_mems)} memories with zero embeddings:")
-    for m in zero_mems:
+    print(f"Found {len(stale_mems)} memories to re-embed:")
+    for m in stale_mems:
         print(f"  [{m['id']}] ({m['category']}) {m['content'][:80]}")
 
     if dry_run:
@@ -61,20 +67,21 @@ def reembed(db_path: Path, dry_run: bool = False):
     client = voyageai.Client(api_key=api_key)
 
     # Batch embed (Voyage supports up to 128 texts per call)
-    texts = [m["content"] for m in zero_mems]
+    texts = [m["content"] for m in stale_mems]
     batch_size = 64
     updated = 0
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        batch_mems = zero_mems[i:i + batch_size]
+        batch_mems = stale_mems[i:i + batch_size]
         print(f"\nEmbedding batch {i // batch_size + 1} ({len(batch)} texts)...")
 
         result = client.embed(batch, model=model, input_type="document")
         for mem, emb_list in zip(batch_mems, result.embeddings):
             emb = np.array(emb_list, dtype=np.float32)
             db.execute(
-                "UPDATE memories SET embedding = ? WHERE id = ?",
+                "UPDATE memories SET embedding = ?, status = 'active' "
+                "WHERE id = ?",
                 (emb.tobytes(), mem["id"]),
             )
             updated += 1

@@ -220,3 +220,89 @@ class TestStats:
         stats = tmp_db.get_stats()
         assert stats["today_cost"] > 0
         assert stats["today_tokens"] == 1500
+
+
+class TestCostBreaker:
+    def test_get_today_cost_empty(self, tmp_db: Database):
+        assert tmp_db.get_today_cost() == 0.0
+
+    def test_get_today_cost_sums_all_providers(self, tmp_db: Database):
+        tmp_db.log_cost("anthropic", input_tokens=1000, output_tokens=500)
+        tmp_db.log_cost("groq", input_tokens=200, output_tokens=0)
+        tmp_db.log_cost("voyage", input_tokens=100, output_tokens=0)
+        assert tmp_db.get_today_cost() > 0.0
+
+
+class TestCleanup:
+    def test_cleanup_removes_old_rows(self, tmp_db: Database, raw_conn):
+        old_ts = "2025-01-01 00:00:00"
+        recent_ts = datetime.now().strftime(SQL_TS_FMT)
+        raw_conn.execute(
+            "INSERT INTO interactions (timestamp, direction, content) VALUES (?, 'in', 'old')",
+            (old_ts,),
+        )
+        raw_conn.execute(
+            "INSERT INTO interactions (timestamp, direction, content) VALUES (?, 'in', 'recent')",
+            (recent_ts,),
+        )
+        raw_conn.commit()
+
+        counts = tmp_db.cleanup_old_data(days=90)
+        assert counts["interactions"] >= 1
+
+        contents = [r["content"] for r in raw_conn.execute(
+            "SELECT content FROM interactions"
+        ).fetchall()]
+        assert "old" not in contents
+        assert "recent" in contents
+
+    def test_cleanup_hard_deletes_old_soft_deleted_memories(self, tmp_db: Database, raw_conn):
+        raw_conn.execute(
+            "INSERT INTO memories (id, content, embedding, category, status, last_accessed) "
+            "VALUES ('a1', 'old deleted', x'', 'personal', 'deleted', '2025-01-01 00:00:00')",
+        )
+        raw_conn.execute(
+            "INSERT INTO memories (id, content, embedding, category, status, last_accessed) "
+            "VALUES ('a2', 'still active', x'', 'personal', 'active', '2025-01-01 00:00:00')",
+        )
+        raw_conn.commit()
+
+        tmp_db.cleanup_old_data(days=90)
+        ids = {r["id"] for r in raw_conn.execute("SELECT id FROM memories").fetchall()}
+        assert "a1" not in ids
+        assert "a2" in ids
+
+
+class TestMigrations:
+    def test_empty_migrations_dir_is_noop(self, tmp_path):
+        db = Database(tmp_path / "test.db", migrations_dir=tmp_path / "empty_migrations")
+        version = db.db.execute("PRAGMA user_version").fetchone()[0]
+        assert version == 0
+
+    def test_applies_migration_and_bumps_version(self, tmp_path):
+        migrations = tmp_path / "migrations"
+        migrations.mkdir()
+        (migrations / "001_add_test.sql").write_text(
+            "CREATE TABLE test_migration (id INTEGER PRIMARY KEY);",
+            encoding="utf-8",
+        )
+        db = Database(tmp_path / "test.db", migrations_dir=migrations)
+
+        assert db.db.execute("PRAGMA user_version").fetchone()[0] == 1
+        rows = db.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='test_migration'"
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_idempotent_across_restarts(self, tmp_path):
+        migrations = tmp_path / "migrations"
+        migrations.mkdir()
+        (migrations / "001_noop.sql").write_text("SELECT 1;", encoding="utf-8")
+        db_path = tmp_path / "test.db"
+
+        db1 = Database(db_path, migrations_dir=migrations)
+        assert db1.db.execute("PRAGMA user_version").fetchone()[0] == 1
+        db1.close()
+
+        db2 = Database(db_path, migrations_dir=migrations)
+        assert db2.db.execute("PRAGMA user_version").fetchone()[0] == 1

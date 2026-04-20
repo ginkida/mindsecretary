@@ -145,6 +145,14 @@ class ProactiveScheduler:
                 id="weekly_review", replace_existing=True,
             )
 
+        # Weekly data cleanup — deletes interactions / api_costs / soft-deleted
+        # memories older than settings.data_retention_days. Sunday 03:00 to
+        # avoid colliding with weekly_review at 20:00 and morning briefing.
+        self.scheduler.add_job(
+            self._cleanup_old_data, "cron", day_of_week="sun", hour=3, minute=0,
+            id="cleanup_old_data", replace_existing=True,
+        )
+
         self.scheduler.start()
         logger.info("Proactive scheduler started with %d jobs",
                      len(self.scheduler.get_jobs()))
@@ -302,3 +310,16 @@ class ProactiveScheduler:
                 logger.info("Weekly review sent.")
         except Exception as e:
             logger.error("Weekly review failed: %s", type(e).__name__)
+
+    async def _cleanup_old_data(self):
+        """Weekly hard-delete of old interactions, api_costs, soft-deleted memories."""
+        try:
+            counts = self.db.cleanup_old_data(days=self.settings.data_retention_days)
+            logger.info(
+                "Cleanup: removed %d interactions, %d api_costs, %d memories",
+                counts.get("interactions", 0),
+                counts.get("api_costs", 0),
+                counts.get("memories", 0),
+            )
+        except Exception as e:
+            logger.error("Cleanup failed: %s", type(e).__name__)

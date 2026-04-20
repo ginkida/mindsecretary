@@ -17,6 +17,11 @@ from .prompt_safety import sanitize_for_context
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on tool calls LLM can request in a single round. Defends against
+# runaway LLM output (bug, prompt injection, model misbehavior) burning
+# embedding budget. max_tool_rounds * MAX_TOOLS_PER_ROUND is the worst case.
+MAX_TOOLS_PER_ROUND = 10
+
 
 @dataclass
 class BrainResponse:
@@ -45,6 +50,22 @@ class Brain:
             voice_duration_sec=metadata.get("duration_sec") if metadata else None,
             metadata=metadata,
         )
+
+        # Cost circuit breaker — refuse LLM work if daily spend exceeded
+        today_cost = self.db.get_today_cost()
+        limit = self.settings.daily_cost_limit_usd
+        if today_cost >= limit:
+            msg = (
+                f"⚠️ Дневной лимит API расходов исчерпан "
+                f"(${today_cost:.2f} / ${limit:.2f}). Попробуй завтра, или "
+                f"увеличь `daily_cost_limit_usd` в config/settings.yaml."
+            )
+            logger.warning("Cost limit hit: $%.2f / $%.2f", today_cost, limit)
+            self.db.log_interaction(
+                direction="out", message_type="chat", content=msg,
+                metadata={"cost_limit_hit": True},
+            )
+            return BrainResponse(text=msg, tool_calls_made=0, total_tokens=0)
 
         system_prompt = await self._build_system_prompt(user_message)
 
@@ -90,6 +111,13 @@ class Brain:
 
             if not response.tool_calls:
                 break
+
+            if len(response.tool_calls) > MAX_TOOLS_PER_ROUND:
+                logger.warning(
+                    "LLM requested %d tool calls in round %d, capping at %d",
+                    len(response.tool_calls), _round, MAX_TOOLS_PER_ROUND,
+                )
+                response.tool_calls = response.tool_calls[:MAX_TOOLS_PER_ROUND]
 
             # Build assistant message with tool calls (OpenAI format)
             assistant_msg = self._build_assistant_msg(response)

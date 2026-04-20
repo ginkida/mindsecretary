@@ -160,6 +160,12 @@ class Settings:
     quiet_contact_days: int = 30
     quiet_contact_min_mentions: int = 3
     smart_question_min_interactions: int = 5
+    # Cost circuit breaker — hard cap on daily spend across all APIs
+    daily_cost_limit_usd: float = 5.0
+    # Rate limiting — max messages per minute for the authorized user
+    rate_limit_per_minute: int = 20
+    # Data retention — delete interactions/api_costs older than this
+    data_retention_days: int = 90
 
     @classmethod
     def from_yaml(cls, path: Path) -> Settings:
@@ -193,6 +199,9 @@ class Settings:
             quiet_contact_days=tuning.get("quiet_contact_days", 30),
             quiet_contact_min_mentions=tuning.get("quiet_contact_min_mentions", 3),
             smart_question_min_interactions=tuning.get("smart_question_min_interactions", 5),
+            daily_cost_limit_usd=tuning.get("daily_cost_limit_usd", 5.0),
+            rate_limit_per_minute=tuning.get("rate_limit_per_minute", 20),
+            data_retention_days=tuning.get("data_retention_days", 90),
         )
 
 

@@ -5,6 +5,8 @@ import base64
 import io
 import json
 import logging
+import time
+from collections import deque
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -28,6 +30,7 @@ MAX_VOICE_SIZE = 25 * 1024 * 1024
 MAX_VOICE_DURATION = 600
 MAX_PHOTO_SIZE = 10 * 1024 * 1024
 MAX_TEXT_LENGTH = 10_000
+MAX_TRANSCRIPT_LENGTH = 30_000
 DOWNLOAD_TIMEOUT = 30.0
 TG_MSG_LIMIT = 4096
 
@@ -81,12 +84,26 @@ class TelegramBot:
         self.app: Application | None = None
         # For feedback tracking: map message_id → interaction_id
         self._reply_map: dict[int, str] = {}
+        # Simple in-memory rate limit — protects against compromised Telegram
+        # session spamming expensive (LLM-triggering) handlers.
+        self._rate_limit_window: deque[float] = deque()
+        self._rate_limit_per_min = brain.settings.rate_limit_per_minute
 
     def _check_user(self, update: Update) -> bool:
         uid = update.effective_user.id if update.effective_user else 0
         if uid != self.allowed_user_id:
             logger.warning("Unauthorized: user %s", uid)
             return False
+        return True
+
+    def _check_rate_limit(self) -> bool:
+        """Return True if we're within the per-minute message budget."""
+        now = time.time()
+        while self._rate_limit_window and now - self._rate_limit_window[0] > 60:
+            self._rate_limit_window.popleft()
+        if len(self._rate_limit_window) >= self._rate_limit_per_min:
+            return False
+        self._rate_limit_window.append(now)
         return True
 
     async def _reply(self, update: Update, text: str, with_feedback: bool = True):
@@ -440,6 +457,9 @@ class TelegramBot:
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
+        if not self._check_rate_limit():
+            await update.message.reply_text("Слишком часто, подожди минуту.")
+            return
         voice = update.message.voice or update.message.audio
         if not voice:
             return
@@ -478,6 +498,12 @@ class TelegramBot:
             await update.message.reply_text("Не удалось распознать речь.")
             return
 
+        if len(transcript) > MAX_TRANSCRIPT_LENGTH:
+            await update.message.reply_text(
+                f"Транскрипт длинный ({len(transcript)} симв), обрезаю до {MAX_TRANSCRIPT_LENGTH}.",
+            )
+            transcript = transcript[:MAX_TRANSCRIPT_LENGTH]
+
         logger.info("Voice transcribed (%d chars)", len(transcript))
         await self._typing(update)
 
@@ -498,6 +524,9 @@ class TelegramBot:
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
+            return
+        if not self._check_rate_limit():
+            await update.message.reply_text("Слишком часто, подожди минуту.")
             return
         msg = update.message
         if not msg.photo:
@@ -549,6 +578,9 @@ class TelegramBot:
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
+        if not self._check_rate_limit():
+            await update.message.reply_text("Слишком часто, подожди минуту.")
+            return
         text = update.message.text
         if not text:
             return
@@ -571,6 +603,9 @@ class TelegramBot:
 
     async def _handle_forward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
+            return
+        if not self._check_rate_limit():
+            await update.message.reply_text("Слишком часто, подожди минуту.")
             return
         msg = update.message
         forward_from = "[Переслано]: "
