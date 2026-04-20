@@ -44,10 +44,11 @@ class GroqSTT:
                 if attempt < _MAX_RETRIES - 1:
                     delay = _BASE_DELAY * (2 ** attempt)
                     logger.warning(
-                        "Groq STT attempt %d/%d failed: %s, retrying in %.1fs",
-                        attempt + 1, _MAX_RETRIES, e, delay,
+                        "Groq STT attempt %d/%d failed (%s), retrying in %.1fs",
+                        attempt + 1, _MAX_RETRIES, type(e).__name__, delay,
                     )
                     await asyncio.sleep(delay)
 
-        logger.error("Groq STT failed after %d attempts: %s", _MAX_RETRIES, last_error)
+        logger.error("Groq STT failed after %d attempts: %s",
+                     _MAX_RETRIES, type(last_error).__name__)
         raise last_error  # type: ignore[misc]

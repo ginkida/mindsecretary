@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -120,6 +125,35 @@ class AnthropicClient(LLMClient):
             i += 1
         return converted
 
+    async def _messages_create_with_retry(self, **kwargs):
+        """Call Anthropic messages.create with exp-backoff retry on transient errors.
+
+        Retries on APIConnectionError (network/timeout) and APIStatusError with
+        status in {429, 500, 502, 503, 504}. Other exceptions propagate.
+        """
+        import anthropic
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return await self.client.messages.create(**kwargs)
+            except Exception as e:
+                last_error = e
+                retryable = (
+                    isinstance(e, anthropic.APIConnectionError)
+                    or (isinstance(e, anthropic.APIStatusError)
+                        and e.status_code in _RETRYABLE_STATUS)
+                )
+                if not retryable or attempt == _MAX_RETRIES - 1:
+                    raise
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Anthropic call attempt %d/%d failed (%s), retrying in %.1fs",
+                    attempt + 1, _MAX_RETRIES, type(e).__name__, delay,
+                )
+                await asyncio.sleep(delay)
+        # Unreachable: loop always returns or raises, but keep for type checkers
+        raise last_error  # type: ignore[misc]
+
     async def chat(self, system, messages, tools=None, max_tokens=1024):
         kwargs: dict = {
             "model": self.model,
@@ -130,7 +164,12 @@ class AnthropicClient(LLMClient):
         if tools:
             kwargs["tools"] = tools  # Our format matches Anthropic's native format
 
-        resp = await self.client.messages.create(**kwargs)
+        resp = await self._messages_create_with_retry(**kwargs)
+
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            logger.warning(
+                "Claude hit max_tokens (%d) — response truncated", max_tokens,
+            )
 
         text = None
         tool_calls = []
