@@ -22,7 +22,11 @@ class Database:
         self._timezone = timezone
         self._init_tables()
         if migrations_dir is None:
-            migrations_dir = Path(__file__).resolve().parents[3] / "migrations"
+            # Use _project_root() so pip-installed packages find migrations/
+            # at the real project root (set via MINDSECRETARY_ROOT=/app in
+            # Docker), not at site-packages/.. /migrations.
+            from .config import _project_root
+            migrations_dir = _project_root() / "migrations"
         self._apply_migrations(migrations_dir)
 
     def _apply_migrations(self, migrations_dir: Path):

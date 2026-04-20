@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
+    """Resolve the project root — where config/, data/, migrations/ live.
+
+    Resolution order:
+    1. MINDSECRETARY_ROOT env var (set by Dockerfile)
+    2. cwd if it has a recognizable marker (config/, data/, migrations/, pyproject.toml)
+    3. source-relative parents[3] — only works for editable installs (`pip install -e`)
+
+    Plain `pip install` puts the package in site-packages where parents[3]
+    resolves to `/usr/local/lib/python3.XX` — not the project root. Docker
+    uses WORKDIR=/app with bind-mounted config/ and data/, so the env var
+    makes the resolution explicit and predictable.
+    """
+    env_root = os.environ.get("MINDSECRETARY_ROOT")
+    if env_root:
+        return Path(env_root)
+    cwd = Path.cwd()
+    for marker in ("config", "data", "migrations", "pyproject.toml"):
+        if (cwd / marker).exists():
+            return cwd
     return Path(__file__).resolve().parents[3]
 
 

@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MINDSECRETARY_ROOT=/app
 
 WORKDIR /app
 
@@ -10,9 +11,11 @@ COPY pyproject.toml .
 COPY src/ src/
 RUN pip install --no-cache-dir .
 
-# Default config (overridden by volume mount)
+# Default config (overridden by volume mount). migrations/ is source-of-truth,
+# not user-editable — baked into the image, not bind-mounted.
 COPY config/ config/
 COPY scripts/ scripts/
+COPY migrations/ migrations/
 
 # Non-root user for security
 RUN useradd --create-home --shell /bin/bash app \
