@@ -249,3 +249,59 @@ class TestBrainProcess:
         stats = db.get_stats()
         assert stats["today_tokens"] == 1500
         assert stats["today_cost"] > 0
+
+
+class TestCostBreaker:
+    @pytest.mark.asyncio
+    async def test_refuses_when_daily_limit_hit(self, brain_env):
+        """Brain returns refusal and doesn't call LLM once daily cost >= limit."""
+        brain, mock_client, db = brain_env
+        brain.settings.daily_cost_limit_usd = 0.01  # trivially small
+
+        # Inflate today's cost above limit: 2 * (3 + 15) = $36
+        db.log_cost("anthropic", input_tokens=1_000_000, output_tokens=1_000_000)
+
+        result = await brain.process("Привет")
+        assert "лимит" in result.text.lower()
+        assert result.tool_calls_made == 0
+        assert result.total_tokens == 0
+        mock_client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allows_when_under_limit(self, brain_env):
+        """Brain still processes messages when daily cost is under the limit."""
+        brain, mock_client, db = brain_env
+        brain.settings.daily_cost_limit_usd = 100.0
+
+        mock_client.chat.return_value = LLMResponse(
+            text="OK", tool_calls=[],
+            usage={"input_tokens": 100, "output_tokens": 20},
+        )
+
+        result = await brain.process("Привет")
+        assert result.text == "OK"
+        mock_client.chat.assert_called_once()
+
+
+class TestToolCap:
+    @pytest.mark.asyncio
+    async def test_caps_tool_calls_per_round(self, brain_env):
+        """MAX_TOOLS_PER_ROUND truncates excess tools in one LLM response."""
+        brain, mock_client, db = brain_env
+
+        # LLM tries to fire 15 save_memory tools — cap should limit to 10
+        many_tools = [
+            {"id": f"call_{i}", "name": "save_memory",
+             "arguments": {"content": f"fact {i}", "category": "personal",
+                           "importance": 5}}
+            for i in range(15)
+        ]
+        mock_client.chat.side_effect = [
+            LLMResponse(text="saving lots", tool_calls=many_tools,
+                        usage={"input_tokens": 100, "output_tokens": 30}),
+            LLMResponse(text="done", tool_calls=[],
+                        usage={"input_tokens": 150, "output_tokens": 20}),
+        ]
+
+        result = await brain.process("save 15 facts")
+        assert result.tool_calls_made == 10

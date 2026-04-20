@@ -313,8 +313,12 @@ class ProactiveScheduler:
 
     async def _cleanup_old_data(self):
         """Weekly hard-delete of old interactions, api_costs, soft-deleted memories."""
+        retention = self.settings.data_retention_days
+        if retention <= 0:
+            logger.info("Cleanup skipped: data_retention_days=%d (disabled)", retention)
+            return
         try:
-            counts = self.db.cleanup_old_data(days=self.settings.data_retention_days)
+            counts = self.db.cleanup_old_data(days=retention)
             logger.info(
                 "Cleanup: removed %d interactions, %d api_costs, %d memories",
                 counts.get("interactions", 0),

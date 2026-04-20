@@ -727,10 +727,15 @@ class Database:
         """Delete interactions and api_costs older than `days`.
 
         Also hard-deletes soft-deleted memories that crossed the retention
-        horizon. Returns a dict of rows deleted per table.
+        horizon. Returns a dict of rows deleted per table. `days <= 0` is a
+        no-op — interpreted as "disabled" to prevent accidental wipe.
         """
-        cutoff = (self._now() - timedelta(days=days)).isoformat()
-        counts: dict[str, int] = {}
+        counts: dict[str, int] = {"interactions": 0, "api_costs": 0, "memories": 0}
+        if days <= 0:
+            return counts
+        # Use SQL_TS_FMT (space-separated) so string comparison matches DB
+        # format exactly — see note above _SQL_TS_FMT about isoformat's bug.
+        cutoff = (self._now() - timedelta(days=days)).strftime(self._SQL_TS_FMT)
 
         cur = self.db.execute("DELETE FROM interactions WHERE timestamp < ?", (cutoff,))
         counts["interactions"] = cur.rowcount
