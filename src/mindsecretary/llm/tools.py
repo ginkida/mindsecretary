@@ -296,6 +296,42 @@ TOOL_DEFINITIONS = [
         "name": "web_search",
         "max_uses": 3,
     },
+    {
+        "name": "set_ephemeral_state",
+        "description": (
+            "Запомнить текущее состояние юзера с авто-истечением. Вызывай, "
+            "когда он упоминает свою локацию ('на работе', 'дома', 'еду'), "
+            "здоровье ('болею', 'устал'), занятость ('свободен до 18', 'весь "
+            "день в meetings'), энергию или текущее занятие. TTL выбирай по "
+            "смыслу: 'на работе' → 8-10ч, 'болею' → 24ч, 'в отпуске до 15' → "
+            "до этой даты в часах. INSERT OR REPLACE — та же key перезапишет. "
+            "НЕ используй для долгих фактов — для них save_memory. Макс TTL 72ч."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "enum": ["location", "health", "availability", "energy", "activity"],
+                    "description": (
+                        "Категория: location=где, health=самочувствие, "
+                        "availability=занятость, energy=силы, activity=чем занят сейчас."
+                    ),
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Текущее значение, коротко.",
+                },
+                "ttl_hours": {
+                    "type": "number",
+                    "minimum": 0.5,
+                    "maximum": 72,
+                    "description": "Через сколько часов это перестанет быть актуальным.",
+                },
+            },
+            "required": ["key", "value", "ttl_hours"],
+        },
+    },
 ]
 
 
@@ -304,6 +340,7 @@ VALID_CATEGORIES = {
     "contact", "health", "work", "personal",
     "promise", "preference", "location", "learning", "emotional",
 }
+VALID_EPHEMERAL_KEYS = {"location", "health", "availability", "energy", "activity"}
 VALID_PRIORITIES = {p.value for p in Priority}
 
 
@@ -339,6 +376,17 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "get_open_loops":
         clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
+
+    if name == "set_ephemeral_state":
+        key = clean.get("key", "")
+        if key not in VALID_EPHEMERAL_KEYS:
+            clean["key"] = "activity"  # safe default
+        # value length cap tighter than global MAX_STR_LEN — state lines go
+        # into the system prompt of every message.
+        val = clean.get("value") or ""
+        clean["value"] = str(val)[:200] or "активно"
+        ttl = float(clean.get("ttl_hours", 8.0))
+        clean["ttl_hours"] = max(0.5, min(72.0, ttl))
 
     if name in ("create_event", "create_reminder"):
         priority = clean.get("priority", "medium")
@@ -546,6 +594,11 @@ class ToolExecutor:
     def _handle_get_open_loops(self, days_ahead: int = 2) -> str:
         snapshot = self.db.get_open_loops(days_ahead=days_ahead, limit_per_section=5)
         return self._format_open_loops(snapshot)
+
+    def _handle_set_ephemeral_state(self, key: str, value: str,
+                                    ttl_hours: float) -> str:
+        self.db.set_ephemeral_state(key, value, float(ttl_hours))
+        return f"Ephemeral state saved: {key}={value} (TTL {ttl_hours}h)"
 
     async def _handle_get_weather(self, date: str | None = None,
                                   days: int | None = None) -> str:

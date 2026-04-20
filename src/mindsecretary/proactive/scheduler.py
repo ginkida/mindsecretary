@@ -14,6 +14,10 @@ from .monitor import check_reminders
 
 logger = logging.getLogger(__name__)
 
+ACTION_NUDGE_COOLDOWN = timedelta(hours=44)
+ACTION_NUDGE_EVENT_HORIZON = timedelta(hours=3)
+ACTION_NUDGE_REMINDER_HORIZON = timedelta(hours=2)
+
 
 class ProactiveScheduler:
     """Manages all proactive scheduled tasks."""
@@ -105,6 +109,7 @@ class ProactiveScheduler:
         quiet_mentions = self.settings.quiet_contact_min_mentions
         if not isinstance(quiet_mentions, int):
             quiet_mentions = 3
+        now = tz_now(self.profile.timezone).replace(tzinfo=None)
 
         if counts.get("overdue_reminders"):
             first = loops["overdue_reminders"][0]
@@ -113,15 +118,38 @@ class ProactiveScheduler:
                 f"Ближайшее: {first['text'][:80]}"
             )
 
-        if loops.get("upcoming_events"):
-            first_event = loops["upcoming_events"][0]
-            lines.append(
-                f"Ближайшее событие: {first_event['start_at'][11:16]} "
-                f"{first_event['title'][:80]}"
-            )
+        for reminder in loops.get("due_today_reminders", []):
+            try:
+                trigger_at = datetime.fromisoformat(reminder["trigger_at"].replace(" ", "T"))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            delta = trigger_at - now
+            if timedelta(0) <= delta <= ACTION_NUDGE_REMINDER_HORIZON:
+                lines.append(
+                    f"Скоро напоминание: {trigger_at.strftime('%H:%M')} "
+                    f"{reminder['text'][:80]}"
+                )
+                break
 
-        if counts.get("pending_goals"):
-            lines.append(f"На сегодня ещё открыто целей: {counts['pending_goals']}")
+        for event in loops.get("upcoming_events", []):
+            try:
+                start_at = datetime.fromisoformat(event["start_at"].replace(" ", "T"))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            delta = start_at - now
+            if timedelta(0) <= delta <= ACTION_NUDGE_EVENT_HORIZON:
+                lines.append(
+                    f"Скоро событие: {start_at.strftime('%H:%M')} "
+                    f"{event['title'][:80]}"
+                )
+                break
+
+        urgent_goals = [
+            g for g in loops.get("pending_goals", [])
+            if g.get("priority") == "high"
+        ]
+        if urgent_goals:
+            lines.append(f"Незакрытая приоритетная цель: {urgent_goals[0]['title'][:90]}")
 
         if counts.get("due_decisions"):
             first_decision = loops["due_decisions"][0]
@@ -312,17 +340,16 @@ class ProactiveScheduler:
         )
 
     async def _smart_question(self):
-        """Midday: action nudge (22h cooldown) or fallback smart question.
+        """Midday: urgent action nudge or fallback smart question.
 
-        Without the cooldown, _build_action_nudge fires every midday (open
-        goals / upcoming events almost always exist) and smart_question is
-        never reached.
+        A 44h cooldown intentionally leaves room for smart questions on the
+        intervening days when urgent loops stay open for a while.
         """
         try:
             last_nudge = self._get_last_nudge()
             nudge_on_cooldown = (
                 last_nudge is not None
-                and datetime.now() - last_nudge < timedelta(hours=22)
+                and datetime.now() - last_nudge < ACTION_NUDGE_COOLDOWN
             )
             if not nudge_on_cooldown:
                 nudge = self._build_action_nudge()

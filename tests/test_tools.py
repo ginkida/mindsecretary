@@ -94,3 +94,47 @@ class TestSanitizeArgs:
     def test_get_open_loops_days_clamped(self):
         args = _sanitize_args("get_open_loops", {"days_ahead": 99})
         assert args["days_ahead"] == 7
+
+    def test_ephemeral_state_valid(self):
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "location",
+            "value": "на работе до 18",
+            "ttl_hours": 9,
+        })
+        assert args["key"] == "location"
+        assert args["value"] == "на работе до 18"
+        assert args["ttl_hours"] == 9
+
+    def test_ephemeral_state_invalid_key_falls_back(self):
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "nonsense",
+            "value": "x",
+            "ttl_hours": 1,
+        })
+        assert args["key"] == "activity"
+
+    def test_ephemeral_state_ttl_clamped(self):
+        args_low = _sanitize_args("set_ephemeral_state", {
+            "key": "health", "value": "OK", "ttl_hours": 0.001,
+        })
+        assert args_low["ttl_hours"] == 0.5
+
+        args_high = _sanitize_args("set_ephemeral_state", {
+            "key": "health", "value": "OK", "ttl_hours": 9999,
+        })
+        assert args_high["ttl_hours"] == 72.0
+
+    def test_ephemeral_state_value_truncated(self):
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity",
+            "value": "y" * 500,
+            "ttl_hours": 1,
+        })
+        # Tighter cap than global MAX_STR_LEN — state lives in every prompt
+        assert len(args["value"]) == 200
+
+    def test_ephemeral_state_empty_value_defaults(self):
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity", "value": "", "ttl_hours": 1,
+        })
+        assert args["value"] == "активно"

@@ -237,13 +237,14 @@ tuning:
 | `/search <query>` | Direct semantic memory search with scores |
 | `/memory [query]` | Inspect what's remembered — match reason, confidence, source |
 | `/loops` | Show current open items (overdue reminders, upcoming events, pending goals, due decisions) |
+| `/context` | Current ephemeral state (where you are, health, availability). `/context clear [key]` to reset. |
 | `/export` | Export all data as JSON file |
 | `/undo` | Restore the last deleted memory |
 | `/forget <query>` | Delete the closest matching memory (with confirmation) |
 
 ## LLM Tools
 
-The LLM has 16 tools at its disposal (15 custom + 1 Anthropic-native), called automatically based on message content:
+The LLM has 17 tools at its disposal (16 custom + 1 Anthropic-native), called automatically based on message content:
 
 | Tool | Description |
 |------|-------------|
@@ -251,6 +252,7 @@ The LLM has 16 tools at its disposal (15 custom + 1 Anthropic-native), called au
 | `search_memory` | Semantic search over all memories, optionally filtered by category |
 | `get_recent_memories` | List recent memories with source info (used for "what do you remember?") |
 | `get_open_loops` | Snapshot of overdue reminders, upcoming events, pending goals, due decisions |
+| `set_ephemeral_state` | Record "right now" state (location / health / availability / energy / activity) with TTL. Auto-called when user mentions their current situation. |
 | `create_event` | Calendar event with title, time, location, related person |
 | `get_events` | Query events by date range |
 | `create_reminder` | Time-triggered reminder with optional recurrence (daily/weekly/monthly) |
@@ -303,6 +305,7 @@ Single SQLite file: `data/mindsecretary.db`
 | `habits` | name, target | Habit definitions |
 | `habit_log` | habit_id, date, done, notes | Daily habit tracking |
 | `api_costs` | provider, input_tokens, output_tokens, cost_usd | Token usage and cost |
+| `ephemeral_state` | key, value, expires_at | Transient "right now" context with TTL (v0.10.0) |
 
 ## Project Structure
 

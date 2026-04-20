@@ -1,8 +1,8 @@
 """Tests for proactive/scheduler.py — quiet hours and notification logic."""
 from __future__ import annotations
 
-from datetime import time
-from unittest.mock import MagicMock, patch
+from datetime import datetime, time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -112,18 +112,57 @@ class TestActionNudge:
         s.db.get_open_loops.return_value = {
             "counts": {
                 "overdue_reminders": 1,
-                "due_today_reminders": 0,
+                "due_today_reminders": 1,
                 "upcoming_events": 1,
                 "pending_goals": 2,
                 "due_decisions": 1,
             },
             "overdue_reminders": [{"text": "Call Mom", "trigger_at": "2026-04-15 09:00:00"}],
-            "upcoming_events": [{"title": "Standup", "start_at": "2026-04-15 10:00:00"}],
+            "due_today_reminders": [{"text": "Pay bill", "trigger_at": "2026-04-15 13:30:00"}],
+            "upcoming_events": [{"title": "Standup", "start_at": "2026-04-15 14:00:00"}],
             "pending_goals": [{"title": "Write report", "priority": "high"}],
             "due_decisions": [{"description": "Choose hosting provider"}],
         }
-        with patch("mindsecretary.proactive.scheduler.check_contact_frequency", return_value=[]):
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency", return_value=[]), \
+             patch("mindsecretary.proactive.scheduler.tz_now", return_value=datetime(2026, 4, 15, 12, 30, 0)):
             text = s._build_action_nudge()
         assert text is not None
         assert "На контроле" in text
         assert "Call Mom" in text
+
+    def test_ignores_nonurgent_open_items(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.get_open_loops.return_value = {
+            "counts": {
+                "overdue_reminders": 0,
+                "due_today_reminders": 0,
+                "upcoming_events": 1,
+                "pending_goals": 1,
+                "due_decisions": 0,
+            },
+            "overdue_reminders": [],
+            "due_today_reminders": [],
+            "upcoming_events": [{"title": "Tomorrow event", "start_at": "2026-04-16 18:00:00"}],
+            "pending_goals": [{"title": "Normal goal", "priority": "medium"}],
+            "due_decisions": [],
+        }
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency", return_value=[]), \
+             patch("mindsecretary.proactive.scheduler.tz_now", return_value=datetime(2026, 4, 15, 12, 30, 0)):
+            text = s._build_action_nudge()
+        assert text is None
+
+    @pytest.mark.asyncio
+    async def test_smart_question_used_when_nudge_on_cooldown(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        s.smart_questions = MagicMock()
+        s.smart_questions.generate_question = AsyncMock(return_value="🤔 Как дела с проектом?")
+        s._send_proactive = AsyncMock(return_value=True)
+
+        with patch.object(s, "_get_last_nudge", return_value=datetime.now()), \
+             patch.object(s, "_build_action_nudge", return_value="⚠️ На контроле"):
+            await s._smart_question()
+
+        s.smart_questions.generate_question.assert_awaited_once()
+        s._send_proactive.assert_awaited_once_with(
+            "🤔 Как дела с проектом?", kind="smart_question",
+        )

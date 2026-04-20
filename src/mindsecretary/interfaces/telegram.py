@@ -122,6 +122,12 @@ class TelegramBot:
         self._rate_limit_window.append(now)
         return True
 
+    async def _require_rate_limit(self, update: Update) -> bool:
+        if self._check_rate_limit():
+            return True
+        await update.message.reply_text("Слишком часто, подожди минуту.")
+        return False
+
     async def _reply(self, update: Update, text: str):
         """Send reply with message splitting (no feedback UI — too noisy)."""
         for part in _split_message(text):
@@ -157,6 +163,7 @@ class TelegramBot:
             "/search — поиск по памяти\n"
             "/memory — что именно и почему я помню\n"
             "/loops — что сейчас висит и на контроле\n"
+            "/context — текущий контекст (где ты, что с тобой)\n"
             "/undo — восстановить удалённое\n"
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
@@ -251,6 +258,8 @@ class TelegramBot:
     async def _handle_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
+        if not await self._require_rate_limit(update):
+            return
         await update.message.reply_text("⏳ Генерирую обзор...")
         await self._typing(update)
         # Access weekly_reflection through the scheduler (set in app.py)
@@ -264,6 +273,8 @@ class TelegramBot:
 
     async def _handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
+            return
+        if not await self._require_rate_limit(update):
             return
         query = " ".join(context.args) if context.args else ""
         if not query:
@@ -293,6 +304,8 @@ class TelegramBot:
 
     async def _handle_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
+            return
+        if not await self._require_rate_limit(update):
             return
         query = " ".join(context.args) if context.args else ""
         if len(query) > 500:
@@ -387,6 +400,8 @@ class TelegramBot:
     async def _handle_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
+        if not await self._require_rate_limit(update):
+            return
         query = " ".join(context.args) if context.args else ""
         if not query:
             await update.message.reply_text(
@@ -408,11 +423,17 @@ class TelegramBot:
                 InlineKeyboardButton("Отмена", callback_data="forget_no"),
             ]
         ])
-        await update.message.reply_text(
-            f"Удалить это?\n\n_{top['content'][:300]}_",
-            reply_markup=confirm_kb,
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await update.message.reply_text(
+                f"Удалить это?\n\n_{_fix_markdown(top['content'][:300])}_",
+                reply_markup=confirm_kb,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await update.message.reply_text(
+                f"Удалить это?\n\n{top['content'][:300]}",
+                reply_markup=confirm_kb,
+            )
 
     async def _handle_undo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
@@ -425,6 +446,53 @@ class TelegramBot:
         await update.message.reply_text(
             f"♻️ Восстановлено: {last['content'][:200]}"
         )
+
+    async def _handle_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/context — show active ephemeral state. /context clear [key] — clear."""
+        if not self._check_user(update):
+            return
+        args = [a.lower() for a in (context.args or [])]
+        if args and args[0] == "clear":
+            target_key = args[1] if len(args) > 1 else None
+            n = self.brain.db.clear_ephemeral_state(target_key)
+            what = f"ключ '{target_key}'" if target_key else "весь контекст"
+            await update.message.reply_text(
+                f"🧹 Очищено ({what}, {n} {'запись' if n == 1 else 'записей'})."
+            )
+            return
+
+        rows = self.brain.db.get_active_ephemeral_state()
+        if not rows:
+            await update.message.reply_text(
+                "Текущего контекста нет.\n\n"
+                "Это «здесь и сейчас»: где ты, что с тобой, занят ли. "
+                "Бот ставит сам, когда ты упоминаешь свою ситуацию."
+            )
+            return
+
+        labels = {
+            "location": "📍 Локация",
+            "health": "🩺 Здоровье",
+            "availability": "📅 Занят",
+            "energy": "⚡ Энергия",
+            "activity": "🎯 Сейчас",
+        }
+        lines = ["🎯 *Текущий контекст*\n"]
+        for row in rows:
+            label = labels.get(row["key"], f"• {row['key']}")
+            expires = row["expires_at"] or ""
+            tail = f" _(до {expires[11:16]})_" if len(expires) >= 16 else ""
+            lines.append(f"{label}: {row['value']}{tail}")
+        lines.append(
+            "\n_Команды: /context clear — сбросить всё, "
+            "/context clear <ключ> — один._"
+        )
+        try:
+            await update.message.reply_text(
+                _fix_markdown("\n".join(lines)), parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await update.message.reply_text("\n".join(lines))
 
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
@@ -528,8 +596,7 @@ class TelegramBot:
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
-        if not self._check_rate_limit():
-            await update.message.reply_text("Слишком часто, подожди минуту.")
+        if not await self._require_rate_limit(update):
             return
         voice = update.message.voice or update.message.audio
         if not voice:
@@ -596,8 +663,7 @@ class TelegramBot:
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
-        if not self._check_rate_limit():
-            await update.message.reply_text("Слишком часто, подожди минуту.")
+        if not await self._require_rate_limit(update):
             return
         msg = update.message
         if not msg.photo:
@@ -652,8 +718,7 @@ class TelegramBot:
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
-        if not self._check_rate_limit():
-            await update.message.reply_text("Слишком часто, подожди минуту.")
+        if not await self._require_rate_limit(update):
             return
         text = update.message.text
         if not text:
@@ -678,8 +743,7 @@ class TelegramBot:
     async def _handle_forward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
-        if not self._check_rate_limit():
-            await update.message.reply_text("Слишком часто, подожди минуту.")
+        if not await self._require_rate_limit(update):
             return
         msg = update.message
         forward_from = "[Переслано]: "
@@ -731,6 +795,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("review", self._handle_review))
         self.app.add_handler(CommandHandler("search", self._handle_search))
         self.app.add_handler(CommandHandler("memory", self._handle_memory))
+        self.app.add_handler(CommandHandler("context", self._handle_context))
         self.app.add_handler(CommandHandler("loops", self._handle_loops))
         self.app.add_handler(CommandHandler("undo", self._handle_undo))
         self.app.add_handler(CommandHandler("forget", self._handle_forget))

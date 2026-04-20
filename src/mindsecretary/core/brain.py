@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # runaway LLM output (bug, prompt injection, model misbehavior) burning
 # embedding budget. max_tool_rounds * MAX_TOOLS_PER_ROUND is the worst case.
 MAX_TOOLS_PER_ROUND = 10
+MAX_TOOL_RESULT_LEN = 4000
 
 
 @dataclass
@@ -134,10 +135,11 @@ class Brain:
                 result = await self.tool_executor.execute(
                     tc["name"], tc["arguments"], request_context=request_context,
                 )
+                safe_result = sanitize_for_context(result, MAX_TOOL_RESULT_LEN)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.get("id", f"call_{tc['name']}"),
-                    "content": result,
+                    "content": safe_result,
                 })
         else:
             # Loop exhausted without break — too many tool rounds
@@ -186,6 +188,7 @@ class Brain:
             quiet_contacts=self._section_quiet_contacts(s),
             birthdays=self._section_birthdays(now, s),
             input_channel=self._input_channel_hint(message_type),
+            current_context=self._section_ephemeral_state(s),
             style=self.profile.style,
         )
 
@@ -216,6 +219,44 @@ class Brain:
         return "\n".join(
             f"- {s(d['description'], 200)}" for d in decisions
         ) or "Нет решений в процессе."
+
+    _EPHEMERAL_LABELS = {
+        "location": "Локация",
+        "health": "Здоровье",
+        "availability": "Занят",
+        "energy": "Энергия",
+        "activity": "Сейчас",
+    }
+
+    def _section_ephemeral_state(self, s) -> str:
+        """Format active ephemeral state rows for the system prompt.
+
+        Lazy cleanup of expired rows happens inside get_active_ephemeral_state.
+        Each row renders as "Label: value (до HH:MM)" if the TTL expires today,
+        else "(до MM-DD HH:MM)" for longer horizons.
+        """
+        try:
+            rows = self.db.get_active_ephemeral_state()
+        except Exception as e:
+            logger.warning("Section ephemeral_state failed: %s", type(e).__name__)
+            return "Пусто."
+        if not rows:
+            return "Пусто."
+        now = tz_now(self.profile.timezone)
+        today_date = now.strftime("%Y-%m-%d")
+        lines = []
+        for row in rows:
+            label = self._EPHEMERAL_LABELS.get(row["key"], row["key"])
+            value = s(row["value"], 150)
+            expires = row["expires_at"] or ""
+            tail = ""
+            if len(expires) >= 16:
+                if expires.startswith(today_date):
+                    tail = f" (до {expires[11:16]})"
+                else:
+                    tail = f" (до {expires[5:16]})"
+            lines.append(f"{label}: {value}{tail}")
+        return "\n".join(lines)
 
     def _section_mood_trend(self) -> str:
         try:

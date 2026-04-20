@@ -324,3 +324,74 @@ class TestMigrations:
 
         db2 = Database(db_path, migrations_dir=migrations)
         assert db2.db.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+class TestEphemeralState:
+    def test_set_and_get(self, tmp_db: Database):
+        tmp_db.set_ephemeral_state("location", "на работе", ttl_hours=8)
+        rows = tmp_db.get_active_ephemeral_state()
+        assert len(rows) == 1
+        assert rows[0]["key"] == "location"
+        assert rows[0]["value"] == "на работе"
+
+    def test_upsert_replaces(self, tmp_db: Database):
+        tmp_db.set_ephemeral_state("location", "дома", ttl_hours=4)
+        tmp_db.set_ephemeral_state("location", "на работе", ttl_hours=8)
+        rows = tmp_db.get_active_ephemeral_state()
+        assert len(rows) == 1
+        assert rows[0]["value"] == "на работе"
+
+    def test_ttl_clamped_too_small(self, tmp_db: Database):
+        tmp_db.set_ephemeral_state("energy", "full", ttl_hours=0.01)
+        rows = tmp_db.get_active_ephemeral_state()
+        # Should have been clamped to 0.5h so it's still active
+        assert len(rows) == 1
+
+    def test_ttl_clamped_too_big(self, tmp_db: Database, raw_conn):
+        tmp_db.set_ephemeral_state("health", "fine", ttl_hours=999)
+        row = raw_conn.execute(
+            "SELECT expires_at FROM ephemeral_state WHERE key = 'health'"
+        ).fetchone()
+        # Clamp at 72h — with any reasonable TZ skew between _now() and
+        # datetime('now') (UTC), expires_at must still be within ~76h of
+        # caller's wall clock, and NOT ~999h (41 days).
+        expires = datetime.strptime(row["expires_at"], SQL_TS_FMT)
+        delta_from_now = expires - datetime.now()
+        assert delta_from_now <= timedelta(hours=76)
+        assert delta_from_now >= timedelta(hours=60)
+
+    def test_expired_rows_cleaned_on_read(self, tmp_db: Database, raw_conn):
+        past = (datetime.now() - timedelta(hours=2)).strftime(SQL_TS_FMT)
+        raw_conn.execute(
+            "INSERT INTO ephemeral_state (key, value, expires_at) VALUES (?, ?, ?)",
+            ("location", "expired", past),
+        )
+        raw_conn.commit()
+
+        rows = tmp_db.get_active_ephemeral_state()
+        assert rows == []
+        # Row physically deleted
+        count = raw_conn.execute(
+            "SELECT COUNT(*) FROM ephemeral_state"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_clear_all(self, tmp_db: Database):
+        tmp_db.set_ephemeral_state("location", "на работе", ttl_hours=8)
+        tmp_db.set_ephemeral_state("health", "OK", ttl_hours=24)
+        n = tmp_db.clear_ephemeral_state()
+        assert n == 2
+        assert tmp_db.get_active_ephemeral_state() == []
+
+    def test_clear_by_key(self, tmp_db: Database):
+        tmp_db.set_ephemeral_state("location", "на работе", ttl_hours=8)
+        tmp_db.set_ephemeral_state("health", "OK", ttl_hours=24)
+        n = tmp_db.clear_ephemeral_state("location")
+        assert n == 1
+        remaining = tmp_db.get_active_ephemeral_state()
+        assert len(remaining) == 1
+        assert remaining[0]["key"] == "health"
+
+    def test_clear_nonexistent(self, tmp_db: Database):
+        n = tmp_db.clear_ephemeral_state("location")
+        assert n == 0

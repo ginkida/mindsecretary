@@ -1,7 +1,13 @@
 """Tests for interfaces/telegram.py — utility functions."""
 from __future__ import annotations
 
-from mindsecretary.interfaces.telegram import _fix_markdown, _split_message
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from telegram.constants import ParseMode
+
+from mindsecretary.interfaces.telegram import TelegramBot, _fix_markdown, _split_message
 
 
 class TestFixMarkdown:
@@ -38,3 +44,79 @@ class TestSplitMessage:
         parts = _split_message(text, limit=100)
         assert len(parts) > 1
         assert all(len(p) <= 100 for p in parts)
+
+
+def _make_bot():
+    brain = MagicMock()
+    brain.settings.rate_limit_per_minute = 20
+    brain.settings.process_timeout_sec = 30
+    brain.settings.quiet_contact_days = 30
+    brain.settings.quiet_contact_min_mentions = 3
+    brain.memory = MagicMock()
+    brain.memory.search = AsyncMock()
+    brain.memory.list_recent = MagicMock(return_value=[])
+    brain.memory.get_by_category = MagicMock(return_value=[])
+    brain.db = MagicMock()
+    brain.db.get_open_loops = MagicMock(return_value={"counts": {}})
+    brain.profile.notification_limit = 10
+
+    bot = TelegramBot(
+        token="token",
+        allowed_user_id=1,
+        brain=brain,
+        stt=MagicMock(),
+    )
+    return bot, brain
+
+
+def _make_update():
+    message = MagicMock()
+    message.reply_text = AsyncMock()
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=1),
+        message=message,
+    )
+    return update
+
+
+class TestTelegramHandlers:
+    @pytest.mark.asyncio
+    async def test_search_is_rate_limited(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["coffee"])
+        bot._check_rate_limit = lambda: False
+
+        await bot._handle_search(update, context)
+
+        update.message.reply_text.assert_awaited_once_with("Слишком часто, подожди минуту.")
+        brain.memory.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_memory_is_rate_limited(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["plans"])
+        bot._check_rate_limit = lambda: False
+
+        await bot._handle_memory(update, context)
+
+        update.message.reply_text.assert_awaited_once_with("Слишком часто, подожди минуту.")
+        brain.memory.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_forget_falls_back_without_markdown(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["buggy_markdown"])
+        bot._check_rate_limit = lambda: True
+        brain.memory.search.return_value = [{"id": "m1", "content": "bad _ markdown * text"}]
+        update.message.reply_text = AsyncMock(side_effect=[Exception("parse"), None])
+
+        await bot._handle_forget(update, context)
+
+        assert update.message.reply_text.await_count == 2
+        first = update.message.reply_text.await_args_list[0]
+        second = update.message.reply_text.await_args_list[1]
+        assert first.kwargs["parse_mode"] == ParseMode.MARKDOWN
+        assert "parse_mode" not in second.kwargs

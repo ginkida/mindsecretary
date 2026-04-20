@@ -901,5 +901,47 @@ class Database:
             "week_trend": week_trend,
         }
 
+    # --- Ephemeral state (transient "right now" context with TTL) ---
+
+    _EPHEMERAL_TTL_MIN_HOURS = 0.5
+    _EPHEMERAL_TTL_MAX_HOURS = 72.0
+
+    def set_ephemeral_state(self, key: str, value: str, ttl_hours: float) -> None:
+        """Upsert a current-state row with a TTL (clamped to 0.5-72 hours).
+
+        INSERT OR REPLACE semantics: same key overwrites prior value + TTL.
+        Exists to carry short-lived context (location, health, availability)
+        that matters for Claude's answers but shouldn't live in long memory.
+        """
+        ttl = max(self._EPHEMERAL_TTL_MIN_HOURS,
+                  min(self._EPHEMERAL_TTL_MAX_HOURS, float(ttl_hours)))
+        expires_at = (self._now() + timedelta(hours=ttl)).strftime(self._SQL_TS_FMT)
+        self.db.execute(
+            "INSERT OR REPLACE INTO ephemeral_state (key, value, expires_at) "
+            "VALUES (?, ?, ?)",
+            (key, value, expires_at),
+        )
+        self.db.commit()
+
+    def get_active_ephemeral_state(self) -> list[dict]:
+        """Return non-expired state rows, lazy-cleaning expired ones first."""
+        now_sql = self._now().strftime(self._SQL_TS_FMT)
+        self.db.execute("DELETE FROM ephemeral_state WHERE expires_at < ?", (now_sql,))
+        self.db.commit()
+        rows = self.db.execute(
+            "SELECT key, value, expires_at, created_at FROM ephemeral_state "
+            "ORDER BY expires_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_ephemeral_state(self, key: str | None = None) -> int:
+        """Clear ephemeral state. Pass key to clear one; no arg clears all."""
+        if key:
+            cur = self.db.execute("DELETE FROM ephemeral_state WHERE key = ?", (key,))
+        else:
+            cur = self.db.execute("DELETE FROM ephemeral_state")
+        self.db.commit()
+        return cur.rowcount
+
     def close(self):
         self.db.close()
