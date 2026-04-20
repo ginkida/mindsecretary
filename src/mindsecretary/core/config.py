@@ -1,15 +1,32 @@
 from __future__ import annotations
 
+import logging
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _check_env_permissions(env_file: Path) -> None:
+    """Warn if .env permissions allow group/world access to API keys."""
+    if not env_file.exists() or os.name != "posix":
+        return
+    mode = stat.S_IMODE(env_file.stat().st_mode)
+    if mode & 0o077:
+        logger.warning(
+            ".env permissions are %o — API keys readable beyond owner. "
+            "Run: chmod 600 %s",
+            mode, env_file,
+        )
 
 
 @dataclass
@@ -194,7 +211,9 @@ class AppConfig:
     @classmethod
     def load(cls, root: Path | None = None) -> AppConfig:
         root = root or _project_root()
-        load_dotenv(root / ".env")
+        env_file = root / ".env"
+        load_dotenv(env_file)
+        _check_env_permissions(env_file)
 
         profile = Profile.load(root)
         settings = Settings.from_yaml(root / "config" / "settings.yaml")

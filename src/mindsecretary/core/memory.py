@@ -66,7 +66,7 @@ class Memory:
         try:
             embedding = (await self._embed([content]))[0]
         except Exception as e:
-            logger.error("Voyage embed failed, saving with zero vector: %s", e)
+            logger.error("Voyage embed failed (%s), saving with zero vector", type(e).__name__)
             embedding = np.zeros(1024, dtype=np.float32)
 
         # Dedup: check if a very similar memory already exists in same category.
@@ -124,7 +124,7 @@ class Memory:
         try:
             query_emb = await self._embed_query(query)
         except Exception as e:
-            logger.error("Voyage embed_query failed: %s", e)
+            logger.error("Voyage embed_query failed: %s", type(e).__name__)
             return []
 
         where = "WHERE status = 'active'"

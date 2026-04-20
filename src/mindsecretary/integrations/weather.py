@@ -52,8 +52,8 @@ class WeatherClient:
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            logger.error("Weather API failed: %s", e)
-            return {"error": str(e)}
+            logger.error("Weather API failed: %s", type(e).__name__)
+            return {"error": type(e).__name__}
 
         return self._parse(data, days)
 

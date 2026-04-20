@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
+from ..core.prompt_safety import sanitize_for_context
 from ..llm.prompts import WEEKLY_SYSTEM_PROMPT
 from ..llm.router import ModelRouter
 from .tracker import FeedbackTracker
@@ -52,15 +53,16 @@ class WeeklyReflection:
         feedback = self.tracker.get_feedback_summary(days=7)
 
         # Format interactions (compact)
+        s = sanitize_for_context
         interactions_text = self._format_interactions(interactions)
         events_text = "\n".join(
-            f"- {e['start_at'][:16]} {e['title']}"
-            + (f" (с {e['related_person']})" if e.get("related_person") else "")
+            f"- {e['start_at'][:16]} {s(e['title'], 200)}"
+            + (f" (с {s(e['related_person'], 100)})" if e.get("related_person") else "")
             for e in events
         ) or "Нет событий."
 
         learnings_text = "\n".join(
-            f"- {l['content']}" for l in learnings
+            f"- {s(l['content'])}" for l in learnings
         ) or "Нет предыдущих learnings."
 
         habits_text = habits_data or "Привычки не отслеживаются."
@@ -85,7 +87,7 @@ class WeeklyReflection:
             )
             text = response.text or ""
         except Exception as e:
-            logger.error("Weekly review LLM failed: %s", e)
+            logger.error("Weekly review LLM failed: %s", type(e).__name__)
             return None
 
         # Extract and save learnings from JSON block at the end
@@ -105,7 +107,7 @@ class WeeklyReflection:
             day = i["timestamp"][:10] if i["timestamp"] else "?"
             direction = "→" if i["direction"] == "out" else "←"
             msg_type = i.get("message_type", "?")
-            content = (i.get("content") or "")[:120]
+            content = sanitize_for_context(i.get("content") or "", 120)
             fb = f" [{i['feedback']}]" if i.get("feedback") else ""
             lines.append(f"{day} {ts} {direction} ({msg_type}{fb}) {content}")
         return "\n".join(lines[-100:])  # last 100
@@ -122,7 +124,7 @@ class WeeklyReflection:
             return ""
         lines = []
         for r in rows:
-            name, total, done = r[0], r[1], r[2] or 0
+            name, total, done = sanitize_for_context(r[0] or "", 100), r[1], r[2] or 0
             lines.append(f"- {name}: {done}/{total}")
         return "\n".join(lines)
 
@@ -167,7 +169,7 @@ class WeeklyReflection:
                 )
                 saved += 1
             except Exception as e:
-                logger.error("Failed to save learning: %s", e)
+                logger.error("Failed to save learning: %s", type(e).__name__)
 
         if saved:
             logger.info("Saved %d new learnings from weekly review", saved)

@@ -7,6 +7,7 @@ from ..core import DAYS_RU, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
+from ..core.prompt_safety import sanitize_for_context
 from ..integrations.weather import WeatherClient
 from ..learning.mood import analyze_mood, check_contact_frequency
 from ..llm.prompts import BRIEFING_SYSTEM_PROMPT, DIARY_SYSTEM_PROMPT, EVENING_SYSTEM_PROMPT
@@ -29,6 +30,7 @@ class BriefingGenerator:
         now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        s = sanitize_for_context
 
         # Gather data
         weather_text = "Погода недоступна."
@@ -37,23 +39,23 @@ class BriefingGenerator:
                 forecast = await self.weather.get_forecast(days=2)
                 weather_text = self.weather.format_current(forecast)
             except Exception as e:
-                logger.error("Weather for briefing failed: %s", e)
+                logger.error("Weather for briefing failed: %s", type(e).__name__)
 
         events = self.db.get_events(today)
         events_text = "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} {e['title']}"
-            + (f" (с {e['related_person']})" if e.get("related_person") else "")
+            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} {s(e['title'], 200)}"
+            + (f" (с {s(e['related_person'], 100)})" if e.get("related_person") else "")
             for e in events
         ) or "Нет событий."
 
         reminders = self.db.get_pending_reminders()
         reminders_text = "\n".join(
-            f"- {r['text']}" for r in reminders[:5]
+            f"- {s(r['text'], 200)}" for r in reminders[:5]
         ) or "Нет напоминаний."
 
         birthdays = self.db.get_upcoming_birthdays(days=7)
         birthdays_text = "\n".join(
-            f"- {c['name']}" + (f" ({c['relation']})" if c.get("relation") else "")
+            f"- {s(c['name'], 80)}" + (f" ({s(c['relation'], 60)})" if c.get("relation") else "")
             + f" — {c['birthday']}"
             for c in birthdays
         ) or "Нет ближайших ДР."
@@ -62,12 +64,12 @@ class BriefingGenerator:
         context_query = f"важное на {DAYS_RU[now.weekday()]} {today}"
         memories = await self.memory.search(context_query, top_k=5)
         memories_text = "\n".join(
-            f"- {m['content']}" for m in memories
+            f"- {s(m['content'])}" for m in memories
         ) or "Нет релевантных воспоминаний."
 
         promises = await self.memory.search("незакрытые обещания", category="promise", top_k=5)
         promises_text = "\n".join(
-            f"- {m['content']}" for m in promises
+            f"- {s(m['content'])}" for m in promises
         ) or "Нет незакрытых обещаний."
 
         prompt = BRIEFING_SYSTEM_PROMPT.format(
@@ -97,7 +99,7 @@ class BriefingGenerator:
                 )
             return text
         except Exception as e:
-            logger.error("Morning briefing generation failed: %s", e)
+            logger.error("Morning briefing generation failed: %s", type(e).__name__)
             return None
 
     async def generate_evening(self) -> str | None:
@@ -105,24 +107,25 @@ class BriefingGenerator:
         now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        s = sanitize_for_context
 
         # Today's interactions
         today_start = now.replace(hour=0, minute=0, second=0)
         interactions = self.db.get_interactions(since=today_start, limit=50)
         interactions_text = "\n".join(
             f"[{i['timestamp'][11:16]}] {'→' if i['direction'] == 'out' else '←'} "
-            f"({i['message_type']}) {i['content'][:100]}"
+            f"({i['message_type']}) {s(i['content'], 100)}"
             for i in interactions[:30]
         ) or "Нет взаимодействий."
 
         events = self.db.get_events(today)
         events_text = "\n".join(
-            f"- {e['title']}" for e in events
+            f"- {s(e['title'], 200)}" for e in events
         ) or "Нет событий."
 
         events_tomorrow = self.db.get_events(tomorrow)
         events_tomorrow_text = "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else ''} {e['title']}"
+            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else ''} {s(e['title'], 200)}"
             for e in events_tomorrow
         ) or "Нет событий."
 
@@ -135,7 +138,7 @@ class BriefingGenerator:
                     d = daily[1]
                     weather_tomorrow = f"{d['temp_min']}..{d['temp_max']}°C, {d['condition']}"
             except Exception as e:
-                logger.warning("Weather for evening summary failed: %s", e)
+                logger.warning("Weather for evening summary failed: %s", type(e).__name__)
 
         # Count completed reminders
         completed = [i for i in interactions
@@ -148,10 +151,10 @@ class BriefingGenerator:
             for g in goals:
                 status_label = {"pending": "не отмечена", "completed": "выполнена",
                                 "skipped": "пропущена", "partial": "частично"}.get(g["status"], g["status"])
-                title = (g["title"] or "")[:150]
+                title = s(g["title"] or "", 150)
                 line = f"- {title} [{status_label}]"
                 if g.get("reflection"):
-                    line += f" — {(g['reflection'] or '')[:100]}"
+                    line += f" — {s(g['reflection'] or '', 100)}"
                 goals_lines.append(line)
             goals_text = "\n".join(goals_lines)
         else:
@@ -181,7 +184,7 @@ class BriefingGenerator:
                 )
             return text
         except Exception as e:
-            logger.error("Evening summary generation failed: %s", e)
+            logger.error("Evening summary generation failed: %s", type(e).__name__)
             return None
 
     async def generate_diary(self) -> str | None:
@@ -189,6 +192,7 @@ class BriefingGenerator:
         now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
         today_start = now.replace(hour=0, minute=0, second=0)
+        s = sanitize_for_context
 
         interactions = self.db.get_interactions(since=today_start, limit=100)
         if len(interactions) < 3:
@@ -213,18 +217,18 @@ class BriefingGenerator:
         rel_alerts = check_contact_frequency(self.db)
 
         interactions_text = "\n".join(
-            f"[{i['timestamp'][11:16]}] {'←' if i['direction'] == 'in' else '→'} {i['content'][:120]}"
+            f"[{i['timestamp'][11:16]}] {'←' if i['direction'] == 'in' else '→'} {s(i['content'], 120)}"
             for i in interactions[:40]
         )
 
-        events_text = "\n".join(f"- {e['title']}" for e in events) or "Нет"
-        people_text = ", ".join(people_today) or "Никого"
+        events_text = "\n".join(f"- {s(e['title'], 200)}" for e in events) or "Нет"
+        people_text = ", ".join(s(p, 80) for p in people_today) or "Никого"
         mood_text = f"Score: {mood['score']}, label: {mood['label']}, signals: {mood['signals']}"
 
         rel_text = ""
         if rel_alerts:
             rel_text = "\n".join(
-                f"- {a['name']} ({a.get('relation', '?')}): не общались {a['days_since']} дней"
+                f"- {s(a['name'], 80)} ({s(a.get('relation', '?'), 60)}): не общались {a['days_since']} дней"
                 for a in rel_alerts
             )
 
@@ -255,5 +259,5 @@ class BriefingGenerator:
                 )
             return text
         except Exception as e:
-            logger.error("Diary generation failed: %s", e)
+            logger.error("Diary generation failed: %s", type(e).__name__)
             return None

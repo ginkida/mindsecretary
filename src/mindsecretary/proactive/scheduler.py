@@ -162,7 +162,7 @@ class ProactiveScheduler:
             if sent:
                 logger.info("Sent %d reminders", sent)
         except Exception as e:
-            logger.error("Reminder check failed: %s", e)
+            logger.error("Reminder check failed: %s", type(e).__name__)
 
     async def _check_birthdays(self):
         """Daily birthday alert with 7-day dedup per contact."""
@@ -183,7 +183,7 @@ class ProactiveScheduler:
                 if await self._send_proactive(text, kind="birthday_alert"):
                     self.db.mark_birthday_alerted(c["id"])
         except Exception as e:
-            logger.error("Birthday check failed: %s", e)
+            logger.error("Birthday check failed: %s", type(e).__name__)
 
     async def _check_weather(self):
         """Alert on new rain hours appearing in the forecast."""
@@ -210,7 +210,7 @@ class ProactiveScheduler:
                     kind="weather_alert",
                 )
         except Exception as e:
-            logger.error("Weather check failed: %s", e)
+            logger.error("Weather check failed: %s", type(e).__name__)
 
     async def _morning_prompt(self):
         try:
@@ -225,7 +225,7 @@ class ProactiveScheduler:
                 kind="morning_briefing",
             )
         except Exception as e:
-            logger.error("Morning prompt failed: %s", e)
+            logger.error("Morning prompt failed: %s", type(e).__name__)
             await self._send_proactive(
                 "☀️ Доброе утро! (брифинг не удался — расскажи сам, что в планах)",
                 kind="morning_briefing",
@@ -240,7 +240,7 @@ class ProactiveScheduler:
             if text:
                 await self._send_proactive(text, kind="smart_question")
         except Exception as e:
-            logger.error("Smart question failed: %s", e)
+            logger.error("Smart question failed: %s", type(e).__name__)
 
     async def _check_decision_followups(self):
         """Check decisions due for follow-up. Push follow_up_at +14 days after sending
@@ -260,7 +260,7 @@ class ProactiveScheduler:
                     self.db.push_decision_followup(d["id"], days=14)
                     logger.info("Decision follow-up sent: %s", d["id"])
         except Exception as e:
-            logger.error("Decision follow-up failed: %s", e)
+            logger.error("Decision follow-up failed: %s", type(e).__name__)
 
     async def _evening_prompt(self):
         """Evening: summary + diary entry."""
@@ -285,7 +285,7 @@ class ProactiveScheduler:
                 kind="evening_summary",
             )
         except Exception as e:
-            logger.error("Evening prompt failed: %s", e)
+            logger.error("Evening prompt failed: %s", type(e).__name__)
             await self._send_proactive(
                 "🌙 Вечерний обзор не удался. Расскажи сам — что было важного?",
                 kind="evening_summary",
@@ -301,4 +301,4 @@ class ProactiveScheduler:
                 await self._send_proactive(text, kind="weekly_review")
                 logger.info("Weekly review sent.")
         except Exception as e:
-            logger.error("Weekly review failed: %s", e)
+            logger.error("Weekly review failed: %s", type(e).__name__)

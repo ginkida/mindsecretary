@@ -13,6 +13,7 @@ from . import DAYS_RU, tz_now
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
+from .prompt_safety import sanitize_for_context
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class Brain:
                     max_tokens=self.settings.max_tokens,
                 )
             except Exception as e:
-                logger.error("LLM call failed on round %d: %s", _round, e)
+                logger.error("LLM call failed on round %d: %s", _round, type(e).__name__)
                 if not final_text:
                     final_text = "Ошибка при обращении к LLM. Попробуй ещё раз."
                 break
@@ -121,29 +122,9 @@ class Brain:
             total_tokens=total_tokens,
         )
 
-    @staticmethod
-    def _sanitize_for_context(text: str, max_len: int = 500) -> str:
-        """Sanitize user-origin text before injecting into system prompt.
-
-        Mitigates prompt injection by stripping instruction-like patterns.
-        """
-        text = text[:max_len]
-        for prefix in (
-            # English
-            "## ", "# ", "System:", "SYSTEM:", "Instructions:",
-            "You are", "You must", "Ignore previous", "Forget",
-            "Assistant:", "Human:", "<system>", "</system>",
-            # Russian
-            "Системная инструкция", "Инструкция:", "Ты должен",
-            "Забудь предыдущие", "Забудь всё", "Игнорируй",
-            "Новая роль", "Новая задача", "Ты теперь",
-        ):
-            text = text.replace(prefix, f"[{prefix.strip()}]")
-        return text
-
     async def _build_system_prompt(self, user_message: str) -> str:
         now = tz_now(self.profile.timezone)
-        s = self._sanitize_for_context
+        s = sanitize_for_context
 
         return MAIN_SYSTEM_PROMPT.format(
             name=self.profile.name,
@@ -198,7 +179,7 @@ class Brain:
                 f"{m['date'][-5:]}: {m['label']}" for m in trend
             ) or "Нет данных."
         except Exception as e:
-            logger.warning("Section mood_trend failed: %s", e)
+            logger.warning("Section mood_trend failed: %s", type(e).__name__)
             return "Нет данных."
 
     def _section_theme_clusters(self, s) -> str:
@@ -208,7 +189,7 @@ class Brain:
                 f"{s(c['label'], 60)} ({c['count']})" for c in clusters
             ) or "Нет заметных тем."
         except Exception as e:
-            logger.warning("Section theme_clusters failed: %s", e)
+            logger.warning("Section theme_clusters failed: %s", type(e).__name__)
             return "Нет данных."
 
     def _section_quiet_contacts(self, s) -> str:
@@ -226,7 +207,7 @@ class Brain:
                 for a in filtered
             ) or "Нет тревог."
         except Exception as e:
-            logger.warning("Section quiet_contacts failed: %s", e)
+            logger.warning("Section quiet_contacts failed: %s", type(e).__name__)
             return "Нет данных."
 
     def _section_goals(self, s) -> str:
@@ -245,7 +226,7 @@ class Brain:
                 lines.append(line)
             return "\n".join(lines)
         except Exception as e:
-            logger.warning("Section goals failed: %s", e)
+            logger.warning("Section goals failed: %s", type(e).__name__)
             return "Нет данных."
 
     def _section_birthdays(self, now: datetime, s) -> str:
@@ -265,7 +246,7 @@ class Brain:
                     lines.append(f"- {bday}: {name}{rel_str}")
             return "\n".join(lines) or "Нет ближайших."
         except Exception as e:
-            logger.warning("Section birthdays failed: %s", e)
+            logger.warning("Section birthdays failed: %s", type(e).__name__)
             return "Нет данных."
 
     @staticmethod
