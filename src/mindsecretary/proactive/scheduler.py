@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -9,6 +9,7 @@ from ..core import tz_now
 from ..core.config import Profile, Settings
 from ..core.database import Database
 from ..integrations.weather import WeatherClient
+from ..learning.mood import check_contact_frequency
 from .monitor import check_reminders
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,61 @@ class ProactiveScheduler:
         except Exception as e:
             logger.error("Proactive send failed: %s", type(e).__name__)
             return False
+
+    def _build_action_nudge(self) -> str | None:
+        """Build a concrete midday nudge from open loops and stale follow-ups."""
+        loops = self.db.get_open_loops(days_ahead=2, limit_per_section=3)
+        counts = loops.get("counts", {})
+        lines: list[str] = []
+        quiet_days = self.settings.quiet_contact_days
+        if not isinstance(quiet_days, int):
+            quiet_days = 30
+        quiet_mentions = self.settings.quiet_contact_min_mentions
+        if not isinstance(quiet_mentions, int):
+            quiet_mentions = 3
+
+        if counts.get("overdue_reminders"):
+            first = loops["overdue_reminders"][0]
+            lines.append(
+                f"Просрочено {counts['overdue_reminders']} напоминаний. "
+                f"Ближайшее: {first['text'][:80]}"
+            )
+
+        if loops.get("upcoming_events"):
+            first_event = loops["upcoming_events"][0]
+            lines.append(
+                f"Ближайшее событие: {first_event['start_at'][11:16]} "
+                f"{first_event['title'][:80]}"
+            )
+
+        if counts.get("pending_goals"):
+            lines.append(f"На сегодня ещё открыто целей: {counts['pending_goals']}")
+
+        if counts.get("due_decisions"):
+            first_decision = loops["due_decisions"][0]
+            lines.append(
+                f"Нужно закрыть follow-up по решению: "
+                f"{first_decision['description'][:90]}"
+            )
+
+        try:
+            alerts = check_contact_frequency(self.db)
+            filtered = [
+                a for a in alerts
+                if a.get("days_since", 0) > quiet_days
+                and a.get("mention_count", 0) >= quiet_mentions
+            ]
+            if filtered:
+                first = filtered[0]
+                lines.append(
+                    f"Тихий контакт: {first['name']} — не общались {first['days_since']} дней"
+                )
+        except Exception:
+            pass
+
+        if not lines:
+            return None
+        return "⚠️ На контроле:\n" + "\n".join(f"- {line}" for line in lines[:4])
 
     # --- Scheduler lifecycle ---
 
@@ -239,9 +295,41 @@ class ProactiveScheduler:
                 kind="morning_briefing",
             )
 
+    def _get_last_nudge(self) -> datetime | None:
+        pref = self.db.get_preference("action_nudge_last_sent")
+        if pref:
+            try:
+                return datetime.fromisoformat(pref["value"])
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def _set_last_nudge(self):
+        self.db.set_preference(
+            "action_nudge_last_sent",
+            datetime.now().isoformat(),
+            confidence=1.0, source="system",
+        )
+
     async def _smart_question(self):
-        """Midday: ask one targeted question to fill knowledge gaps."""
+        """Midday: action nudge (22h cooldown) or fallback smart question.
+
+        Without the cooldown, _build_action_nudge fires every midday (open
+        goals / upcoming events almost always exist) and smart_question is
+        never reached.
+        """
         try:
+            last_nudge = self._get_last_nudge()
+            nudge_on_cooldown = (
+                last_nudge is not None
+                and datetime.now() - last_nudge < timedelta(hours=22)
+            )
+            if not nudge_on_cooldown:
+                nudge = self._build_action_nudge()
+                if nudge:
+                    await self._send_proactive(nudge, kind="open_loops_nudge")
+                    self._set_last_nudge()
+                    return
             if not self.smart_questions:
                 return
             text = await self.smart_questions.generate_question()

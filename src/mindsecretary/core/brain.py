@@ -43,7 +43,7 @@ class Brain:
     async def process(self, user_message: str, message_type: str = "text",
                       metadata: dict | None = None,
                       image_base64: str | None = None) -> BrainResponse:
-        self.db.log_interaction(
+        interaction_id = self.db.log_interaction(
             direction="in",
             message_type=message_type,
             content=user_message,
@@ -67,7 +67,7 @@ class Brain:
             )
             return BrainResponse(text=msg, tool_calls_made=0, total_tokens=0)
 
-        system_prompt = await self._build_system_prompt(user_message)
+        system_prompt = await self._build_system_prompt(user_message, message_type)
 
         # Build user message — text or multimodal (text + image)
         if image_base64:
@@ -83,6 +83,11 @@ class Brain:
         total_tools = 0
         total_tokens = 0
         final_text = ""
+        request_context = {
+            "source_type": message_type,
+            "source_ref": interaction_id,
+            "metadata": metadata or {},
+        }
 
         for _round in range(self.settings.max_tool_rounds):
             try:
@@ -126,7 +131,9 @@ class Brain:
             # Execute each tool and append result
             for tc in response.tool_calls:
                 total_tools += 1
-                result = await self.tool_executor.execute(tc["name"], tc["arguments"])
+                result = await self.tool_executor.execute(
+                    tc["name"], tc["arguments"], request_context=request_context,
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.get("id", f"call_{tc['name']}"),
@@ -150,7 +157,16 @@ class Brain:
             total_tokens=total_tokens,
         )
 
-    async def _build_system_prompt(self, user_message: str) -> str:
+    @staticmethod
+    def _input_channel_hint(message_type: str) -> str:
+        return {
+            "text": "Обычный текстовый запрос.",
+            "voice": "Расшифровка голосового. Это inbox capture: извлекай факты, договорённости, задачи и даты.",
+            "photo": "Фото/скрин/документ. Это inbox capture: извлекай задачи, даты, контакты, суммы и ключевые детали с изображения.",
+            "forward": "Пересланное сообщение. Это inbox capture: извлекай action items, follow-ups, события, обещания и людей.",
+        }.get(message_type, f"Тип сообщения: {message_type}")
+
+    async def _build_system_prompt(self, user_message: str, message_type: str) -> str:
         now = tz_now(self.profile.timezone)
         s = sanitize_for_context
 
@@ -169,6 +185,7 @@ class Brain:
             theme_clusters=self._section_theme_clusters(s),
             quiet_contacts=self._section_quiet_contacts(s),
             birthdays=self._section_birthdays(now, s),
+            input_channel=self._input_channel_hint(message_type),
             style=self.profile.style,
         )
 

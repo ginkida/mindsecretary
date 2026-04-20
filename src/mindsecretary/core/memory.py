@@ -35,6 +35,9 @@ class Memory:
                 importance INTEGER DEFAULT 5,
                 related_person TEXT,
                 related_date TEXT,
+                source_type TEXT,
+                source_ref TEXT,
+                confidence REAL DEFAULT 1.0,
                 status TEXT DEFAULT 'active',
                 created_at TEXT DEFAULT (datetime('now')),
                 last_accessed TEXT
@@ -43,7 +46,26 @@ class Memory:
             CREATE INDEX IF NOT EXISTS idx_mem_status ON memories(status);
             CREATE INDEX IF NOT EXISTS idx_mem_person ON memories(related_person);
         """)
+        self._run_migrations()
         self.db.commit()
+
+    def _run_migrations(self):
+        """Idempotent column additions. Narrow exception to 'duplicate column'
+        so we don't silently swallow real DB errors (locked, I/O, etc)."""
+        migrations = [
+            "ALTER TABLE memories ADD COLUMN source_type TEXT",
+            "ALTER TABLE memories ADD COLUMN source_ref TEXT",
+            "ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
+            "CREATE INDEX IF NOT EXISTS idx_mem_source_ref ON memories(source_ref)",
+        ]
+        for sql in migrations:
+            try:
+                self.db.execute(sql)
+            except sqlite3.OperationalError as e:
+                # Expected on re-run for ALTER (column already exists).
+                # CREATE INDEX IF NOT EXISTS is truly idempotent, won't raise.
+                if "duplicate column" not in str(e).lower():
+                    raise
 
     async def _embed(self, texts: list[str]) -> list[np.ndarray]:
         result = await asyncio.to_thread(
@@ -61,7 +83,10 @@ class Memory:
 
     async def save(self, content: str, category: str, importance: int = 5,
                    related_person: str | None = None,
-                   related_date: str | None = None) -> str:
+                   related_date: str | None = None,
+                   source_type: str | None = None,
+                   source_ref: str | None = None,
+                   confidence: float = 1.0) -> str:
         memory_id = uuid.uuid4().hex[:8]
         embed_failed = False
         try:
@@ -77,10 +102,13 @@ class Memory:
             dup = self._find_duplicate(embedding, category)
             if dup:
                 new_imp = max(importance, dup["importance"])
+                new_conf = max(float(dup.get("confidence") or 0), confidence)
                 self.db.execute(
-                    "UPDATE memories SET importance = ?, last_accessed = datetime('now') "
-                    "WHERE id = ?",
-                    (new_imp, dup["id"]),
+                    "UPDATE memories SET importance = ?, confidence = ?, "
+                    "source_type = COALESCE(source_type, ?), "
+                    "source_ref = COALESCE(source_ref, ?), "
+                    "last_accessed = datetime('now') WHERE id = ?",
+                    (new_imp, new_conf, source_type, source_ref, dup["id"]),
                 )
                 self.db.commit()
                 logger.info("Memory dedup: updated %s instead of creating new", dup["id"])
@@ -92,9 +120,10 @@ class Memory:
         status = "embed_failed" if embed_failed else "active"
         self.db.execute(
             "INSERT INTO memories (id, content, embedding, category, importance, "
-            "related_person, related_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "related_person, related_date, source_type, source_ref, confidence, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (memory_id, content, embedding.tobytes(), category, importance,
-             related_person, related_date, status),
+             related_person, related_date, source_type, source_ref, confidence, status),
         )
         self.db.commit()
         return memory_id
@@ -102,7 +131,7 @@ class Memory:
     def _find_duplicate(self, embedding: np.ndarray, category: str) -> dict | None:
         """Find an existing memory with very high cosine similarity."""
         rows = self.db.execute(
-            "SELECT id, embedding, importance FROM memories "
+            "SELECT id, embedding, importance, confidence FROM memories "
             "WHERE status = 'active' AND category = ?",
             (category,),
         ).fetchall()
@@ -121,8 +150,19 @@ class Memory:
         best_idx = int(np.argmax(sims))
         if sims[best_idx] >= self._DEDUP_THRESHOLD:
             return {"id": rows[best_idx]["id"],
-                    "importance": rows[best_idx]["importance"]}
+                    "importance": rows[best_idx]["importance"],
+                    "confidence": rows[best_idx]["confidence"]}
         return None
+
+    @staticmethod
+    def _match_reason(score: float) -> str:
+        if score >= 0.85:
+            return "почти точное совпадение по смыслу"
+        if score >= 0.65:
+            return "сильное смысловое совпадение"
+        if score >= 0.45:
+            return "похожая тема"
+        return "поднято важностью и общим контекстом"
 
     async def search(self, query: str, top_k: int = 8,
                      category: str | None = None,
@@ -144,7 +184,8 @@ class Memory:
 
         rows = self.db.execute(
             f"SELECT id, content, embedding, category, importance, "
-            f"related_person, related_date, created_at, last_accessed "
+            f"related_person, related_date, source_type, source_ref, confidence, "
+            f"created_at, last_accessed "
             f"FROM memories {where}",
             params,
         ).fetchall()
@@ -199,8 +240,13 @@ class Memory:
                 "importance": row["importance"],
                 "related_person": row["related_person"],
                 "related_date": row["related_date"],
+                "source_type": row["source_type"],
+                "source_ref": row["source_ref"],
+                "confidence": float(row["confidence"] or 0.0),
                 "created_at": row["created_at"],
+                "last_accessed": row["last_accessed"],
                 "final_score": float(final_scores[idx]),
+                "match_reason": self._match_reason(float(cosine_scores[idx])),
             })
 
         if top:
@@ -215,9 +261,24 @@ class Memory:
 
         return top
 
+    def list_recent(self, limit: int = 8, category: str | None = None) -> list[dict]:
+        where = "WHERE status = 'active'"
+        params: list = []
+        if category:
+            where += " AND category = ?"
+            params.append(category)
+        rows = self.db.execute(
+            f"SELECT id, content, category, importance, related_person, related_date, "
+            f"source_type, source_ref, confidence, created_at, last_accessed "
+            f"FROM memories {where} ORDER BY created_at DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_by_category(self, category: str) -> list[dict]:
         rows = self.db.execute(
-            "SELECT id, content, category, importance, related_person, related_date "
+            "SELECT id, content, category, importance, related_person, related_date, "
+            "source_type, source_ref, confidence, created_at, last_accessed "
             "FROM memories WHERE category = ? AND status = 'active' "
             "ORDER BY importance DESC",
             (category,),

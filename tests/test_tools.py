@@ -86,3 +86,11 @@ class TestSanitizeArgs:
             "importance": 5,
         })
         assert len(args["content"]) == 5000
+
+    def test_get_recent_memories_limit_clamped(self):
+        args = _sanitize_args("get_recent_memories", {"limit": 50})
+        assert args["limit"] == 10
+
+    def test_get_open_loops_days_clamped(self):
+        args = _sanitize_args("get_open_loops", {"days_ahead": 99})
+        assert args["days_ahead"] == 7

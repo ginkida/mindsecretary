@@ -69,6 +69,27 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_recent_memories",
+        "description": (
+            "Показать недавние воспоминания с источником, уверенностью и временем. "
+            "Используй если пользователь спрашивает что ты помнишь или почему."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "contact", "health", "work", "personal",
+                        "promise", "preference", "location", "learning",
+                        "emotional",
+                    ],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+            },
+        },
+    },
+    {
         "name": "create_event",
         "description": "Создать событие в календаре.",
         "input_schema": {
@@ -138,6 +159,19 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
+        },
+    },
+    {
+        "name": "get_open_loops",
+        "description": (
+            "Получить незакрытые хвосты: просроченные напоминания, цели, решения, "
+            "ближайшие события. Используй если пользователь спрашивает что висит или на контроле."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {"type": "integer", "minimum": 1, "maximum": 7},
+            },
         },
     },
     {
@@ -300,6 +334,12 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         imp = clean.get("importance", 5)
         clean["importance"] = max(1, min(10, int(imp)))
 
+    if name == "get_recent_memories":
+        clean["limit"] = max(1, min(10, int(clean.get("limit", 5))))
+
+    if name == "get_open_loops":
+        clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
+
     if name in ("create_event", "create_reminder"):
         priority = clean.get("priority", "medium")
         if priority not in VALID_PRIORITIES:
@@ -329,14 +369,78 @@ class ToolExecutor:
         self.memory = memory
         self.weather = weather
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+    @staticmethod
+    def _default_memory_confidence(request_context: dict[str, Any] | None) -> float:
+        source_type = (request_context or {}).get("source_type")
+        return {
+            "text": 0.95,
+            "forward": 0.9,
+            "voice": 0.82,
+            "photo": 0.78,
+        }.get(source_type, 0.9)
+
+    @staticmethod
+    def _format_memory_source(source_type: str | None, source_ref: str | None) -> str:
+        label = {
+            "text": "text",
+            "voice": "voice",
+            "photo": "photo",
+            "forward": "forward",
+        }.get(source_type or "", source_type or "unknown")
+        if source_ref:
+            return f"{label}#{source_ref[:8]}"
+        return label
+
+    @staticmethod
+    def _format_open_loops(snapshot: dict) -> str:
+        counts = snapshot.get("counts", {})
+        lines = [
+            f"Open loops: overdue_reminders={counts.get('overdue_reminders', 0)}, "
+            f"today_reminders={counts.get('due_today_reminders', 0)}, "
+            f"upcoming_events={counts.get('upcoming_events', 0)}, "
+            f"pending_goals={counts.get('pending_goals', 0)}, "
+            f"due_decisions={counts.get('due_decisions', 0)}",
+        ]
+
+        if snapshot.get("overdue_reminders"):
+            lines.append("Overdue reminders:")
+            lines.extend(
+                f"- {r['trigger_at']}: {r['text']}"
+                for r in snapshot["overdue_reminders"][:3]
+            )
+        if snapshot.get("upcoming_events"):
+            lines.append("Upcoming events:")
+            lines.extend(
+                f"- {e['start_at']}: {e['title']}"
+                for e in snapshot["upcoming_events"][:3]
+            )
+        if snapshot.get("pending_goals"):
+            lines.append("Pending goals today:")
+            lines.extend(
+                f"- {g['title']} ({g['priority']})"
+                for g in snapshot["pending_goals"][:3]
+            )
+        if snapshot.get("due_decisions"):
+            lines.append("Decision follow-ups due:")
+            lines.extend(
+                f"- {d['description'][:120]}"
+                for d in snapshot["due_decisions"][:3]
+            )
+
+        return "\n".join(lines)
+
+    async def execute(self, name: str, arguments: dict[str, Any],
+                      request_context: dict[str, Any] | None = None) -> str:
         handler = getattr(self, f"_handle_{name}", None)
         if handler is None:
             logger.warning("Unknown tool called: %s", name)
             return f"Unknown tool: {name}"
         try:
             safe_args = _sanitize_args(name, arguments)
-            result = handler(**safe_args)
+            if "request_context" in inspect.signature(handler).parameters:
+                result = handler(request_context=request_context, **safe_args)
+            else:
+                result = handler(**safe_args)
             # Support both sync and async handlers (weather is async)
             if inspect.isawaitable(result):
                 result = await result
@@ -348,9 +452,15 @@ class ToolExecutor:
 
     async def _handle_save_memory(self, content: str, category: str, importance: int,
                                   related_person: str | None = None,
-                                  related_date: str | None = None) -> str:
+                                  related_date: str | None = None,
+                                  request_context: dict[str, Any] | None = None) -> str:
+        source_type = (request_context or {}).get("source_type")
+        source_ref = (request_context or {}).get("source_ref")
         mid = await self.memory.save(content, category, importance,
-                                     related_person, related_date)
+                                     related_person, related_date,
+                                     source_type=source_type,
+                                     source_ref=source_ref,
+                                     confidence=self._default_memory_confidence(request_context))
         return f"Saved memory {mid}: {content[:60]}..."
 
     async def _handle_search_memory(self, query: str,
@@ -360,7 +470,26 @@ class ToolExecutor:
             return "Nothing found in memory."
         lines = []
         for r in results:
-            lines.append(f"- [{r['category']}] {r['content']} (score={r['final_score']:.2f})")
+            lines.append(
+                f"- [{r['category']}] {r['content']} "
+                f"(score={r['final_score']:.2f}, reason={r['match_reason']}, "
+                f"source={self._format_memory_source(r.get('source_type'), r.get('source_ref'))}, "
+                f"confidence={r.get('confidence', 0.0):.2f})"
+            )
+        return "\n".join(lines)
+
+    def _handle_get_recent_memories(self, category: str | None = None,
+                                    limit: int = 5) -> str:
+        memories = self.memory.list_recent(limit=limit, category=category)
+        if not memories:
+            return "No recent memories."
+        lines = []
+        for m in memories:
+            lines.append(
+                f"- [{m['category']}] {m['content']} "
+                f"(source={self._format_memory_source(m.get('source_type'), m.get('source_ref'))}, "
+                f"confidence={float(m.get('confidence') or 0.0):.2f}, created={m.get('created_at', '')})"
+            )
         return "\n".join(lines)
 
     def _handle_create_event(self, title: str, start_at: str,
@@ -413,6 +542,10 @@ class ToolExecutor:
                 parts.append(f"— {c['notes'][:80]}")
             lines.append(" ".join(parts))
         return "\n".join(lines)
+
+    def _handle_get_open_loops(self, days_ahead: int = 2) -> str:
+        snapshot = self.db.get_open_loops(days_ahead=days_ahead, limit_per_section=5)
+        return self._format_open_loops(snapshot)
 
     async def _handle_get_weather(self, date: str | None = None,
                                   days: int | None = None) -> str:

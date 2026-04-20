@@ -723,6 +723,82 @@ class Database:
         ).fetchone()
         return float(row[0])
 
+    def get_open_loops(self, days_ahead: int = 2, limit_per_section: int = 5) -> dict:
+        """Return a snapshot of open items that currently need attention."""
+        now = self._now()
+        now_sql = now.strftime(self._SQL_TS_FMT)
+        today = now.strftime("%Y-%m-%d")
+        horizon = (now + timedelta(days=max(1, days_ahead))).strftime("%Y-%m-%d")
+        end_of_today = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        end_of_today_sql = end_of_today.strftime(self._SQL_TS_FMT)
+
+        overdue_reminders = self.db.execute(
+            "SELECT id, text, trigger_at, priority FROM reminders "
+            "WHERE status = 'pending' AND trigger_at < ? "
+            "ORDER BY trigger_at LIMIT ?",
+            (now_sql, limit_per_section),
+        ).fetchall()
+        due_today_reminders = self.db.execute(
+            "SELECT id, text, trigger_at, priority FROM reminders "
+            "WHERE status = 'pending' AND trigger_at >= ? AND trigger_at <= ? "
+            "ORDER BY trigger_at LIMIT ?",
+            (now_sql, end_of_today_sql, limit_per_section),
+        ).fetchall()
+        upcoming_events = self.db.execute(
+            "SELECT id, title, start_at, related_person, location FROM events "
+            "WHERE start_at >= ? AND date(start_at) <= date(?) "
+            "ORDER BY start_at LIMIT ?",
+            (now_sql, horizon, limit_per_section),
+        ).fetchall()
+        pending_goals = self.db.execute(
+            "SELECT id, title, priority, status, reflection FROM daily_goals "
+            "WHERE date = ? AND status IN ('pending', 'partial') "
+            "ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at "
+            "LIMIT ?",
+            (today, limit_per_section),
+        ).fetchall()
+        due_decisions = self.db.execute(
+            "SELECT id, description, follow_up_at, created_at FROM decisions "
+            "WHERE status = 'pending' AND follow_up_at IS NOT NULL AND follow_up_at <= ? "
+            "ORDER BY follow_up_at LIMIT ?",
+            (now_sql, limit_per_section),
+        ).fetchall()
+
+        counts = {
+            "overdue_reminders": self.db.execute(
+                "SELECT COUNT(*) FROM reminders WHERE status = 'pending' AND trigger_at < ?",
+                (now_sql,),
+            ).fetchone()[0],
+            "due_today_reminders": self.db.execute(
+                "SELECT COUNT(*) FROM reminders "
+                "WHERE status = 'pending' AND trigger_at >= ? AND trigger_at <= ?",
+                (now_sql, end_of_today_sql),
+            ).fetchone()[0],
+            "upcoming_events": self.db.execute(
+                "SELECT COUNT(*) FROM events WHERE start_at >= ? AND date(start_at) <= date(?)",
+                (now_sql, horizon),
+            ).fetchone()[0],
+            "pending_goals": self.db.execute(
+                "SELECT COUNT(*) FROM daily_goals "
+                "WHERE date = ? AND status IN ('pending', 'partial')",
+                (today,),
+            ).fetchone()[0],
+            "due_decisions": self.db.execute(
+                "SELECT COUNT(*) FROM decisions "
+                "WHERE status = 'pending' AND follow_up_at IS NOT NULL AND follow_up_at <= ?",
+                (now_sql,),
+            ).fetchone()[0],
+        }
+
+        return {
+            "overdue_reminders": [dict(r) for r in overdue_reminders],
+            "due_today_reminders": [dict(r) for r in due_today_reminders],
+            "upcoming_events": [dict(r) for r in upcoming_events],
+            "pending_goals": [dict(r) for r in pending_goals],
+            "due_decisions": [dict(r) for r in due_decisions],
+            "counts": counts,
+        }
+
     def cleanup_old_data(self, days: int = 90) -> dict:
         """Delete interactions and api_costs older than `days`.
 

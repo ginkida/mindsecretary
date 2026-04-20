@@ -233,6 +233,24 @@ class TestCostBreaker:
         assert tmp_db.get_today_cost() > 0.0
 
 
+class TestOpenLoops:
+    def test_get_open_loops_collects_pending_items(self, tmp_db: Database):
+        now = datetime.now()
+        tmp_db.create_reminder("Overdue", (now - timedelta(hours=2)).strftime(SQL_TS_FMT))
+        tmp_db.create_reminder("Later today", (now + timedelta(hours=2)).strftime(SQL_TS_FMT))
+        tmp_db.create_event("Meeting", (now + timedelta(hours=3)).strftime(SQL_TS_FMT))
+        tmp_db.create_daily_goal("Finish doc", priority="high")
+        tmp_db.create_decision("Choose hosting", follow_up_days=0)
+
+        loops = tmp_db.get_open_loops(days_ahead=2, limit_per_section=5)
+
+        assert loops["counts"]["overdue_reminders"] >= 1
+        assert loops["counts"]["due_today_reminders"] >= 1
+        assert loops["counts"]["upcoming_events"] >= 1
+        assert loops["counts"]["pending_goals"] >= 1
+        assert loops["counts"]["due_decisions"] >= 1
+
+
 class TestCleanup:
     def test_cleanup_removes_old_rows(self, tmp_db: Database, raw_conn):
         old_ts = "2025-01-01 00:00:00"

@@ -27,6 +27,8 @@ def _make_scheduler(quiet_hours: list[str], notification_limit: int = 10):
     settings.birthday_alerts = False
     settings.reminder_check_minutes = 5
     settings.weather_check_minutes = 60
+    settings.quiet_contact_days = 30
+    settings.quiet_contact_min_mentions = 3
 
     db = MagicMock()
     send_fn = MagicMock()
@@ -102,3 +104,26 @@ class TestInQuietHours:
     def test_no_quiet_hours_always_off(self):
         s = _make_scheduler([])
         assert s._in_quiet_hours() is False
+
+
+class TestActionNudge:
+    def test_builds_nudge_from_open_loops(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.get_open_loops.return_value = {
+            "counts": {
+                "overdue_reminders": 1,
+                "due_today_reminders": 0,
+                "upcoming_events": 1,
+                "pending_goals": 2,
+                "due_decisions": 1,
+            },
+            "overdue_reminders": [{"text": "Call Mom", "trigger_at": "2026-04-15 09:00:00"}],
+            "upcoming_events": [{"title": "Standup", "start_at": "2026-04-15 10:00:00"}],
+            "pending_goals": [{"title": "Write report", "priority": "high"}],
+            "due_decisions": [{"description": "Choose hosting provider"}],
+        }
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency", return_value=[]):
+            text = s._build_action_nudge()
+        assert text is not None
+        assert "На контроле" in text
+        assert "Call Mom" in text

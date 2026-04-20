@@ -65,6 +65,9 @@ def brain_env(tmp_path: Path):
             importance INTEGER DEFAULT 5,
             related_person TEXT,
             related_date TEXT,
+            source_type TEXT,
+            source_ref TEXT,
+            confidence REAL DEFAULT 1.0,
             status TEXT DEFAULT 'active',
             created_at TEXT DEFAULT (datetime('now')),
             last_accessed TEXT
@@ -249,6 +252,41 @@ class TestBrainProcess:
         stats = db.get_stats()
         assert stats["today_tokens"] == 1500
         assert stats["today_cost"] > 0
+
+    @pytest.mark.asyncio
+    async def test_save_memory_captures_source_metadata(self, brain_env):
+        """Saved memories should retain the source channel and interaction ref."""
+        brain, mock_client, db = brain_env
+
+        mock_client.chat.side_effect = [
+            LLMResponse(
+                text="",
+                tool_calls=[{
+                    "id": "call_1",
+                    "name": "save_memory",
+                    "arguments": {
+                        "content": "User promised to send the deck tomorrow",
+                        "category": "promise",
+                        "importance": 8,
+                    },
+                }],
+                usage={"input_tokens": 100, "output_tokens": 30},
+            ),
+            LLMResponse(
+                text="Запомнил.",
+                tool_calls=[],
+                usage={"input_tokens": 120, "output_tokens": 10},
+            ),
+        ]
+
+        await brain.process("Я завтра скину деку", message_type="forward")
+
+        row = db.db.execute(
+            "SELECT source_type, source_ref, confidence FROM memories ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert row["source_type"] == "forward"
+        assert row["source_ref"]
+        assert row["confidence"] > 0
 
 
 class TestCostBreaker:

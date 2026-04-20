@@ -25,6 +25,26 @@ class BriefingGenerator:
         self.weather = weather
         self.profile = profile
 
+    @staticmethod
+    def _format_open_loops(snapshot: dict) -> str:
+        counts = snapshot.get("counts", {})
+        lines = []
+        if counts.get("overdue_reminders"):
+            lines.append(f"- Просроченные напоминания: {counts['overdue_reminders']}")
+        if counts.get("due_today_reminders"):
+            lines.append(f"- Напоминания до конца дня: {counts['due_today_reminders']}")
+        if counts.get("pending_goals"):
+            lines.append(f"- Незакрытые цели на сегодня: {counts['pending_goals']}")
+        if counts.get("due_decisions"):
+            lines.append(f"- Решения с просроченным follow-up: {counts['due_decisions']}")
+        if snapshot.get("upcoming_events"):
+            first = snapshot["upcoming_events"][0]
+            # Event title is user-controlled → sanitize before it lands in the
+            # briefing system prompt, matching the pattern used elsewhere.
+            title = sanitize_for_context(first.get("title") or "", 200)
+            lines.append(f"- Ближайшее событие: {first['start_at'][11:16]} {title}")
+        return "\n".join(lines) or "Критичных хвостов нет."
+
     async def generate_morning(self) -> str | None:
         """Generate morning briefing text."""
         now = tz_now(self.profile.timezone)
@@ -71,6 +91,8 @@ class BriefingGenerator:
         promises_text = "\n".join(
             f"- {s(m['content'])}" for m in promises
         ) or "Нет незакрытых обещаний."
+        open_loops = self.db.get_open_loops(days_ahead=2, limit_per_section=3)
+        open_loops_text = self._format_open_loops(open_loops)
 
         prompt = BRIEFING_SYSTEM_PROMPT.format(
             name=self.profile.name,
@@ -83,6 +105,7 @@ class BriefingGenerator:
             birthdays=birthdays_text,
             reminders=reminders_text,
             promises=promises_text,
+            open_loops=open_loops_text,
             memories=memories_text,
         )
 

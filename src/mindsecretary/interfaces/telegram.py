@@ -22,6 +22,7 @@ from telegram.ext import (
 
 from ..core.brain import Brain
 from ..core.enums import Feedback
+from ..learning.mood import check_contact_frequency
 from ..voice.stt import GroqSTT
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,33 @@ def _split_message(text: str, limit: int = TG_MSG_LIMIT) -> list[str]:
         parts.append(text[:idx])
         text = text[idx:].lstrip("\n")
     return parts
+
+
+def _memory_source_label(source_type: str | None, source_ref: str | None) -> str:
+    label = {
+        "text": "текст",
+        "voice": "голос",
+        "photo": "фото",
+        "forward": "пересылка",
+    }.get(source_type or "", source_type or "неизвестно")
+    if source_ref:
+        return f"{label} #{source_ref[:8]}"
+    return label
+
+
+def _format_memory_line(memory: dict, include_match: bool = False) -> str:
+    lines = [f"• [{memory['category']}] {memory['content'][:220]}"]
+    if include_match:
+        lines.append(
+            f"  why: {memory.get('match_reason', 'совпадение по смыслу')}, "
+            f"score {memory.get('final_score', memory.get('score', 0.0)):.2f}"
+        )
+    lines.append(
+        f"  source: {_memory_source_label(memory.get('source_type'), memory.get('source_ref'))}, "
+        f"confidence {float(memory.get('confidence') or 0.0):.2f}, "
+        f"created {str(memory.get('created_at') or '')[:16]}"
+    )
+    return "\n".join(lines)
 
 
 class TelegramBot:
@@ -150,6 +178,8 @@ class TelegramBot:
             "/goals — цели на сегодня\n"
             "/habits — привычки и streaks\n"
             "/search — поиск по памяти\n"
+            "/memory — что именно и почему я помню\n"
+            "/loops — что сейчас висит и на контроле\n"
             "/undo — восстановить удалённое\n"
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
@@ -284,6 +314,99 @@ class TelegramBot:
         except Exception:
             await update.message.reply_text(text)
 
+    async def _handle_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        query = " ".join(context.args) if context.args else ""
+        if len(query) > 500:
+            await update.message.reply_text("Слишком длинный запрос (макс 500 символов).")
+            return
+
+        if query:
+            memories = await self.brain.memory.search(query, top_k=6)
+            if not memories:
+                await update.message.reply_text("По этому запросу память пуста.")
+                return
+            lines = ["🧠 *Что помню по запросу*\n"]
+            lines.extend(_format_memory_line(m, include_match=True) for m in memories)
+        else:
+            memories = self.brain.memory.list_recent(limit=8)
+            if not memories:
+                await update.message.reply_text("Память пока пуста.")
+                return
+            lines = ["🧠 *Недавняя память*\n"]
+            lines.extend(_format_memory_line(m) for m in memories)
+
+        text = "\n".join(lines)
+        for part in _split_message(text):
+            try:
+                await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(part)
+
+    async def _handle_loops(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        loops = self.brain.db.get_open_loops(days_ahead=2, limit_per_section=5)
+        promises = self.brain.memory.get_by_category("promise")[:3]
+        contact_alerts = [
+            a for a in check_contact_frequency(self.brain.db)
+            if a.get("days_since", 0) > self.brain.settings.quiet_contact_days
+            and a.get("mention_count", 0) >= self.brain.settings.quiet_contact_min_mentions
+        ][:3]
+
+        counts = loops.get("counts", {})
+        lines = [
+            "📌 *Открытые хвосты*\n",
+            f"Напоминания просрочены: {counts.get('overdue_reminders', 0)}",
+            f"До конца дня: {counts.get('due_today_reminders', 0)}",
+            f"События впереди: {counts.get('upcoming_events', 0)}",
+            f"Цели на сегодня открыты: {counts.get('pending_goals', 0)}",
+            f"Решения с follow-up: {counts.get('due_decisions', 0)}",
+        ]
+
+        if loops.get("overdue_reminders"):
+            lines.append("\n⏰ Просроченные:")
+            lines.extend(
+                f"• {r['trigger_at'][5:16]} — {r['text'][:140]}"
+                for r in loops["overdue_reminders"]
+            )
+        if loops.get("upcoming_events"):
+            lines.append("\n📅 Ближайшие события:")
+            lines.extend(
+                f"• {e['start_at'][5:16]} — {e['title'][:140]}"
+                + (f" ({e['related_person']})" if e.get("related_person") else "")
+                for e in loops["upcoming_events"]
+            )
+        if loops.get("pending_goals"):
+            lines.append("\n🎯 Незакрытые цели:")
+            lines.extend(
+                f"• {g['title'][:140]} [{g['priority']}]"
+                for g in loops["pending_goals"]
+            )
+        if loops.get("due_decisions"):
+            lines.append("\n📋 Follow-up по решениям:")
+            lines.extend(
+                f"• {d['description'][:140]}"
+                for d in loops["due_decisions"]
+            )
+        if promises:
+            lines.append("\n🤝 Обещания в памяти:")
+            lines.extend(f"• {p['content'][:140]}" for p in promises)
+        if contact_alerts:
+            lines.append("\n👥 Тихие контакты:")
+            lines.extend(
+                f"• {a['name']} — {a['days_since']} дней"
+                for a in contact_alerts
+            )
+
+        text = "\n".join(lines)
+        for part in _split_message(text):
+            try:
+                await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(part)
+
     async def _handle_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
@@ -336,7 +459,8 @@ class TelegramBot:
             "exported_at": datetime.now().isoformat(),
             "memories": db.db.execute(
                 "SELECT id, content, category, importance, related_person, "
-                "related_date, created_at FROM memories WHERE status = 'active' "
+                "related_date, source_type, source_ref, confidence, created_at "
+                "FROM memories WHERE status = 'active' "
                 "ORDER BY created_at DESC"
             ).fetchall(),
             "contacts": db.get_contacts(""),
@@ -538,7 +662,10 @@ class TelegramBot:
             await msg.reply_text("Фото слишком большое (макс 10 МБ).")
             return
 
-        caption = (msg.caption or "Что на этом фото?")[:MAX_TEXT_LENGTH]
+        caption = (
+            msg.caption
+            or "Разбери фото как inbox: извлеки факты, задачи, контакты, даты и важные детали."
+        )[:MAX_TEXT_LENGTH]
         await self._typing(update)
 
         try:
@@ -656,6 +783,8 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("people", self._handle_people))
         self.app.add_handler(CommandHandler("review", self._handle_review))
         self.app.add_handler(CommandHandler("search", self._handle_search))
+        self.app.add_handler(CommandHandler("memory", self._handle_memory))
+        self.app.add_handler(CommandHandler("loops", self._handle_loops))
         self.app.add_handler(CommandHandler("undo", self._handle_undo))
         self.app.add_handler(CommandHandler("forget", self._handle_forget))
         self.app.add_handler(CommandHandler("goals", self._handle_goals))

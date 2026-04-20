@@ -24,6 +24,9 @@ def tmp_db(tmp_path: Path) -> Database:
             importance INTEGER DEFAULT 5,
             related_person TEXT,
             related_date TEXT,
+            source_type TEXT,
+            source_ref TEXT,
+            confidence REAL DEFAULT 1.0,
             status TEXT DEFAULT 'active',
             created_at TEXT DEFAULT (datetime('now')),
             last_accessed TEXT
