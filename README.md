@@ -77,7 +77,6 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Data export** | `/export` sends all memories, contacts, diary, events as JSON file |
 | **Quiet hours** | Proactive messages respect `PROFILE_QUIET_HOURS` (reminders still fire) |
 | **Notification limit** | Daily cap via `PROFILE_NOTIFY_LIMIT` (default 10) |
-| **Feedback loop** | Thumbs up/down + 📌 pin on every response; used in weekly analysis |
 | **Notification awareness** | Shows count in `/start`; warns when approaching daily limit |
 
 ## Tech Stack

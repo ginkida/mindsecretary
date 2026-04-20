@@ -21,7 +21,6 @@ from telegram.ext import (
 )
 
 from ..core.brain import Brain
-from ..core.enums import Feedback
 from ..learning.mood import check_contact_frequency
 from ..voice.stt import GroqSTT
 
@@ -34,15 +33,6 @@ MAX_TEXT_LENGTH = 10_000
 MAX_TRANSCRIPT_LENGTH = 30_000
 DOWNLOAD_TIMEOUT = 30.0
 TG_MSG_LIMIT = 4096
-
-FEEDBACK_KB = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("👍", callback_data="fb_positive"),
-        InlineKeyboardButton("👎", callback_data="fb_negative"),
-        InlineKeyboardButton("📌", callback_data="pin"),
-    ]
-])
-
 
 def _fix_markdown(text: str) -> str:
     """Fix common Markdown issues that cause Telegram parse errors.
@@ -110,8 +100,6 @@ class TelegramBot:
         self.brain = brain
         self.stt = stt
         self.app: Application | None = None
-        # For feedback tracking: map message_id → interaction_id
-        self._reply_map: dict[int, str] = {}
         # Simple in-memory rate limit — protects against compromised Telegram
         # session spamming expensive (LLM-triggering) handlers.
         self._rate_limit_window: deque[float] = deque()
@@ -134,27 +122,16 @@ class TelegramBot:
         self._rate_limit_window.append(now)
         return True
 
-    async def _reply(self, update: Update, text: str, with_feedback: bool = True):
-        """Send reply with optional feedback buttons and message splitting."""
-        parts = _split_message(text)
-        for i, part in enumerate(parts):
-            kb = FEEDBACK_KB if (with_feedback and i == len(parts) - 1) else None
+    async def _reply(self, update: Update, text: str):
+        """Send reply with message splitting (no feedback UI — too noisy)."""
+        for part in _split_message(text):
             try:
-                sent = await update.message.reply_text(
-                    _fix_markdown(part), reply_markup=kb, parse_mode=ParseMode.MARKDOWN,
+                await update.message.reply_text(
+                    _fix_markdown(part), parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception:
                 # Fallback without markdown if parsing fails
-                sent = await update.message.reply_text(part, reply_markup=kb)
-            # Track last reply for feedback
-            if kb and sent:
-                interaction_id = self.brain.db.log_interaction(
-                    direction="out", message_type="reply_ref", content="",
-                )
-                if len(self._reply_map) >= 200:
-                    # Keep only the newest 100 entries (dict preserves insertion order)
-                    self._reply_map = dict(list(self._reply_map.items())[-100:])
-                self._reply_map[sent.message_id] = interaction_id
+                await update.message.reply_text(part)
 
     async def _typing(self, update: Update):
         """Show typing indicator."""
@@ -281,7 +258,7 @@ class TelegramBot:
         if scheduler and scheduler.weekly_reflection:
             text = await scheduler.weekly_reflection.generate_weekly_review()
             if text:
-                await self._reply(update, text, with_feedback=False)
+                await self._reply(update, text)
                 return
         await update.message.reply_text("Недостаточно данных для обзора.")
 
@@ -530,17 +507,6 @@ class TelegramBot:
 
     # --- Callback handlers ---
 
-    async def _handle_pin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer("📌")
-        if not self._check_user(update):
-            return
-        try:
-            await query.message.pin(disable_notification=True)
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            await query.answer("Не удалось закрепить", show_alert=True)
-
     async def _handle_forget_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -556,25 +522,6 @@ class TelegramBot:
             await query.edit_message_text(f"🗑 Удалено.")
         else:
             await query.edit_message_text("Ошибка: ID не найден.")
-
-    async def _handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        if not self._check_user(update):
-            return
-        msg_id = query.message.message_id
-        interaction_id = self._reply_map.get(msg_id)
-        if not interaction_id:
-            return
-        feedback = Feedback.POSITIVE if query.data == "fb_positive" else Feedback.NEGATIVE
-        self.brain.db.db.execute(
-            "UPDATE interactions SET feedback = ?, feedback_at = datetime('now') WHERE id = ?",
-            (feedback, interaction_id),
-        )
-        self.brain.db.db.commit()
-        emoji = "👍" if feedback == "positive" else "👎"
-        await query.edit_message_reply_markup(reply_markup=None)
-        logger.info("Feedback: %s for interaction %s", feedback, interaction_id)
 
     # --- Message handlers ---
 
@@ -791,9 +738,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
         self.app.add_handler(CommandHandler("export", self._handle_export))
 
-        # Feedback buttons
-        self.app.add_handler(CallbackQueryHandler(self._handle_pin, pattern="^pin$"))
-        self.app.add_handler(CallbackQueryHandler(self._handle_feedback, pattern="^fb_"))
+        # Confirmation callback for /forget
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))
 
         # Messages (order matters: forwarded first, then photo, voice, text)
