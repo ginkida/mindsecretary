@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
-"""Healthcheck: verify process is alive and DB is accessible."""
+"""Healthcheck: verify DB file exists and is queryable.
+
+In Docker the bot runs as PID 1 — if the process dies, the container dies
+and Docker's restart policy handles it. A `pgrep` liveness check is both
+redundant (PID 1 == the app) AND broken on `python:3.12-slim` (procps not
+installed). DB accessibility is the real signal: the app may be alive but
+unable to read/write if the volume is unmounted or the file is corrupted.
+"""
+import os
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
-DB_PATH = Path("/app/data/mindsecretary.db")
+_ROOT = Path(os.environ.get("MINDSECRETARY_ROOT", "/app"))
+DB_PATH = _ROOT / "data" / "mindsecretary.db"
 
 
 def main() -> int:
-    # Check main process is running
-    result = subprocess.run(
-        ["pgrep", "-f", "mindsecretary.app"],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        print("FAIL: mindsecretary process not running")
-        return 1
-
-    # Check database is accessible
     if not DB_PATH.exists():
-        print("FAIL: database file not found")
+        print(f"FAIL: database file not found at {DB_PATH}")
         return 1
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=3)
         conn.execute("SELECT 1 FROM memories LIMIT 1")
         conn.close()
     except Exception as e:
-        print(f"FAIL: database not accessible: {e}")
+        print(f"FAIL: database not accessible: {type(e).__name__}")
         return 1
-
     return 0
 
 
