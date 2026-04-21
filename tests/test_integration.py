@@ -376,3 +376,93 @@ class TestToolCap:
 
         result = await brain.process("save 15 facts")
         assert result.tool_calls_made == 10
+
+
+class TestImplicitState:
+    """Schedule-derived state from Profile.work_days / work_start / work_end."""
+
+    def _brain_at(self, brain_env, fake_now):
+        """Helper: monkey-patch Brain._implicit_state's `now` by calling directly."""
+        brain, _, _ = brain_env
+        return brain._implicit_state(fake_now)
+
+    def test_work_hour_on_workday_returns_at_work(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "09:30"
+        brain.profile.work_end = "18:30"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        # Tuesday 14:00
+        rows = brain._implicit_state(_dt(2026, 4, 21, 14, 0))
+        assert len(rows) == 1
+        assert rows[0]["key"] == "location"
+        assert rows[0]["value"] == "на работе"
+        assert rows[0]["source"] == "implicit"
+
+    def test_weekend_returns_empty(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        # Saturday
+        rows = brain._implicit_state(_dt(2026, 4, 25, 14, 0))
+        assert rows == []
+
+    def test_before_work_start_returns_empty(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "09:30"
+        brain.profile.work_end = "18:30"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        # Tuesday 08:00 — before work
+        rows = brain._implicit_state(_dt(2026, 4, 21, 8, 0))
+        assert rows == []
+
+    def test_after_work_end_returns_empty(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "09:30"
+        brain.profile.work_end = "18:30"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        # Tuesday 20:00 — after work
+        rows = brain._implicit_state(_dt(2026, 4, 21, 20, 0))
+        assert rows == []
+
+    def test_custom_work_days_includes_saturday(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "10:00"
+        brain.profile.work_end = "18:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5, 6]
+        # Saturday 12:00 — user works Saturdays too
+        rows = brain._implicit_state(_dt(2026, 4, 25, 12, 0))
+        assert len(rows) == 1
+        assert rows[0]["value"] == "на работе"
+
+    def test_malformed_work_start_returns_empty(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "not-a-time"
+        rows = brain._implicit_state(_dt(2026, 4, 21, 14, 0))
+        assert rows == []
+
+    def test_manual_state_overrides_implicit(self, brain_env):
+        brain, _, _ = brain_env
+        brain.profile.work_start = "09:00"
+        brain.profile.work_end = "18:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5, 6, 7]  # every day
+        # Set manual location=дома
+        brain.db.set_ephemeral_state("location", "дома (болею)", ttl_hours=24)
+        # _section_ephemeral_state should show manual, not implicit
+        s = brain._section_ephemeral_state(lambda v, _n=200: v)
+        assert "дома" in s
+        assert "на работе" not in s
+
+    def test_implicit_shown_when_no_manual(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "00:00"
+        brain.profile.work_end = "23:59"
+        brain.profile.work_days = [1, 2, 3, 4, 5, 6, 7]
+        s = brain._section_ephemeral_state(lambda v, _n=200: v)
+        assert "на работе" in s
+        assert "по расписанию" in s

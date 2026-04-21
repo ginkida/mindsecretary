@@ -67,6 +67,9 @@ class Profile:
     quiet_hours: list[str]
     priorities: list[str]
     dislikes: list[str]
+    # Work days (ISO weekday: Mon=1..Sun=7). Used with work_start/work_end
+    # to derive implicit "at work" ephemeral state during working hours.
+    work_days: list[int] = field(default_factory=lambda: [1, 2, 3, 4, 5])
 
     @classmethod
     def from_env(cls) -> Profile | None:
@@ -81,6 +84,12 @@ class Profile:
         prio_raw = os.environ.get("PROFILE_PRIORITIES", "здоровье,семья,работа,развитие")
         dislike_raw = os.environ.get("PROFILE_DISLIKES", "опаздывать,пустая болтовня,лишние уведомления")
         quiet_raw = os.environ.get("PROFILE_QUIET_HOURS", "23:00,07:00")
+        work_days_raw = os.environ.get("PROFILE_WORK_DAYS", "1,2,3,4,5")
+        try:
+            work_days = [int(x.strip()) for x in work_days_raw.split(",") if x.strip()]
+            work_days = [d for d in work_days if 1 <= d <= 7]
+        except ValueError:
+            work_days = [1, 2, 3, 4, 5]
         return cls(
             name=name,
             city=os.environ.get("PROFILE_CITY", "Москва"),
@@ -99,6 +108,7 @@ class Profile:
             quiet_hours=[h.strip() for h in quiet_raw.split(",")],
             priorities=[p.strip() for p in prio_raw.split(",")],
             dislikes=[d.strip() for d in dislike_raw.split(",")],
+            work_days=work_days or [1, 2, 3, 4, 5],
         )
 
     @classmethod
@@ -125,6 +135,7 @@ class Profile:
             quiet_hours=comm["quiet_hours"],
             priorities=raw.get("priorities", []),
             dislikes=raw.get("dislikes", []),
+            work_days=sched.get("work_days", [1, 2, 3, 4, 5]),
         )
 
     @classmethod

@@ -228,33 +228,65 @@ class Brain:
         "activity": "Сейчас",
     }
 
+    def _implicit_state(self, now: datetime) -> list[dict]:
+        """Schedule-derived state (work hours on work days → location=на работе).
+
+        Acts as a default baseline. Manual ephemeral state (set via LLM's
+        set_ephemeral_state tool) overrides implicit entries by key.
+        """
+        profile = self.profile
+        work_days = profile.work_days or [1, 2, 3, 4, 5]
+        if now.isoweekday() not in work_days:
+            return []
+        try:
+            sh, sm = map(int, profile.work_start.split(":"))
+            eh, em = map(int, profile.work_end.split(":"))
+        except (ValueError, AttributeError, TypeError):
+            return []
+        start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+        if not (start <= now <= end):
+            return []
+        return [{
+            "key": "location",
+            "value": "на работе",
+            "expires_at": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "source": "implicit",
+        }]
+
     def _section_ephemeral_state(self, s) -> str:
         """Format active ephemeral state rows for the system prompt.
 
-        Lazy cleanup of expired rows happens inside get_active_ephemeral_state.
-        Each row renders as "Label: value (до HH:MM)" if the TTL expires today,
-        else "(до MM-DD HH:MM)" for longer horizons.
+        Merges implicit (schedule-derived) + manual (set via tool) rows.
+        Manual entries win by key — "I'm at home today" overrides implicit
+        "на работе" during work hours. Lazy cleanup of expired manual rows
+        happens inside get_active_ephemeral_state.
         """
+        now = tz_now(self.profile.timezone)
         try:
-            rows = self.db.get_active_ephemeral_state()
+            manual = self.db.get_active_ephemeral_state()
         except Exception as e:
             logger.warning("Section ephemeral_state failed: %s", type(e).__name__)
-            return "Пусто."
+            manual = []
+        manual_keys = {r["key"] for r in manual}
+        implicit = [r for r in self._implicit_state(now) if r["key"] not in manual_keys]
+        rows = manual + implicit
         if not rows:
             return "Пусто."
-        now = tz_now(self.profile.timezone)
         today_date = now.strftime("%Y-%m-%d")
         lines = []
         for row in rows:
             label = self._EPHEMERAL_LABELS.get(row["key"], row["key"])
             value = s(row["value"], 150)
-            expires = row["expires_at"] or ""
+            expires = row.get("expires_at") or ""
             tail = ""
             if len(expires) >= 16:
                 if expires.startswith(today_date):
                     tail = f" (до {expires[11:16]})"
                 else:
                     tail = f" (до {expires[5:16]})"
+            if row.get("source") == "implicit":
+                tail += " · по расписанию" if tail else " (по расписанию)"
             lines.append(f"{label}: {value}{tail}")
         return "\n".join(lines)
 

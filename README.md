@@ -174,6 +174,7 @@ PROFILE_NAME=...               # Your name (required)
 | `PROFILE_WAKE_UP` | 07:00 | Morning briefing time |
 | `PROFILE_WORK_START` | 09:00 | Work start |
 | `PROFILE_WORK_END` | 18:00 | Work end |
+| `PROFILE_WORK_DAYS` | 1,2,3,4,5 | ISO weekdays you work (1=Mon..7=Sun). Used with work_start/end to auto-tell the bot you're at work. |
 | `PROFILE_SLEEP` | 23:00 | Sleep time |
 | `PROFILE_COMMUTE` | метро | Commute method |
 | `PROFILE_COMMUTE_MIN` | 45 | Commute minutes |

@@ -448,45 +448,63 @@ class TelegramBot:
         )
 
     async def _handle_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/context — show active ephemeral state. /context clear [key] — clear."""
+        """/context — show active ephemeral state (manual + schedule-derived)."""
         if not self._check_user(update):
             return
         args = [a.lower() for a in (context.args or [])]
         if args and args[0] == "clear":
             target_key = args[1] if len(args) > 1 else None
             n = self.brain.db.clear_ephemeral_state(target_key)
-            what = f"ключ '{target_key}'" if target_key else "весь контекст"
+            what = f"ключ '{target_key}'" if target_key else "весь ручной контекст"
             await update.message.reply_text(
-                f"🧹 Очищено ({what}, {n} {'запись' if n == 1 else 'записей'})."
+                f"🧹 Очищено ({what}, {n} {'запись' if n == 1 else 'записей'}). "
+                f"Расписание из профиля остаётся."
             )
             return
 
-        rows = self.brain.db.get_active_ephemeral_state()
-        if not rows:
+        from ..core import tz_now as _tz_now
+        now = _tz_now(self.brain.profile.timezone)
+        manual = self.brain.db.get_active_ephemeral_state()
+        manual_keys = {r["key"] for r in manual}
+        implicit = [
+            r for r in self.brain._implicit_state(now)
+            if r["key"] not in manual_keys
+        ]
+
+        if not manual and not implicit:
             await update.message.reply_text(
                 "Текущего контекста нет.\n\n"
                 "Это «здесь и сейчас»: где ты, что с тобой, занят ли. "
-                "Бот ставит сам, когда ты упоминаешь свою ситуацию."
+                "Бот ставит сам, когда ты упоминаешь свою ситуацию. "
+                "Расписание из профиля (рабочие часы) подставляется автоматически."
             )
             return
 
         labels = {
-            "location": "📍 Локация",
-            "health": "🩺 Здоровье",
-            "availability": "📅 Занят",
-            "energy": "⚡ Энергия",
-            "activity": "🎯 Сейчас",
+            "location": "Локация",
+            "health": "Здоровье",
+            "availability": "Занят",
+            "energy": "Энергия",
+            "activity": "Сейчас",
         }
         lines = ["🎯 *Текущий контекст*\n"]
-        for row in rows:
-            label = labels.get(row["key"], f"• {row['key']}")
+        for row in manual:
+            label = labels.get(row["key"], row["key"])
             expires = row["expires_at"] or ""
             tail = f" _(до {expires[11:16]})_" if len(expires) >= 16 else ""
-            lines.append(f"{label}: {row['value']}{tail}")
+            lines.append(f"📍 {label}: {row['value']}{tail}")
+        for row in implicit:
+            label = labels.get(row["key"], row["key"])
+            expires = row.get("expires_at") or ""
+            tail = f" _(до {expires[11:16]})_" if len(expires) >= 16 else ""
+            lines.append(f"⏰ {label}: {row['value']}{tail} _· по расписанию_")
         lines.append(
-            "\n_Команды: /context clear — сбросить всё, "
-            "/context clear <ключ> — один._"
+            "\n_📍 — ручное, меняется через разговор с ботом_"
         )
+        lines.append(
+            "_⏰ — из профиля (рабочие часы/дни), меняется в `config/profile.yaml`_"
+        )
+        lines.append("_/context clear — сбросить ручной контекст._")
         try:
             await update.message.reply_text(
                 _fix_markdown("\n".join(lines)), parse_mode=ParseMode.MARKDOWN,

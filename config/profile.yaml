@@ -9,6 +9,10 @@ schedule:
   wake_up: "07:00"
   work_start: "09:00"
   work_end: "18:00"
+  # ISO weekday: 1=Пн..7=Вс. Во время work_start..work_end на этих днях
+  # бот автоматически считает что ты "на работе" — это попадает в
+  # Текущий контекст системного промпта. Не надо писать каждое утро.
+  work_days: [1, 2, 3, 4, 5]
   sleep: "23:00"
   commute_method: "метро"
   commute_minutes: 45
