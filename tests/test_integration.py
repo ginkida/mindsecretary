@@ -466,3 +466,72 @@ class TestImplicitState:
         s = brain._section_ephemeral_state(lambda v, _n=200: v)
         assert "на работе" in s
         assert "по расписанию" in s
+
+    def test_out_of_range_hour_returns_empty(self, brain_env):
+        """work_start='25:00' must not crash — datetime.replace raises ValueError
+        for hour >= 24, and that used to escape the try block."""
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "25:00"
+        brain.profile.work_end = "18:30"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        rows = brain._implicit_state(_dt(2026, 4, 21, 14, 0))
+        assert rows == []
+        # And _section_ephemeral_state doesn't crash either
+        s = brain._section_ephemeral_state(lambda v, _n=200: v)
+        assert s == "Пусто."
+
+    def test_out_of_range_minute_returns_empty(self, brain_env):
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "09:99"
+        brain.profile.work_end = "18:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        assert brain._implicit_state(_dt(2026, 4, 21, 14, 0)) == []
+
+    def test_night_shift_evening(self, brain_env):
+        """22:00-06:00 shift, now is 23:00 Tuesday — should be at work."""
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "22:00"
+        brain.profile.work_end = "06:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        rows = brain._implicit_state(_dt(2026, 4, 21, 23, 0))
+        assert len(rows) == 1
+        assert rows[0]["value"] == "на работе"
+        # expires_at should roll to tomorrow 06:00
+        assert rows[0]["expires_at"].startswith("2026-04-22 06:00")
+
+    def test_night_shift_after_midnight(self, brain_env):
+        """22:00-06:00 shift, now is 03:00 — still at work."""
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "22:00"
+        brain.profile.work_end = "06:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        rows = brain._implicit_state(_dt(2026, 4, 22, 3, 0))
+        assert len(rows) == 1
+        # expires_at should be today 06:00 (end already rolled)
+        assert rows[0]["expires_at"].startswith("2026-04-22 06:00")
+
+    def test_night_shift_outside_window(self, brain_env):
+        """22:00-06:00 shift, now is 10:00 — off shift."""
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+        brain.profile.work_start = "22:00"
+        brain.profile.work_end = "06:00"
+        brain.profile.work_days = [1, 2, 3, 4, 5]
+        assert brain._implicit_state(_dt(2026, 4, 22, 10, 0)) == []
+
+    def test_get_merged_survives_implicit_crash(self, brain_env):
+        """A broken _implicit_state must not take the prompt build with it."""
+        from datetime import datetime as _dt
+        brain, _, _ = brain_env
+
+        def boom(_now):
+            raise RuntimeError("synthetic fail in implicit state")
+
+        brain._implicit_state = boom
+        rows = brain.get_merged_ephemeral_state(_dt(2026, 4, 21, 14, 0))
+        # Should return whatever manual had (empty), not raise
+        assert rows == []

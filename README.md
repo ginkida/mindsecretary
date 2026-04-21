@@ -62,6 +62,8 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Daily goals** | Set goals in the morning, track throughout the day, review together in the evening |
 | **Semantic memory** | Voyage AI embeddings in SQLite; vectorized cosine similarity, automatic dedup (>0.92 threshold), recency decay on old memories |
 | **Personal CRM** | Tracks people: last contact, topics, promises, relationship context. Alias fuzzy matching. Alerts on drifting relationships |
+| **Ephemeral state** | Short-term "right now" context (location / health / availability / energy / activity) with TTL 0.5-72h. Bot sets it when you mention your current situation, considers it on every turn. Inspect/clear via `/context`. |
+| **Implicit schedule** | Profile's `work_days` + `work_start` + `work_end` auto-fill "location: at work" during working hours. Manual context overrides schedule by key (sick day → `location=дома` wins over scheduled "на работе"). |
 | **Calendar** | Bot IS the calendar — events stored in SQLite, no external sync needed |
 | **Decision tracker** | Tracks decisions with follow-ups (+14 days); surfaces past similar decisions and outcomes |
 | **Auto-diary** | Daily diary entry generated from interactions, mood analysis, relationship alerts |
@@ -89,7 +91,7 @@ One 30-second voice message → 2-5 structured actions (memories, events, remind
 | **Vector search** | numpy vectorized cosine similarity | Batch matrix ops + O(n) partial sort for top-k |
 | **Database** | SQLite (WAL mode) | Single file: vectors, events, contacts, goals, everything |
 | **Bot** | python-telegram-bot v22 | Async handlers for voice, text, photo, forwards. Long polling |
-| **Scheduler** | APScheduler (AsyncIO) | 8 proactive scheduled jobs (each toggleable via config) |
+| **Scheduler** | APScheduler (AsyncIO) | 9 proactive scheduled jobs (each toggleable via config) |
 | **Weather** | Open-Meteo (free, no key) | Forecast via `httpx` |
 | **Language** | Python 3.10+ | Fully async (asyncio) |
 
@@ -360,7 +362,7 @@ mindsecretary/
     │   └── mood.py                # Russian keyword-based mood analysis + contact frequency
     └── integrations/
         └── weather.py             # Open-Meteo API client (free, no key)
-tests/                             # 129 tests (pytest + pytest-asyncio)
+tests/                             # 162 tests (pytest + pytest-asyncio)
 ├── conftest.py                    # Shared fixtures (temp database)
 ├── test_brain.py                  # Sanitization
 ├── test_database.py               # CRUD + timestamp + cleanup + migrations

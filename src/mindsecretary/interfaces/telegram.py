@@ -20,6 +20,7 @@ from telegram.ext import (
     filters,
 )
 
+from ..core import tz_now
 from ..core.brain import Brain
 from ..learning.mood import check_contact_frequency
 from ..voice.stt import GroqSTT
@@ -462,16 +463,12 @@ class TelegramBot:
             )
             return
 
-        from ..core import tz_now as _tz_now
-        now = _tz_now(self.brain.profile.timezone)
-        manual = self.brain.db.get_active_ephemeral_state()
-        manual_keys = {r["key"] for r in manual}
-        implicit = [
-            r for r in self.brain._implicit_state(now)
-            if r["key"] not in manual_keys
-        ]
+        now = tz_now(self.brain.profile.timezone)
+        rows = self.brain.get_merged_ephemeral_state(now)
+        manual = [r for r in rows if r.get("source") != "implicit"]
+        implicit = [r for r in rows if r.get("source") == "implicit"]
 
-        if not manual and not implicit:
+        if not rows:
             await update.message.reply_text(
                 "Текущего контекста нет.\n\n"
                 "Это «здесь и сейчас»: где ты, что с тобой, занят ли. "

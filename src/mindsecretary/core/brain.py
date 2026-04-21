@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
@@ -231,8 +231,11 @@ class Brain:
     def _implicit_state(self, now: datetime) -> list[dict]:
         """Schedule-derived state (work hours on work days → location=на работе).
 
-        Acts as a default baseline. Manual ephemeral state (set via LLM's
-        set_ephemeral_state tool) overrides implicit entries by key.
+        Handles normal schedules (start <= end, same-day window) and
+        wrap-midnight schedules (e.g. 22:00-06:00). Out-of-range times
+        (hour >= 24, minute >= 60, etc.) silently return [] — all datetime
+        construction is inside a single try/except so bad profile config
+        doesn't crash Brain.process().
         """
         profile = self.profile
         work_days = profile.work_days or [1, 2, 3, 4, 5]
@@ -241,36 +244,62 @@ class Brain:
         try:
             sh, sm = map(int, profile.work_start.split(":"))
             eh, em = map(int, profile.work_end.split(":"))
+            start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+            end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
         except (ValueError, AttributeError, TypeError):
             return []
-        start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
-        end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
-        if not (start <= now <= end):
-            return []
+
+        # Same-day window (09:00-18:00)
+        if start <= end:
+            if not (start <= now <= end):
+                return []
+            effective_end = end
+        # Wrap midnight (22:00-06:00): "within shift" is (now >= start) OR
+        # (now <= end). Expiration rolls to tomorrow when we're still in
+        # the evening half of the shift.
+        else:
+            if now >= start:
+                effective_end = end + timedelta(days=1)
+            elif now <= end:
+                effective_end = end
+            else:
+                return []
+
         return [{
             "key": "location",
             "value": "на работе",
-            "expires_at": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "expires_at": effective_end.strftime("%Y-%m-%d %H:%M:%S"),
             "source": "implicit",
         }]
 
-    def _section_ephemeral_state(self, s) -> str:
-        """Format active ephemeral state rows for the system prompt.
+    def get_merged_ephemeral_state(self, now: datetime) -> list[dict]:
+        """Manual + implicit ephemeral state, manual wins by key.
 
-        Merges implicit (schedule-derived) + manual (set via tool) rows.
-        Manual entries win by key — "I'm at home today" overrides implicit
-        "на работе" during work hours. Lazy cleanup of expired manual rows
-        happens inside get_active_ephemeral_state.
+        Each source is guarded independently — a failure in one (DB error,
+        malformed profile) still returns the other. Shared between
+        _section_ephemeral_state (for the system prompt) and the /context
+        Telegram command (for user inspection).
         """
-        now = tz_now(self.profile.timezone)
         try:
             manual = self.db.get_active_ephemeral_state()
         except Exception as e:
-            logger.warning("Section ephemeral_state failed: %s", type(e).__name__)
+            logger.warning("Ephemeral state (manual) failed: %s", type(e).__name__)
             manual = []
         manual_keys = {r["key"] for r in manual}
-        implicit = [r for r in self._implicit_state(now) if r["key"] not in manual_keys]
-        rows = manual + implicit
+        try:
+            implicit = [
+                r for r in self._implicit_state(now)
+                if r["key"] not in manual_keys
+            ]
+        except Exception as e:
+            logger.warning("Ephemeral state (implicit) failed: %s", type(e).__name__)
+            implicit = []
+        return manual + implicit
+
+    def _section_ephemeral_state(self, s) -> str:
+        """Format active ephemeral state rows for the system prompt."""
+        now = tz_now(self.profile.timezone)
+        rows = self.get_merged_ephemeral_state(now)
         if not rows:
             return "Пусто."
         today_date = now.strftime("%Y-%m-%d")
