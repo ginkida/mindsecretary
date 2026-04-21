@@ -166,3 +166,49 @@ class TestActionNudge:
         s._send_proactive.assert_awaited_once_with(
             "🤔 Как дела с проектом?", kind="smart_question",
         )
+
+
+class TestSchedulerTimezone:
+    """Scheduler must use profile.timezone for cron jobs, not system TZ.
+
+    Old behavior: AsyncIOScheduler() defaults to system TZ (UTC in slim
+    containers), so cron hour=7 fired at 07:00 UTC = 12:00 Asia/Almaty.
+    Fix: pass profile.timezone to AsyncIOScheduler constructor.
+    """
+
+    def test_scheduler_uses_profile_timezone(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        # Scheduler's timezone should match profile
+        tz = s.scheduler.timezone
+        # tz could be ZoneInfo or pytz — accept any string-matchable form
+        assert "Moscow" in str(tz) or "Europe" in str(tz)
+
+    def test_invalid_timezone_falls_back_without_crash(self):
+        from unittest.mock import MagicMock
+        from mindsecretary.proactive.scheduler import ProactiveScheduler
+
+        profile = MagicMock()
+        profile.quiet_hours = []
+        profile.notification_limit = 10
+        profile.wake_up = "07:00"
+        profile.timezone = "Nonsense/Invalid"
+
+        settings = MagicMock()
+        settings.morning_briefing = False
+        settings.evening_summary = False
+        settings.smart_questions = False
+        settings.decision_followups = False
+        settings.weekly_review = False
+        settings.weather_monitor = False
+        settings.birthday_alerts = False
+        settings.reminder_check_minutes = 5
+        settings.weather_check_minutes = 60
+        settings.quiet_contact_days = 30
+        settings.quiet_contact_min_mentions = 3
+
+        # Should NOT raise — invalid TZ falls back to system
+        s = ProactiveScheduler(
+            db=MagicMock(), profile=profile, settings=settings,
+            send_fn=MagicMock(), weather=None,
+        )
+        assert s.scheduler is not None

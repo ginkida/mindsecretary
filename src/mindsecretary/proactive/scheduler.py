@@ -29,7 +29,21 @@ class ProactiveScheduler:
         self.profile = profile
         self.settings = settings
         self.send_fn = send_fn
-        self.scheduler = AsyncIOScheduler()
+        # Pass profile.timezone explicitly — APScheduler's default uses
+        # system TZ (UTC in slim containers), which made cron hour=7 fire
+        # at 07:00 UTC = 12:00 Asia/Almaty. Profile.timezone is the single
+        # source of truth for all time rendering in the app.
+        try:
+            self.scheduler = AsyncIOScheduler(timezone=profile.timezone)
+        except Exception as e:
+            logger.error(
+                "Invalid PROFILE_TIMEZONE '%s' (%s), falling back to system TZ",
+                profile.timezone, type(e).__name__,
+            )
+            self.scheduler = AsyncIOScheduler()
+        logger.info(
+            "Scheduler TZ set to %s — cron jobs use this clock", profile.timezone,
+        )
         self._last_forecast: dict | None = None
         # Set externally after creation
         self.briefing_generator = None
