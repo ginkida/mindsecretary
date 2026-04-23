@@ -138,3 +138,109 @@ class TestSanitizeArgs:
             "key": "activity", "value": "", "ttl_hours": 1,
         })
         assert args["value"] == "активно"
+
+
+class TestSearchConversationsSanitize:
+    def test_days_clamped_to_365(self):
+        args = _sanitize_args("search_conversations", {
+            "query": "x", "days": 9999,
+        })
+        assert args["days"] == 365
+
+    def test_days_clamped_to_1(self):
+        args = _sanitize_args("search_conversations", {
+            "query": "x", "days": 0,
+        })
+        assert args["days"] == 1
+
+    def test_limit_clamped_to_30(self):
+        args = _sanitize_args("search_conversations", {
+            "query": "x", "limit": 500,
+        })
+        assert args["limit"] == 30
+
+    def test_defaults_applied(self):
+        args = _sanitize_args("search_conversations", {"query": "x"})
+        assert args["days"] == 30
+        assert args["limit"] == 10
+
+
+class TestSearchConversationsHandler:
+    """ToolExecutor handler for search_conversations must render DB rows
+    into a clean string Claude can read — 'Ты:/Бот:/[label]' with
+    timestamp, so Claude can cite exact quotes from past conversations."""
+
+    @pytest.mark.asyncio
+    async def test_returns_formatted_results(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Use a literal token Alpha in all three messages so Russian
+        # grammatical cases don't interfere with substring matching.
+        tmp_db.log_interaction("in", "text", "обсуждали проект Alpha")
+        tmp_db.log_interaction(
+            "out", "notification", "⏰ Напоминание про Alpha",
+            metadata={"kind": "reminder"},
+        )
+        tmp_db.log_interaction("out", "chat", "Проект Alpha интересный")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute(
+            "search_conversations", {"query": "Alpha", "days": 30, "limit": 10},
+        )
+
+        assert "Ты: обсуждали проект Alpha" in result
+        assert "Бот: Проект Alpha интересный" in result
+        assert "[напоминание]" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_result_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute(
+            "search_conversations", {"query": "ничегонет"},
+        )
+        assert "Ничего не нашёл" in result
+        assert "ничегонет" in result
+
+    def test_ts_utc_to_local_converts_offset(self):
+        """DB stores UTC timestamps; tool output must show them in the
+        user's timezone — otherwise Claude quotes UTC times as if they
+        were local ones, confusing the user about when things happened."""
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # 10:00 UTC → 13:00 Moscow (UTC+3)
+        out = ToolExecutor._ts_utc_to_local_str(
+            "2026-04-23 10:00:00", "Europe/Moscow",
+        )
+        assert out == "2026-04-23 13:00"
+
+    def test_ts_utc_to_local_falls_back_gracefully(self):
+        from mindsecretary.llm.tools import ToolExecutor
+        # No timezone → truncate to minute precision without conversion
+        assert ToolExecutor._ts_utc_to_local_str("2026-04-23 10:00:00", None) == "2026-04-23 10:00"
+        # Invalid timestamp string → graceful fallback
+        assert ToolExecutor._ts_utc_to_local_str("bogus", "UTC") == "bogus"[:16]
+        # Empty string
+        assert ToolExecutor._ts_utc_to_local_str("", "UTC") == "?"
+
+    @pytest.mark.asyncio
+    async def test_truncated_content_gets_ellipsis(self, tmp_db):
+        """A 300+ char message gets truncated in search output — signal
+        the cut with an ellipsis so Claude knows the quote is partial."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        long_text = "длинное сообщение " * 30  # ~540 chars
+        long_text += " UNIQUEMARKER"
+        tmp_db.log_interaction("in", "text", long_text)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute(
+            "search_conversations", {"query": "длинное"},
+        )
+        assert "…" in result
+        # Trailing marker shouldn't appear — it's past char 300
+        assert "UNIQUEMARKER" not in result

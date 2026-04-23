@@ -19,6 +19,13 @@ class Database:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        # SQLite's built-in lower() is ASCII-only — "ПРОЕКТ" stays "ПРОЕКТ",
+        # breaking case-insensitive search on Russian (or any non-ASCII)
+        # content. Register a Python-backed function so Cyrillic and mixed
+        # scripts fold correctly.
+        self.db.create_function(
+            "pylower", 1, lambda s: s.lower() if isinstance(s, str) else s,
+        )
         self._timezone = timezone
         self._init_tables()
         if migrations_dir is None:
@@ -427,14 +434,40 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_recent_messages(self, limit: int = 10) -> list[dict]:
+    def get_recent_messages(self, limit: int = 20) -> list[dict]:
         rows = self.db.execute(
-            "SELECT direction, content, timestamp FROM interactions "
-            "WHERE message_type IN ('voice', 'text', 'forward', 'chat') "
+            "SELECT direction, content, timestamp, message_type, metadata "
+            "FROM interactions "
+            "WHERE message_type IN ('voice', 'text', 'forward', 'chat', 'notification') "
             "ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    def search_past_conversations(self, query: str, days: int = 30,
+                                  limit: int = 10) -> list[dict]:
+        """Keyword LIKE search over interactions.content (user + bot text).
+
+        Exists so the LLM can recall exchanges older than the replayed
+        history window. Matches case-insensitively on a single substring —
+        embeddings would be more flexible, but raw content isn't embedded
+        (only curated memories are) and adding a second index path just for
+        this tool isn't worth it. Returns newest-first.
+        """
+        if not query or not query.strip():
+            return []
+        since = (self._now() - timedelta(days=max(1, days))).strftime(self._SQL_TS_FMT)
+        escaped = self._escape_like(query.strip().lower())
+        rows = self.db.execute(
+            "SELECT timestamp, direction, message_type, content, metadata "
+            "FROM interactions "
+            "WHERE timestamp >= ? "
+            "  AND message_type IN ('voice', 'text', 'forward', 'chat', 'notification') "
+            "  AND pylower(content) LIKE ? ESCAPE '\\' "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (since, f"%{escaped}%", max(1, min(limit, 50))),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def count_notifications_today(self) -> int:
         today = self._now().strftime("%Y-%m-%d")

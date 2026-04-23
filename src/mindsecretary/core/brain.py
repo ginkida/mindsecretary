@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
@@ -22,6 +23,17 @@ logger = logging.getLogger(__name__)
 # embedding budget. max_tool_rounds * MAX_TOOLS_PER_ROUND is the worst case.
 MAX_TOOLS_PER_ROUND = 10
 MAX_TOOL_RESULT_LEN = 4000
+
+# How many past interactions (user msgs + bot replies + proactive sends)
+# to replay into each LLM call as real role=user/assistant turns. This is
+# the core of Claude's conversational continuity — older context is reachable
+# via the search_conversations tool.
+CONVERSATION_HISTORY_TURNS = 20
+
+# Per-turn content cap for replayed history. Keeps prompt cost bounded while
+# still giving Claude enough to understand each prior turn. Sanitized for
+# injection defense since past content may include user text.
+HISTORY_TURN_CHAR_CAP = 800
 
 
 @dataclass
@@ -44,6 +56,10 @@ class Brain:
     async def process(self, user_message: str, message_type: str = "text",
                       metadata: dict | None = None,
                       image_base64: str | None = None) -> BrainResponse:
+        # Replay history as real multi-turn BEFORE logging the current message,
+        # so the freshly-logged user turn isn't duplicated (history + current).
+        history_turns = self._build_history_turns()
+
         interaction_id = self.db.log_interaction(
             direction="in",
             message_type=message_type,
@@ -80,7 +96,12 @@ class Brain:
             ]
         else:
             user_content = user_message
-        messages = [{"role": "user", "content": user_content}]
+        # Prepend replayed history. Merge pass guarantees no two same-role
+        # turns appear back-to-back (Anthropic API requires alternation) —
+        # consecutive notifications collapse into a single assistant turn.
+        messages = self._merge_consecutive(
+            history_turns + [{"role": "user", "content": user_content}]
+        )
         total_tools = 0
         total_tokens = 0
         final_text = ""
@@ -181,7 +202,6 @@ class Brain:
             memories=await self._section_memories(user_message, s),
             today_events=self._section_events(now, s),
             today_goals=self._section_goals(s),
-            recent_messages=self._section_recent(s),
             pending_decisions=self._section_decisions(s),
             mood_trend=self._section_mood_trend(),
             theme_clusters=self._section_theme_clusters(s),
@@ -207,12 +227,126 @@ class Brain:
             for e in events
         ) or "Нет событий."
 
-    def _section_recent(self, s) -> str:
-        recent = self.db.get_recent_messages(limit=8)
-        return "\n".join(
-            f"{'Ты' if m['direction'] == 'in' else 'Бот'}: {s(m['content'], 200)}"
-            for m in recent
-        ) or "Начало разговора."
+    _NOTIFICATION_LABELS = {
+        "morning_briefing": "брифинг",
+        "evening_summary": "вечер",
+        "diary": "дневник",
+        "weekly_review": "неделя",
+        "smart_question": "вопрос",
+        "open_loops_nudge": "контроль",
+        "decision_followup": "решение",
+        "birthday_alert": "день рождения",
+        "weather_alert": "погода",
+        "reminder": "напоминание",
+    }
+
+    def _fmt_local_time(self, ts: str, today_local: str) -> str:
+        """UTC ISO-ish timestamp → local HH:MM (MM-DD HH:MM if not today).
+
+        `interactions.timestamp` is stored via SQLite's `datetime('now')`
+        which is always UTC. Convert to profile timezone for display so the
+        LLM sees times that match the user's clock.
+        """
+        try:
+            utc_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            local = utc_naive.replace(tzinfo=timezone.utc).astimezone(
+                ZoneInfo(self.profile.timezone)
+            )
+        except (ValueError, TypeError):
+            return "??:??"
+        if local.strftime("%Y-%m-%d") == today_local:
+            return local.strftime("%H:%M")
+        return local.strftime("%m-%d %H:%M")
+
+    def _build_history_turns(
+        self, limit: int = CONVERSATION_HISTORY_TURNS,
+    ) -> list[dict]:
+        """Replay recent interactions as real role-based LLM turns.
+
+        Returns a list of `{"role": "user"|"assistant", "content": str}` dicts
+        suitable for prepending to Brain.process()'s messages list. Unlike the
+        old flat "## Разговор" text block this gives Claude native multi-turn
+        conversation — each prior user message and bot reply is a distinct
+        turn, with proactive notifications (briefings, reminders, evening
+        summary, etc.) appearing as assistant turns prefixed with a label +
+        local time so Claude knows they weren't replies to the user.
+
+        All content is passed through sanitize_for_context — past user text
+        might contain injection attempts that'd be replayed verbatim otherwise.
+
+        Returns [] on DB failure rather than propagating — a transient SQLite
+        hiccup shouldn't block the current message from reaching Claude; the
+        degraded call (no history) is better than a hard failure.
+        """
+        try:
+            rows = self.db.get_recent_messages(limit=limit)
+        except Exception as e:
+            logger.warning("History fetch failed: %s", type(e).__name__)
+            return []
+        if not rows:
+            return []
+        today_local = tz_now(self.profile.timezone).strftime("%Y-%m-%d")
+        turns: list[dict] = []
+        for m in rows:
+            raw = m.get("content") or ""
+            content = sanitize_for_context(raw, HISTORY_TURN_CHAR_CAP)
+            if not content.strip():
+                continue
+            direction = m.get("direction")
+            msg_type = m.get("message_type")
+            if direction == "in":
+                turns.append({"role": "user", "content": content})
+            elif msg_type == "notification":
+                kind = None
+                meta_raw = m.get("metadata")
+                if meta_raw:
+                    try:
+                        kind = json.loads(meta_raw).get("kind")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                label = self._NOTIFICATION_LABELS.get(kind, "уведомление")
+                ts = self._fmt_local_time(m.get("timestamp") or "", today_local)
+                turns.append({
+                    "role": "assistant",
+                    "content": f"[{label} в {ts}]\n{content}",
+                })
+            else:
+                turns.append({"role": "assistant", "content": content})
+        merged = self._merge_consecutive(turns)
+        # Anthropic requires messages to start with role=user. If the only
+        # history is orphan proactive sends (e.g. morning briefing fired and
+        # user hasn't replied yet), the first replayed turn is assistant —
+        # which would make [assistant, user_current] and fail the API. Drop
+        # the leading assistant turn in that case; its content remains
+        # reachable via the search_conversations tool if the user references
+        # it directly.
+        if merged and merged[0]["role"] == "assistant":
+            merged = merged[1:]
+        return merged
+
+    @staticmethod
+    def _merge_consecutive(turns: list[dict]) -> list[dict]:
+        """Collapse consecutive same-role text turns into one.
+
+        Anthropic's messages API requires alternating user/assistant roles —
+        two notifications firing back-to-back (e.g. birthday alert + briefing
+        at 09:00 with no user reply between) would produce two assistant
+        turns in a row and fail the API call. Multimodal content (lists) is
+        left alone so we never merge an image turn with a text turn.
+        """
+        result: list[dict] = []
+        for t in turns:
+            if (result
+                    and result[-1]["role"] == t["role"]
+                    and isinstance(result[-1].get("content"), str)
+                    and isinstance(t.get("content"), str)):
+                result[-1] = {
+                    "role": t["role"],
+                    "content": result[-1]["content"] + "\n\n" + t["content"],
+                }
+            else:
+                result.append(dict(t))
+        return result
 
     def _section_decisions(self, s) -> str:
         decisions = self.db.get_pending_decisions(limit=5)

@@ -43,12 +43,17 @@ class GroqSTT:
                 last_error = e
                 if attempt < _MAX_RETRIES - 1:
                     delay = _BASE_DELAY * (2 ** attempt)
+                    # STT deliberately logs str(e) in addition to the type —
+                    # Groq errors carry actionable detail ("model X has been
+                    # decommissioned", "rate limited", etc.) that's lost if
+                    # we only log the class name. Narrow exception to the
+                    # STT logger, not the project-wide convention.
                     logger.warning(
-                        "Groq STT attempt %d/%d failed (%s), retrying in %.1fs",
-                        attempt + 1, _MAX_RETRIES, type(e).__name__, delay,
+                        "Groq STT attempt %d/%d failed (%s: %s), retrying in %.1fs",
+                        attempt + 1, _MAX_RETRIES, type(e).__name__, e, delay,
                     )
                     await asyncio.sleep(delay)
 
-        logger.error("Groq STT failed after %d attempts: %s",
-                     _MAX_RETRIES, type(last_error).__name__)
+        logger.error("Groq STT failed after %d attempts: %s: %s",
+                     _MAX_RETRIES, type(last_error).__name__, last_error)
         raise last_error  # type: ignore[misc]

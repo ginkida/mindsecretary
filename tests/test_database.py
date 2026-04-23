@@ -123,10 +123,62 @@ class TestInteractions:
         assert recent[0]["content"] == "First"
         assert recent[1]["content"] == "Reply"
 
+    def test_recent_messages_includes_notifications(self, tmp_db: Database):
+        """Proactive sends (briefing/reminder/etc.) must show up in the
+        chronological log the Brain feeds to Claude — otherwise the bot has
+        no record of what it sent autonomously."""
+        tmp_db.log_interaction("in", "text", "hi")
+        tmp_db.log_interaction(
+            "out", "notification", "☀️ Доброе утро",
+            metadata={"kind": "morning_briefing"},
+        )
+        tmp_db.log_interaction(
+            "out", "notification", "⏰ Напоминание: позвонить",
+            metadata={"kind": "reminder"},
+        )
+
+        recent = tmp_db.get_recent_messages(limit=10)
+        assert len(recent) == 3
+        notifs = [m for m in recent if m["message_type"] == "notification"]
+        assert len(notifs) == 2
+        # metadata must round-trip as JSON string with the kind preserved
+        import json as _json
+        kinds = [_json.loads(m["metadata"])["kind"] for m in notifs]
+        assert kinds == ["morning_briefing", "reminder"]
+
     def test_count_notifications_today(self, tmp_db: Database):
         assert tmp_db.count_notifications_today() == 0
         tmp_db.log_interaction("out", "notification", "Reminder!")
         assert tmp_db.count_notifications_today() == 1
+
+    def test_search_past_conversations_matches_keyword(self, tmp_db: Database):
+        """Lets the LLM recall exchanges older than the replayed history
+        window when the user references something by keyword."""
+        tmp_db.log_interaction("in", "text", "давай поедем в Сочи летом")
+        tmp_db.log_interaction("out", "chat", "Хорошо, когда именно?")
+        tmp_db.log_interaction("in", "text", "какая-то другая тема")
+        tmp_db.log_interaction(
+            "out", "notification", "⏰ Напоминание про Сочи",
+            metadata={"kind": "reminder"},
+        )
+
+        rows = tmp_db.search_past_conversations("Сочи", days=30, limit=10)
+        assert len(rows) == 2
+        contents = {r["content"] for r in rows}
+        assert "давай поедем в Сочи летом" in contents
+        assert "⏰ Напоминание про Сочи" in contents
+        # Must be newest-first
+        assert rows[0]["timestamp"] >= rows[1]["timestamp"]
+
+    def test_search_past_conversations_is_case_insensitive(self, tmp_db: Database):
+        tmp_db.log_interaction("in", "text", "Обсудили ПРОЕКТ с Колей")
+        rows = tmp_db.search_past_conversations("проект", days=30)
+        assert len(rows) == 1
+
+    def test_search_past_conversations_empty_query_noop(self, tmp_db: Database):
+        tmp_db.log_interaction("in", "text", "anything")
+        assert tmp_db.search_past_conversations("", days=30) == []
+        assert tmp_db.search_past_conversations("   ", days=30) == []
 
 
 class TestDecisions:

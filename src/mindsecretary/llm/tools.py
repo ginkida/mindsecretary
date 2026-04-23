@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone as _dt_timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_tz_utc = _dt_timezone.utc
 
 from ..core.database import Database
 from ..core.enums import Priority, Sentiment
@@ -297,6 +301,38 @@ TOOL_DEFINITIONS = [
         "max_uses": 3,
     },
     {
+        "name": "search_conversations",
+        "description": (
+            "Поиск по старым сообщениям диалога (и твоим, и пользователя) "
+            "по ключевому слову. Вызывай когда пользователь ссылается на "
+            "разговор старше последних ~20 ходов, которые ты видишь в "
+            "диалоге напрямую: «что я тебе говорил про X», «мы обсуждали Y», "
+            "«ты писал мне про Z». Ищет подстроку в content, не семантика."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Ключевое слово или короткая фраза",
+                },
+                "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Сколько дней назад смотреть (по умолчанию 30)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Максимум результатов (по умолчанию 10)",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "set_ephemeral_state",
         "description": (
             "Запомнить текущее состояние юзера с авто-истечением. Вызывай, "
@@ -376,6 +412,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "get_open_loops":
         clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
+
+    if name == "search_conversations":
+        clean["days"] = max(1, min(365, int(clean.get("days", 30))))
+        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
 
     if name == "set_ephemeral_state":
         key = clean.get("key", "")
@@ -594,6 +634,65 @@ class ToolExecutor:
     def _handle_get_open_loops(self, days_ahead: int = 2) -> str:
         snapshot = self.db.get_open_loops(days_ahead=days_ahead, limit_per_section=5)
         return self._format_open_loops(snapshot)
+
+    _SEARCH_KIND_LABELS = {
+        "morning_briefing": "брифинг",
+        "evening_summary": "вечер",
+        "diary": "дневник",
+        "weekly_review": "неделя",
+        "smart_question": "вопрос",
+        "open_loops_nudge": "контроль",
+        "decision_followup": "решение",
+        "birthday_alert": "день рождения",
+        "weather_alert": "погода",
+        "reminder": "напоминание",
+    }
+
+    @staticmethod
+    def _ts_utc_to_local_str(ts: str, tz_name: str | None) -> str:
+        """DB timestamps are UTC (SQLite's `datetime('now')`). Convert to
+        profile timezone so Claude reads times that match the user's clock
+        instead of a silent UTC offset (e.g. '05:30' vs actual 10:30)."""
+        if not ts or not tz_name:
+            return ts[:16] if ts else "?"
+        try:
+            utc_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            local = utc_naive.replace(tzinfo=_tz_utc).astimezone(ZoneInfo(tz_name))
+            return local.strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError, KeyError):
+            return ts[:16]
+
+    def _handle_search_conversations(self, query: str, days: int = 30,
+                                     limit: int = 10) -> str:
+        rows = self.db.search_past_conversations(query, days=days, limit=limit)
+        if not rows:
+            return f"Ничего не нашёл по '{query}' за последние {days} дн."
+        tz_name = getattr(self.db, "_timezone", None)
+        lines = []
+        for r in rows:
+            ts = self._ts_utc_to_local_str(r.get("timestamp") or "", tz_name)
+            if r.get("direction") == "in":
+                who = "Ты"
+            elif r.get("message_type") == "notification":
+                kind = None
+                meta_raw = r.get("metadata")
+                if meta_raw:
+                    try:
+                        kind = json.loads(meta_raw).get("kind")
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Malformed interactions.metadata JSON; kind label will fall back",
+                        )
+                who = f"[{self._SEARCH_KIND_LABELS.get(kind, 'уведомление')}]"
+            else:
+                who = "Бот"
+            raw_content = r.get("content") or ""
+            content = raw_content[:300]
+            # Signal truncation so Claude knows the quote is partial.
+            if len(raw_content) > 300:
+                content += "…"
+            lines.append(f"- {ts} {who}: {content}")
+        return "\n".join(lines)
 
     def _handle_set_ephemeral_state(self, key: str, value: str,
                                     ttl_hours: float) -> str:
