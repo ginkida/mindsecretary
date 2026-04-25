@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
-import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+from ..core import tz_now
+from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
 from ..core.prompt_safety import sanitize_for_context
-from ..llm.router import ModelRouter
+from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,21 @@ GAPS_PROMPT = """\
 class SmartQuestions:
     """Generate targeted questions to fill knowledge gaps."""
 
-    def __init__(self, router: ModelRouter, memory: Memory, db: Database,
+    def __init__(self, llm: LLMClient, memory: Memory, db: Database,
+                 profile: Profile | None = None,
                  min_interactions: int = 5):
-        self.router = router
+        self.llm = llm
         self.memory = memory
         self.db = db
+        self.profile = profile
         self.min_interactions = min_interactions
+
+    def _now(self) -> datetime:
+        """Profile-TZ-aware "now" so stored cooldown values are human-readable
+        in the user's clock, and comparisons don't drift with system TZ."""
+        if self.profile is not None:
+            return tz_now(self.profile.timezone)
+        return datetime.now()
 
     def _get_last_asked(self) -> datetime | None:
         pref = self.db.get_preference("smart_question_last_asked")
@@ -69,20 +79,33 @@ class SmartQuestions:
     def _set_last_asked(self):
         self.db.set_preference(
             "smart_question_last_asked",
-            datetime.now().isoformat(),
+            self._now().isoformat(),
             confidence=1.0, source="system",
         )
 
     async def generate_question(self) -> str | None:
         """Generate one smart question. Returns None if nothing to ask."""
-        # Don't ask more than once per 8 hours (persists across restarts)
+        # Don't ask more than once per 8 hours (persists across restarts).
+        # Normalize both clocks to UTC-naive before subtracting: legacy pref
+        # rows were naive UTC (Docker system clock); new rows are aware in
+        # profile TZ. Converting the aware side keeps the elapsed-time math
+        # correct regardless of which version wrote the pref.
         last_asked = self._get_last_asked()
-        if last_asked and datetime.now() - last_asked < timedelta(hours=8):
-            return None
+        if last_asked is not None:
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            if last_asked.tzinfo is not None:
+                last_ref = last_asked.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                last_ref = last_asked
+            if now_utc - last_ref < timedelta(hours=8):
+                return None
 
-        # Need at least some interactions before asking
+        # Need at least some interactions before asking.
+        # interactions.timestamp is UTC (SQLite datetime('now')), so pass
+        # a UTC-naive "a week ago" to the query.
+        since_utc = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
         recent = self.db.get_interactions(
-            since=datetime.now() - timedelta(days=7), limit=30,
+            since=since_utc, limit=30,
         )
         if len(recent) < self.min_interactions:
             return None
@@ -108,7 +131,7 @@ class SmartQuestions:
         )
 
         try:
-            response = await self.router.chat(
+            response = await self.llm.chat(
                 system=GAPS_PROMPT.format(
                     contacts=contacts_text,
                     memories=memories_text,

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+from ..core import fmt_local_time, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
 from ..core.prompt_safety import sanitize_for_context
 from ..llm.prompts import WEEKLY_SYSTEM_PROMPT
-from ..llm.router import ModelRouter
-from .tracker import FeedbackTracker
+from ..llm.client import LLMClient
+from .patterns import PatternAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -18,19 +19,28 @@ logger = logging.getLogger(__name__)
 class WeeklyReflection:
     """Analyze the week's interactions and generate learnings + review."""
 
-    def __init__(self, router: ModelRouter, memory: Memory, db: Database,
+    def __init__(self, llm: LLMClient, memory: Memory, db: Database,
                  profile: Profile):
-        self.router = router
+        self.llm = llm
         self.memory = memory
         self.db = db
         self.profile = profile
-        self.tracker = FeedbackTracker(db)
 
     async def generate_weekly_review(self) -> str | None:
         """Generate weekly review and extract learnings."""
-        now = datetime.now()
+        # Two clocks, on purpose:
+        # - `now` / `week_ago` are UTC-naive, matching SQL timestamps stored
+        #   via `datetime('now')` — used for range queries below.
+        # - `period` is rendered in profile TZ so the user sees their local
+        #   calendar dates, not whatever the system clock says.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         week_ago = now - timedelta(days=7)
-        period = f"{week_ago.strftime('%Y-%m-%d')} — {now.strftime('%Y-%m-%d')}"
+        local_now = tz_now(self.profile.timezone)
+        local_week_ago = local_now - timedelta(days=7)
+        period = (
+            f"{local_week_ago.strftime('%Y-%m-%d')} — "
+            f"{local_now.strftime('%Y-%m-%d')}"
+        )
 
         # Gather data
         interactions = self.db.get_interactions(since=week_ago, limit=200)
@@ -38,19 +48,22 @@ class WeeklyReflection:
             logger.info("Too few interactions for weekly review (%d)", len(interactions))
             return None
 
+        # Events / habits index by local date (they store start_at / date
+        # columns in the user's clock), so pull the week window from the
+        # local calendar — otherwise a late-evening UTC run misses the
+        # most recent local day at the boundary.
         events = self.db.get_events(
-            date_from=week_ago.strftime("%Y-%m-%d"),
-            date_to=now.strftime("%Y-%m-%d"),
+            date_from=local_week_ago.strftime("%Y-%m-%d"),
+            date_to=local_now.strftime("%Y-%m-%d"),
         )
 
         # Habits
-        habits_data = self._get_habits_summary(week_ago, now)
+        habits_data = self._get_habits_summary(
+            local_week_ago.replace(tzinfo=None), local_now.replace(tzinfo=None),
+        )
 
         # Current learnings
         learnings = self.memory.get_by_category("learning")
-
-        # Feedback summary
-        feedback = self.tracker.get_feedback_summary(days=7)
 
         # Format interactions (compact)
         s = sanitize_for_context
@@ -67,6 +80,14 @@ class WeeklyReflection:
 
         habits_text = habits_data or "Привычки не отслеживаются."
 
+        # Deterministic pattern signals — gives the LLM hard numbers to cite
+        # instead of inventing statistics from the raw interaction list.
+        try:
+            patterns_text = PatternAnalyzer(self.db, self.profile).format_for_prompt()
+        except Exception as e:
+            logger.warning("Pattern analyzer failed: %s", type(e).__name__)
+            patterns_text = "Недостаточно данных для автоматических наблюдений."
+
         prompt = WEEKLY_SYSTEM_PROMPT.format(
             name=self.profile.name,
             period=period,
@@ -74,11 +95,12 @@ class WeeklyReflection:
             events=events_text,
             habits=habits_text,
             learnings=learnings_text,
+            patterns=patterns_text,
         )
 
         try:
             # Claude Sonnet — weekly analysis
-            response = await self.router.chat(
+            response = await self.llm.chat(
                 system=prompt,
                 messages=[{"role": "user", "content": "Проанализируй неделю."}],
                 max_tokens=2000,
@@ -102,14 +124,19 @@ class WeeklyReflection:
 
     def _format_interactions(self, interactions: list[dict]) -> str:
         lines = []
+        tz = self.profile.timezone
         for i in interactions:
-            ts = i["timestamp"][11:16] if i["timestamp"] and len(i["timestamp"]) > 11 else "??:??"
-            day = i["timestamp"][:10] if i["timestamp"] else "?"
+            raw_ts = i.get("timestamp") or ""
+            # Convert UTC-stored timestamp to the user's local clock.
+            # fmt_local_time returns MM-DD HH:MM when the row is from a
+            # different local day, and HH:MM when today — which is the
+            # format we want for a week-spanning list either way.
+            local_stamp = fmt_local_time(raw_ts, tz)
             direction = "→" if i["direction"] == "out" else "←"
             msg_type = i.get("message_type", "?")
             content = sanitize_for_context(i.get("content") or "", 120)
             fb = f" [{i['feedback']}]" if i.get("feedback") else ""
-            lines.append(f"{day} {ts} {direction} ({msg_type}{fb}) {content}")
+            lines.append(f"{local_stamp} {direction} ({msg_type}{fb}) {content}")
         return "\n".join(lines[-100:])  # last 100
 
     def _get_habits_summary(self, since: datetime, until: datetime) -> str:

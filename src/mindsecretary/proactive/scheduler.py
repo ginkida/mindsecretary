@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from ..core import tz_now
 from ..core.config import Profile, Settings
 from ..core.database import Database
-from ..integrations.weather import WeatherClient
+from ..integrations.weather import WMO_CODES, WeatherClient, _merge_rain_hours
 from ..learning.mood import check_contact_frequency
 from .monitor import check_reminders
 
@@ -17,6 +18,19 @@ logger = logging.getLogger(__name__)
 ACTION_NUDGE_COOLDOWN = timedelta(hours=44)
 ACTION_NUDGE_EVENT_HORIZON = timedelta(hours=3)
 ACTION_NUDGE_REMINDER_HORIZON = timedelta(hours=2)
+
+WEATHER_ALERT_PREF_KEY = "weather_alerted_rain"
+THUNDERSTORM_CODES = {95, 96, 99}
+# WMO codes that represent actual rain / storm conditions. If the heaviest
+# hour reports something else (e.g. clear + precipitation probability >= 50
+# is an Open-Meteo data glitch), fall back to a generic "дождь" label
+# rather than announcing "🌧 Ясно" at the user.
+RAIN_WMO_CODES = {
+    51, 53, 55, 56, 57,
+    61, 63, 65, 66, 67,
+    80, 81, 82,
+    95, 96, 99,
+}
 
 
 class ProactiveScheduler:
@@ -44,7 +58,6 @@ class ProactiveScheduler:
         logger.info(
             "Scheduler TZ set to %s — cron jobs use this clock", profile.timezone,
         )
-        self._last_forecast: dict | None = None
         # Set externally after creation
         self.briefing_generator = None
         self.weekly_reflection = None
@@ -291,8 +304,44 @@ class ProactiveScheduler:
         except Exception as e:
             logger.error("Birthday check failed: %s", type(e).__name__)
 
+    def _load_alerted_rain(self, today: str) -> set[int]:
+        """Return hours already alerted for today, empty set on new day/missing.
+
+        Defensive: a corrupted pref (non-dict JSON, missing keys, wrong
+        types) returns an empty set rather than blowing up the scheduler.
+        Worst case: same hour gets re-alerted once. Cheap downside.
+        """
+        pref = self.db.get_preference(WEATHER_ALERT_PREF_KEY)
+        if not pref:
+            return set()
+        try:
+            stored = json.loads(pref["value"])
+        except (ValueError, TypeError):
+            return set()
+        if not isinstance(stored, dict) or stored.get("date") != today:
+            return set()
+        hours = stored.get("hours") or []
+        if not isinstance(hours, list):
+            return set()
+        return {int(h) for h in hours if isinstance(h, (int, float))}
+
+    def _save_alerted_rain(self, today: str, hours: set[int]) -> None:
+        self.db.set_preference(
+            WEATHER_ALERT_PREF_KEY,
+            json.dumps({"date": today, "hours": sorted(hours)}),
+            confidence=1.0, source="system",
+        )
+
     async def _check_weather(self):
-        """Alert on new rain hours appearing in the forecast."""
+        """Alert on new rain hours — TZ-aware, future-only, dedup per-day.
+
+        Guards against three past failure modes:
+        1. weather.py computed "now" in system TZ (UTC in Docker), so rain
+           at 13:00 local got reported at 18:56 local.
+        2. _last_forecast lived only in memory, so process restarts re-
+           alerted on the same rain that was already sent.
+        3. The bare hour list read poorly when rain spanned 4+ hours.
+        """
         try:
             if not self.weather:
                 return
@@ -300,20 +349,27 @@ class ProactiveScheduler:
             if "error" in forecast:
                 return
 
-            if self._last_forecast is None:
-                self._last_forecast = forecast
+            now = tz_now(self.profile.timezone)
+            today = now.strftime("%Y-%m-%d")
+
+            # Defensive re-filter: accept only hours strictly in the future
+            # relative to scheduler's own clock, even if weather.py slips.
+            future_rain = [
+                (h, p, c) for (h, p, c) in (forecast.get("rain_today") or [])
+                if h >= now.hour
+            ]
+            if not future_rain:
                 return
 
-            old_rain = set(h for h, _ in (self._last_forecast.get("rain_today") or []))
-            new_rain = set(h for h, _ in (forecast.get("rain_today") or []))
-            new_rain_hours = new_rain - old_rain
-            self._last_forecast = forecast
+            already_alerted = self._load_alerted_rain(today)
+            fresh = [(h, p, c) for (h, p, c) in future_rain if h not in already_alerted]
+            if not fresh:
+                return
 
-            if new_rain_hours:
-                hours_str = ", ".join(f"{h}:00" for h in sorted(new_rain_hours))
-                await self._send_proactive(
-                    f"🌧 Появился дождь в прогнозе: {hours_str}",
-                    kind="weather_alert",
+            text = _format_rain_alert(fresh, now.hour)
+            if await self._send_proactive(text, kind="weather_alert"):
+                self._save_alerted_rain(
+                    today, already_alerted | {h for h, _, _ in fresh}
                 )
         except Exception as e:
             logger.error("Weather check failed: %s", type(e).__name__)
@@ -347,9 +403,11 @@ class ProactiveScheduler:
         return None
 
     def _set_last_nudge(self):
+        # Store in profile TZ so the preference is readable in the user's
+        # clock (old rows were naive system time = UTC in Docker).
         self.db.set_preference(
             "action_nudge_last_sent",
-            datetime.now().isoformat(),
+            tz_now(self.profile.timezone).isoformat(),
             confidence=1.0, source="system",
         )
 
@@ -361,10 +419,19 @@ class ProactiveScheduler:
         """
         try:
             last_nudge = self._get_last_nudge()
-            nudge_on_cooldown = (
-                last_nudge is not None
-                and datetime.now() - last_nudge < ACTION_NUDGE_COOLDOWN
-            )
+            nudge_on_cooldown = False
+            if last_nudge is not None:
+                # Normalize both sides to UTC-naive before subtracting.
+                # Legacy rows (pre-v0.12.2) were saved via `datetime.now()`
+                # which is system-UTC in Docker — already UTC-naive.
+                # New rows are TZ-aware in the profile clock; convert to UTC
+                # so the elapsed-time math is correct regardless of offset.
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                if last_nudge.tzinfo is not None:
+                    last_ref = last_nudge.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    last_ref = last_nudge
+                nudge_on_cooldown = now_utc - last_ref < ACTION_NUDGE_COOLDOWN
             if not nudge_on_cooldown:
                 nudge = self._build_action_nudge()
                 if nudge:
@@ -456,3 +523,52 @@ class ProactiveScheduler:
             )
         except Exception as e:
             logger.error("Cleanup failed: %s", type(e).__name__)
+
+
+def _rain_window_text(start: int, end: int) -> str:
+    """Render an inclusive (start..end) rain window in Russian."""
+    if start == end:
+        return f"в {start:02d}:00"
+    end_display = (end + 1) % 24
+    return f"с {start:02d}:00 до {end_display:02d}:00"
+
+
+def _format_rain_alert(fresh: list[tuple[int, int, int]], now_hour: int) -> str:
+    """Build a Russian rain alert from (hour, prob, code) triples.
+
+    Groups consecutive hours into windows, picks the heaviest WMO code for
+    the label, adds a lead-time hint ("через час", "через ~2ч") so the
+    user can tell whether to grab an umbrella right now or later.
+    """
+    ranges = _merge_rain_hours(fresh)
+    window_parts = [_rain_window_text(s, e) for s, e, _ in ranges]
+    max_prob = max((p for _, _, p in ranges), default=0)
+
+    # Pick heaviest hour (highest probability) to label the alert and
+    # choose between ⛈ (thunderstorm) and 🌧 (plain rain) emojis. If the
+    # code is clear/cloudy (data inconsistency), fall back to "дождь" so
+    # we don't render "🌧 Ясно".
+    heaviest = max(fresh, key=lambda x: (x[1], x[2]))
+    heaviest_code = heaviest[2]
+    if heaviest_code in RAIN_WMO_CODES:
+        label = WMO_CODES.get(heaviest_code, "дождь")
+    else:
+        label = "дождь"
+    emoji = "⛈" if heaviest_code in THUNDERSTORM_CODES else "🌧"
+
+    first_hour = ranges[0][0]
+    delta = first_hour - now_hour
+    if delta <= 0:
+        lead = "начинается"
+    elif delta == 1:
+        lead = "через час"
+    elif delta <= 6:
+        lead = f"через ~{delta}ч"
+    else:
+        lead = None
+
+    windows_text = ", ".join(window_parts)
+    headline = f"{emoji} {label.capitalize()}"
+    if lead:
+        headline = f"{headline} {lead}"
+    return f"{headline}: {windows_text} (до {max_prob}%)"

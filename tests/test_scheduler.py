@@ -1,7 +1,7 @@
 """Tests for proactive/scheduler.py — quiet hours and notification logic."""
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -212,3 +212,257 @@ class TestSchedulerTimezone:
             send_fn=MagicMock(), weather=None,
         )
         assert s.scheduler is not None
+
+
+class TestFormatRainAlert:
+    """Rendering of the rain alert message — smart grouping + lead time."""
+
+    def test_single_hour_imminent(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        text = _format_rain_alert([(14, 80, 63)], now_hour=13)
+        assert "через час" in text
+        assert "в 14:00" in text
+        assert "до 80%" in text
+        assert "🌧" in text
+
+    def test_range_merged(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        fresh = [(13, 60, 63), (14, 80, 63), (15, 70, 63)]
+        text = _format_rain_alert(fresh, now_hour=12)
+        assert "с 13:00 до 16:00" in text
+        assert "до 80%" in text
+
+    def test_thunderstorm_uses_storm_emoji(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        text = _format_rain_alert([(15, 90, 95)], now_hour=13)
+        assert "⛈" in text
+        assert "Гроза" in text
+
+    def test_multiple_non_consecutive_windows(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        fresh = [(14, 60, 63), (18, 80, 63)]
+        text = _format_rain_alert(fresh, now_hour=12)
+        assert "в 14:00" in text
+        assert "в 18:00" in text
+
+    def test_in_progress_lead(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        text = _format_rain_alert([(14, 70, 63)], now_hour=14)
+        assert "начинается" in text
+
+    def test_far_future_no_lead(self):
+        from mindsecretary.proactive.scheduler import _format_rain_alert
+        text = _format_rain_alert([(20, 70, 63)], now_hour=10)
+        # lead only added up to +6h; 10h out is too far for a countdown
+        assert "через" not in text
+
+
+class TestWeatherCheck:
+    """End-to-end behaviour of _check_weather against mocked fixture."""
+
+    def _make_with_weather(self, tz: str = "Asia/Almaty"):
+        from mindsecretary.proactive.scheduler import ProactiveScheduler
+
+        profile = MagicMock()
+        profile.quiet_hours = []
+        profile.notification_limit = 10
+        profile.wake_up = "07:00"
+        profile.timezone = tz
+
+        settings = MagicMock()
+        settings.morning_briefing = False
+        settings.evening_summary = False
+        settings.smart_questions = False
+        settings.decision_followups = False
+        settings.weekly_review = False
+        settings.weather_monitor = False
+        settings.birthday_alerts = False
+        settings.reminder_check_minutes = 5
+        settings.weather_check_minutes = 60
+        settings.quiet_contact_days = 30
+        settings.quiet_contact_min_mentions = 3
+
+        db = MagicMock()
+        db.get_preference.return_value = None  # no prior alert state
+
+        weather = MagicMock()
+        weather.get_forecast = AsyncMock()
+
+        send_fn = AsyncMock()
+
+        s = ProactiveScheduler(
+            db=db, profile=profile, settings=settings,
+            send_fn=send_fn, weather=weather,
+        )
+        s._send_proactive = AsyncMock(return_value=True)
+        return s
+
+    @pytest.mark.asyncio
+    async def test_skips_past_hours_defensively(self):
+        """Even if weather.py returned a past hour, scheduler must filter it."""
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.weather.get_forecast.return_value = {
+            "rain_today": [(13, 80, 63), (14, 70, 63)],  # all past at 18:56
+        }
+        fake_now = real_dt(2026, 4, 24, 18, 56)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_alerts_on_future_rain(self):
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.weather.get_forecast.return_value = {
+            "rain_today": [(20, 80, 63), (21, 90, 63)],
+        }
+        fake_now = real_dt(2026, 4, 24, 18, 56)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_awaited_once()
+        text = s._send_proactive.await_args.args[0]
+        assert "с 20:00 до 22:00" in text
+        assert "до 90%" in text
+
+    @pytest.mark.asyncio
+    async def test_dedup_via_preference(self):
+        """Hours already alerted today must not be re-sent after 'restart'."""
+        import json
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.db.get_preference.return_value = {
+            "value": json.dumps({"date": "2026-04-24", "hours": [20, 21]}),
+        }
+        s.weather.get_forecast.return_value = {
+            "rain_today": [(20, 80, 63), (21, 90, 63)],
+        }
+        fake_now = real_dt(2026, 4, 24, 18, 56)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_alerts_only_new_hours(self):
+        """Only hours beyond the stored set trigger a new message."""
+        import json
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.db.get_preference.return_value = {
+            "value": json.dumps({"date": "2026-04-24", "hours": [20]}),
+        }
+        s.weather.get_forecast.return_value = {
+            "rain_today": [(20, 80, 63), (21, 90, 63), (22, 70, 63)],
+        }
+        fake_now = real_dt(2026, 4, 24, 18, 56)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_awaited_once()
+        text = s._send_proactive.await_args.args[0]
+        assert "с 21:00 до 23:00" in text  # 21-22 merged, 20 skipped
+        # Merged set of alerted hours is persisted
+        call = s.db.set_preference.call_args
+        stored = json.loads(call.args[1])
+        assert sorted(stored["hours"]) == [20, 21, 22]
+        assert stored["date"] == "2026-04-24"
+
+    @pytest.mark.asyncio
+    async def test_new_day_resets_dedup(self):
+        """Yesterday's alerted hours do not suppress today's alerts."""
+        import json
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.db.get_preference.return_value = {
+            "value": json.dumps({"date": "2026-04-23", "hours": [20, 21]}),
+        }
+        s.weather.get_forecast.return_value = {
+            "rain_today": [(20, 80, 63)],
+        }
+        fake_now = real_dt(2026, 4, 24, 18, 56)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_forecast_error_silent(self):
+        from datetime import datetime as real_dt
+
+        s = self._make_with_weather()
+        s.weather.get_forecast.return_value = {"error": "timeout"}
+        fake_now = real_dt(2026, 4, 24, 18, 0)
+        with patch("mindsecretary.proactive.scheduler.tz_now", return_value=fake_now):
+            await s._check_weather()
+        s._send_proactive.assert_not_awaited()
+        s.db.set_preference.assert_not_called()
+
+
+class TestNudgeCooldown:
+    """Cooldown comparison must handle both legacy (naive UTC) and new
+    (TZ-aware profile-local) preferences without drifting by the offset."""
+
+    def _make(self):
+        return _make_scheduler(["23:00", "07:00"])
+
+    @pytest.mark.asyncio
+    async def test_legacy_naive_pref_honored(self):
+        """Pref written pre-v0.12.2 is TZ-naive system UTC. Cooldown math
+        must treat it as UTC, not as local wall-clock, otherwise an upgrade
+        would re-fire the nudge prematurely on users with offset > 0."""
+        from datetime import datetime as real_dt
+        from datetime import timezone as real_tz
+
+        s = self._make()
+        s.smart_questions = MagicMock()
+        s._send_proactive = AsyncMock(return_value=True)
+        s._build_action_nudge = MagicMock(return_value="⚠️ На контроле")
+        # Legacy pref: naive UTC, 2 hours ago (< 44h cooldown — should suppress)
+        utc_two_hours_ago = real_dt.now(real_tz.utc).replace(tzinfo=None) - timedelta(hours=2)
+        with patch.object(s, "_get_last_nudge", return_value=utc_two_hours_ago):
+            # smart_question should be reached (nudge on cooldown)
+            s.smart_questions.generate_question = AsyncMock(return_value="q")
+            await s._smart_question()
+        s._build_action_nudge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_aware_profile_pref_honored(self):
+        """New aware pref in profile TZ must convert to UTC for the elapsed-
+        time calculation — otherwise comparison against a naive `now` either
+        drifts or TypeErrors out."""
+        from datetime import datetime as real_dt
+        from zoneinfo import ZoneInfo
+
+        s = self._make()
+        s.smart_questions = MagicMock()
+        s._send_proactive = AsyncMock(return_value=True)
+        s._build_action_nudge = MagicMock(return_value="⚠️ На контроле")
+        # New-format pref: aware, profile TZ, 2h ago (should suppress)
+        tz = ZoneInfo("Europe/Moscow")
+        aware_two_hours_ago = real_dt.now(tz) - timedelta(hours=2)
+        with patch.object(s, "_get_last_nudge", return_value=aware_two_hours_ago):
+            s.smart_questions.generate_question = AsyncMock(return_value="q")
+            await s._smart_question()
+        s._build_action_nudge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_expired_cooldown_allows_nudge(self):
+        """Once 44h have passed the nudge fires, regardless of pref format."""
+        from datetime import datetime as real_dt
+        from datetime import timezone as real_tz
+
+        s = self._make()
+        s.smart_questions = MagicMock()
+        s._send_proactive = AsyncMock(return_value=True)
+        s._build_action_nudge = MagicMock(return_value="⚠️ На контроле")
+        stale = real_dt.now(real_tz.utc).replace(tzinfo=None) - timedelta(hours=48)
+        with patch.object(s, "_get_last_nudge", return_value=stale), \
+             patch.object(s, "_set_last_nudge"):
+            await s._smart_question()
+        s._build_action_nudge.assert_called_once()
+        s._send_proactive.assert_awaited_once_with(
+            "⚠️ На контроле", kind="open_loops_nudge",
+        )

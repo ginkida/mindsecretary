@@ -12,7 +12,6 @@ from .core.memory import Memory
 from .integrations.weather import WeatherClient
 from .interfaces.telegram import TelegramBot
 from .llm.client import AnthropicClient
-from .llm.router import ModelRouter
 from .learning.reflection import WeeklyReflection
 from .proactive.briefing import BriefingGenerator
 from .proactive.scheduler import ProactiveScheduler
@@ -93,7 +92,6 @@ def main():
         api_key=config.anthropic_api_key,
         model=config.settings.model,
     )
-    router = ModelRouter(client=client)
 
     # --- STT ---
     logger.info("Initializing STT (Groq Whisper)...")
@@ -106,7 +104,7 @@ def main():
     # --- Brain ---
     logger.info("Initializing Brain...")
     brain = Brain(
-        router=router,
+        llm=client,
         memory=memory,
         db=db,
         profile=config.profile,
@@ -134,7 +132,7 @@ def main():
         send_fn=bot.send_message,
     )
     briefing = BriefingGenerator(
-        router=router,
+        llm=client,
         memory=memory,
         db=db,
         weather=weather,
@@ -142,10 +140,11 @@ def main():
     )
     proactive.briefing_generator = briefing
     proactive.weekly_reflection = WeeklyReflection(
-        router=router, memory=memory, db=db, profile=config.profile,
+        llm=client, memory=memory, db=db, profile=config.profile,
     )
     proactive.smart_questions = SmartQuestions(
-        router=router, memory=memory, db=db,
+        llm=client, memory=memory, db=db,
+        profile=config.profile,
         min_interactions=config.settings.smart_question_min_interactions,
     )
 

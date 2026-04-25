@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import tz_now
@@ -203,6 +203,73 @@ class Database:
 
     def _now(self) -> datetime:
         return tz_now(self._timezone)
+
+    def local_now_naive(self) -> datetime:
+        """Current profile-local time as a naive datetime.
+
+        Use this when comparing against values written as local-TZ naive
+        strings (e.g. `contacts.last_contact` via `_now().strftime()`).
+        Returns naive `datetime.now()` if no profile TZ is configured.
+        """
+        now = self._now()
+        return now.replace(tzinfo=None) if now.tzinfo else now
+
+    def _local_tz_offset_minutes(self) -> int:
+        """Current UTC offset of the effective local clock, in minutes.
+
+        Uses the profile TZ when set, otherwise system local TZ (picked up
+        via `.astimezone()`). DST-aware — re-read on every call so the
+        value reflects the current instant's offset, not schema-time.
+        """
+        now = self._now()
+        if now.tzinfo is None:
+            now = now.astimezone()  # attach system local TZ
+        offset = now.utcoffset()
+        if offset is None:
+            return 0
+        return int(offset.total_seconds() // 60)
+
+    def _local_day_utc_bounds(self, day_offset: int = 0) -> tuple[str, str]:
+        """Return (start_utc_sql, end_utc_sql) for the local day `day_offset`
+        days from today. Half-open interval: `start <= ts < end`.
+
+        The SQL strings match _SQL_TS_FMT so comparisons line up with values
+        written by SQLite's `datetime('now')` (which is UTC). Use to replace
+        `WHERE date(timestamp) = local_today_string` patterns, which mix a
+        UTC-stored column with a local-TZ date string and break at offsets
+        > 0 (off by a full local day for rows logged between local midnight
+        and the UTC offset hours later).
+        """
+        now = self._now()
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_local = base + timedelta(days=day_offset)
+        end_local = start_local + timedelta(days=1)
+        if start_local.tzinfo is None:
+            # No profile TZ — attach system local via astimezone() so the
+            # UTC conversion below reflects a real wall-clock → UTC shift
+            # rather than pretending the naive string is already UTC.
+            # On Docker (system TZ = UTC) this is a no-op; on a dev machine
+            # in Asia/Almaty it correctly subtracts 5h to line up with
+            # `datetime('now')` storage.
+            start_local = start_local.astimezone()
+            end_local = end_local.astimezone()
+        start_utc = start_local.astimezone(timezone.utc).strftime(self._SQL_TS_FMT)
+        end_utc = end_local.astimezone(timezone.utc).strftime(self._SQL_TS_FMT)
+        return start_utc, end_utc
+
+    def _local_date_sql(self, column: str) -> str:
+        """Build a SQL fragment that extracts the profile-local date from a
+        UTC-stored timestamp column.
+
+        Uses SQLite's `date(ts, '+N minutes')` offset modifier so it works
+        for any TZ, including fractional offsets (India +5:30, Nepal +5:45).
+        The offset is inlined at call time — DST-aware.
+        """
+        offset = self._local_tz_offset_minutes()
+        if offset == 0:
+            return f"date({column})"
+        sign = "+" if offset >= 0 else "-"
+        return f"date({column}, '{sign}{abs(offset)} minutes')"
 
     # --- Events ---
 
@@ -470,12 +537,18 @@ class Database:
         return [dict(r) for r in rows]
 
     def count_notifications_today(self) -> int:
-        today = self._now().strftime("%Y-%m-%d")
+        """Count today's outgoing notifications, aligned to the local day.
+
+        Compares against UTC bounds of the local day so the limiter resets
+        at local midnight (not UTC midnight — interactions.timestamp is
+        stored via SQLite's `datetime('now')` which is UTC).
+        """
+        start_utc, end_utc = self._local_day_utc_bounds()
         row = self.db.execute(
             "SELECT COUNT(*) as cnt FROM interactions "
             "WHERE direction = 'out' AND message_type = 'notification' "
-            "AND date(timestamp) = ?",
-            (today,),
+            "AND timestamp >= ? AND timestamp < ?",
+            (start_utc, end_utc),
         ).fetchone()
         return row["cnt"]
 
@@ -630,8 +703,13 @@ class Database:
         Returns top clusters ordered by total importance. Each cluster:
           {"label": str, "count": int}
         where label is a person name (preferred) or category name.
+
+        `memories.created_at` is stored UTC, so compare against the UTC
+        lower bound of local-midnight N days ago — not a local date string,
+        which would drop memories created in the first offset-hours of the
+        target day on positive-offset timezones.
         """
-        since = (self._now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        since_utc, _ = self._local_day_utc_bounds(day_offset=-days)
         rows = self.db.execute(
             "SELECT "
             "  COALESCE(NULLIF(related_person, ''), category) AS label, "
@@ -640,12 +718,12 @@ class Database:
             "FROM memories "
             "WHERE status = 'active' "
             "  AND importance >= 5 "
-            "  AND date(created_at) >= date(?) "
+            "  AND created_at >= ? "
             "GROUP BY label "
             "HAVING cnt >= 2 "
             "ORDER BY total_importance DESC, cnt DESC "
             "LIMIT ?",
-            (since, limit),
+            (since_utc, limit),
         ).fetchall()
         return [{"label": r["label"], "count": r["cnt"]} for r in rows]
 
@@ -752,11 +830,16 @@ class Database:
         self.db.commit()
 
     def get_today_cost(self) -> float:
-        """Total API cost (USD) accumulated today. Used by cost circuit breaker."""
-        today = self._now().strftime("%Y-%m-%d")
+        """Total API cost (USD) accumulated today (profile local day).
+
+        Used by the cost circuit breaker. Aligns to local midnight via UTC
+        bounds so the daily spend cap resets on the user's clock, not UTC.
+        """
+        start_utc, end_utc = self._local_day_utc_bounds()
         row = self.db.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM api_costs WHERE date(timestamp) = ?",
-            (today,),
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM api_costs "
+            "WHERE timestamp >= ? AND timestamp < ?",
+            (start_utc, end_utc),
         ).fetchone()
         return float(row[0])
 
@@ -867,16 +950,35 @@ class Database:
         return counts
 
     def get_stats(self) -> dict:
-        """Get usage stats for /stats command."""
-        today = self._now().strftime("%Y-%m-%d")
-        month_start = self._now().strftime("%Y-%m-01")
+        """Get usage stats for /stats command, aligned to the local day.
+
+        All date-bucket boundaries are computed in the profile's timezone
+        so "today" / "this month" / 7-day trend match what the user sees
+        on their clock. Timestamps are UTC-stored, so queries use either
+        UTC half-open bounds or the offset-modifier `date(ts, 'N minutes')`.
+        """
+        start_utc, end_utc = self._local_day_utc_bounds()
+
+        # Month start: compute as local-midnight of the first-of-month, in UTC.
+        # Mirrors `_local_day_utc_bounds` — naive `_now()` is attached to the
+        # system local TZ via astimezone() before converting, so month roll-
+        # over aligns to the user's clock instead of UTC midnight on day 1.
+        month_start_local = self._now().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0,
+        )
+        if month_start_local.tzinfo is None:
+            month_start_local = month_start_local.astimezone()
+        month_start_utc = month_start_local.astimezone(
+            timezone.utc,
+        ).strftime(self._SQL_TS_FMT)
 
         # Today's cost
         row = self.db.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) as cost, "
             "COALESCE(SUM(input_tokens), 0) as inp, "
             "COALESCE(SUM(output_tokens), 0) as outp "
-            "FROM api_costs WHERE date(timestamp) = ?", (today,)
+            "FROM api_costs WHERE timestamp >= ? AND timestamp < ?",
+            (start_utc, end_utc),
         ).fetchone()
         today_cost = row[0]
         today_tokens = row[1] + row[2]
@@ -884,7 +986,7 @@ class Database:
         # Month cost
         row = self.db.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) as cost "
-            "FROM api_costs WHERE date(timestamp) >= ?", (month_start,)
+            "FROM api_costs WHERE timestamp >= ?", (month_start_utc,)
         ).fetchone()
         month_cost = row[0]
 
@@ -900,26 +1002,29 @@ class Database:
 
         # Interactions today
         interactions_today = self.db.execute(
-            "SELECT COUNT(*) FROM interactions WHERE date(timestamp) = ?", (today,)
+            "SELECT COUNT(*) FROM interactions WHERE timestamp >= ? AND timestamp < ?",
+            (start_utc, end_utc),
         ).fetchone()[0]
 
         # Per-provider breakdown (today)
         provider_rows = self.db.execute(
             "SELECT provider, COALESCE(SUM(cost_usd), 0) as cost, "
             "COALESCE(SUM(input_tokens + output_tokens), 0) as tokens "
-            "FROM api_costs WHERE date(timestamp) = ? GROUP BY provider",
-            (today,),
+            "FROM api_costs WHERE timestamp >= ? AND timestamp < ? GROUP BY provider",
+            (start_utc, end_utc),
         ).fetchall()
         providers = {r["provider"]: {"cost": r["cost"], "tokens": r["tokens"]}
                      for r in provider_rows}
 
-        # 7-day cost trend
-        week_start = (self._now() - timedelta(days=6)).strftime("%Y-%m-%d")
+        # 7-day cost trend — group rows by LOCAL day (via offset modifier)
+        # so each bucket aligns to local midnight rather than UTC midnight.
+        week_start_utc, _ = self._local_day_utc_bounds(day_offset=-6)
+        day_expr = self._local_date_sql("timestamp")
         trend_rows = self.db.execute(
-            "SELECT date(timestamp) as day, COALESCE(SUM(cost_usd), 0) as cost "
-            "FROM api_costs WHERE date(timestamp) >= ? "
-            "GROUP BY day ORDER BY day",
-            (week_start,),
+            f"SELECT {day_expr} as day, COALESCE(SUM(cost_usd), 0) as cost "
+            f"FROM api_costs WHERE timestamp >= ? "
+            f"GROUP BY day ORDER BY day",
+            (week_start_utc,),
         ).fetchall()
         week_trend = [{"date": r["day"], "cost": r["cost"]} for r in trend_rows]
 

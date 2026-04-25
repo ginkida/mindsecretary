@@ -247,14 +247,18 @@ class TestDailyGoals:
 
 class TestDiary:
     def test_save_and_get_diary(self, tmp_db: Database):
-        tmp_db.save_diary_entry("2026-04-15", "Good day.", mood="positive")
+        # Use db's own clock so the test isn't tied to a hardcoded date that
+        # drifts out of the 7-day window as real time advances.
+        today = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.save_diary_entry(today, "Good day.", mood="positive")
         entries = tmp_db.get_diary_entries(days=7)
         assert len(entries) == 1
         assert entries[0]["mood"] == "positive"
 
     def test_diary_upsert(self, tmp_db: Database):
-        tmp_db.save_diary_entry("2026-04-15", "Morning.")
-        tmp_db.save_diary_entry("2026-04-15", "Updated.")
+        today = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.save_diary_entry(today, "Morning.")
+        tmp_db.save_diary_entry(today, "Updated.")
         entries = tmp_db.get_diary_entries(days=7)
         assert len(entries) == 1
         assert entries[0]["content"] == "Updated."
@@ -286,11 +290,15 @@ class TestCostBreaker:
 
 
 class TestOpenLoops:
-    def test_get_open_loops_collects_pending_items(self, tmp_db: Database):
-        now = datetime.now()
-        tmp_db.create_reminder("Overdue", (now - timedelta(hours=2)).strftime(SQL_TS_FMT))
-        tmp_db.create_reminder("Later today", (now + timedelta(hours=2)).strftime(SQL_TS_FMT))
-        tmp_db.create_event("Meeting", (now + timedelta(hours=3)).strftime(SQL_TS_FMT))
+    def test_get_open_loops_collects_pending_items(self, tmp_db: Database, monkeypatch):
+        # Pin the DB clock to noon local so trigger offsets (+/- 2-3h)
+        # land squarely in "today" and "yesterday" / "later today"
+        # regardless of when the suite actually runs.
+        anchor = datetime(2026, 4, 25, 12, 0, 0)
+        monkeypatch.setattr(tmp_db, "_now", lambda: anchor)
+        tmp_db.create_reminder("Overdue", (anchor - timedelta(hours=2)).strftime(SQL_TS_FMT))
+        tmp_db.create_reminder("Later today", (anchor + timedelta(hours=2)).strftime(SQL_TS_FMT))
+        tmp_db.create_event("Meeting", (anchor + timedelta(hours=3)).strftime(SQL_TS_FMT))
         tmp_db.create_daily_goal("Finish doc", priority="high")
         tmp_db.create_decision("Choose hosting", follow_up_days=0)
 

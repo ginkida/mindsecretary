@@ -5,7 +5,7 @@ import logging
 import math
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import voyageai
@@ -213,7 +213,10 @@ class Memory:
         # Recency decay: memories not accessed recently get dampened.
         # Uses last_accessed (or created_at as fallback).
         # Decay from 1.0 (just accessed) to 0.5 floor over ~90 days.
-        now = datetime.now()
+        # Both sides are UTC-naive: stored via SQLite `datetime('now')`
+        # (UTC), so compute `now` as UTC-naive too. datetime.now() would
+        # drift by the system TZ offset on non-UTC dev machines.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         decay_half_life = 90.0  # days
         for i, row in enumerate(rows):
             ref = row["last_accessed"] or row["created_at"]

@@ -103,21 +103,27 @@ def analyze_mood(messages: list[dict]) -> dict:
 
 
 def get_mood_trend(db: Database, days: int = 7) -> list[dict]:
-    """Get daily mood for the last N days."""
+    """Get daily mood for the last N days, bucketed by the profile local day.
+
+    Each bucket covers a local calendar day, translated to UTC bounds for
+    the query (interactions.timestamp is stored UTC via `datetime('now')`).
+    The "date" label is the local date so the user sees their own calendar.
+    """
     results = []
-    now = datetime.now()
+    now_local = db.local_now_naive()
     for i in range(days):
-        day = now - timedelta(days=i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)
-        # get_interactions handles the correct SQL timestamp format internally
+        day_local = now_local - timedelta(days=i)
+        day_label = day_local.strftime("%Y-%m-%d")
+        start_utc_s, end_utc_s = db._local_day_utc_bounds(day_offset=-i)
+        start_dt = datetime.strptime(start_utc_s, "%Y-%m-%d %H:%M:%S")
+        end_dt = datetime.strptime(end_utc_s, "%Y-%m-%d %H:%M:%S")
         day_msgs = db.get_interactions(
-            since=day_start, until=day_end, limit=200,
+            since=start_dt, until=end_dt, limit=200,
         )
         if day_msgs:
             mood = analyze_mood(day_msgs)
             results.append({
-                "date": day.strftime("%Y-%m-%d"),
+                "date": day_label,
                 "score": mood["score"],
                 "label": mood["label"],
                 "messages": mood["stats"]["messages"],
@@ -126,9 +132,16 @@ def get_mood_trend(db: Database, days: int = 7) -> list[dict]:
 
 
 def check_contact_frequency(db: Database) -> list[dict]:
-    """Find contacts whose mention frequency dropped significantly."""
+    """Find contacts whose mention frequency dropped significantly.
+
+    `contacts.last_contact` is stored as a profile-local naive string via
+    `Database._now().strftime()`. Comparing against `datetime.now()`
+    directly drifts by the TZ offset (one full day off for users with
+    offset > 0 on most boundary conditions) — use `db.local_now_naive()`.
+    """
     contacts = db.get_contacts("")
     alerts = []
+    now_local = db.local_now_naive()
 
     for c in contacts:
         if not c.get("last_contact"):
@@ -138,7 +151,7 @@ def check_contact_frequency(db: Database) -> list[dict]:
         except (ValueError, TypeError):
             continue
 
-        days_since = (datetime.now() - last).days
+        days_since = (now_local - last).days
         freq = c.get("contact_frequency")
         mention_count = c.get("mention_count", 0)
 

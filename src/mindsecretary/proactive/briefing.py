@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from ..core import DAYS_RU, tz_now
+from ..core import DAYS_RU, fmt_local_time, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -11,15 +11,15 @@ from ..core.prompt_safety import sanitize_for_context
 from ..integrations.weather import WeatherClient
 from ..learning.mood import analyze_mood, check_contact_frequency
 from ..llm.prompts import BRIEFING_SYSTEM_PROMPT, DIARY_SYSTEM_PROMPT, EVENING_SYSTEM_PROMPT
-from ..llm.router import ModelRouter
+from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
 class BriefingGenerator:
-    def __init__(self, router: ModelRouter, memory: Memory, db: Database,
+    def __init__(self, llm: LLMClient, memory: Memory, db: Database,
                  weather: WeatherClient | None, profile: Profile):
-        self.router = router
+        self.llm = llm
         self.memory = memory
         self.db = db
         self.weather = weather
@@ -110,7 +110,7 @@ class BriefingGenerator:
         )
 
         try:
-            response = await self.router.chat(
+            response = await self.llm.chat(
                 system=prompt,
                 messages=[{"role": "user", "content": "Сгенерируй утренний брифинг."}],
                 max_tokens=800,
@@ -132,11 +132,19 @@ class BriefingGenerator:
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         s = sanitize_for_context
 
-        # Today's interactions
-        today_start = now.replace(hour=0, minute=0, second=0)
+        # Today's interactions — `since` must be UTC (interactions.timestamp
+        # is stored via SQLite's `datetime('now')` = UTC). Use the UTC
+        # equivalent of local midnight today so "today" matches the user's
+        # calendar, not the system clock.
+        start_utc_s, _ = self.db._local_day_utc_bounds()
+        today_start = datetime.strptime(start_utc_s, "%Y-%m-%d %H:%M:%S")
         interactions = self.db.get_interactions(since=today_start, limit=50)
+        # timestamp is UTC-naive; render in profile TZ so Claude sees the
+        # times the user actually lived, not UTC wall-clock.
+        today_local_str = now.strftime("%Y-%m-%d")
         interactions_text = "\n".join(
-            f"[{i['timestamp'][11:16]}] {'→' if i['direction'] == 'out' else '←'} "
+            f"[{fmt_local_time(i['timestamp'], self.profile.timezone, today_local_str)}] "
+            f"{'→' if i['direction'] == 'out' else '←'} "
             f"({i['message_type']}) {s(i['content'], 100)}"
             for i in interactions[:30]
         ) or "Нет взаимодействий."
@@ -195,7 +203,7 @@ class BriefingGenerator:
         )
 
         try:
-            response = await self.router.chat(
+            response = await self.llm.chat(
                 system=prompt,
                 messages=[{"role": "user", "content": "Сгенерируй вечерний итог."}],
                 max_tokens=800,
@@ -214,7 +222,9 @@ class BriefingGenerator:
         """Generate auto-diary entry from the day's interactions."""
         now = tz_now(self.profile.timezone)
         today = now.strftime("%Y-%m-%d")
-        today_start = now.replace(hour=0, minute=0, second=0)
+        # UTC bound of local midnight today — matches `datetime('now')` storage.
+        start_utc_s, _ = self.db._local_day_utc_bounds()
+        today_start = datetime.strptime(start_utc_s, "%Y-%m-%d %H:%M:%S")
         s = sanitize_for_context
 
         interactions = self.db.get_interactions(since=today_start, limit=100)
@@ -239,8 +249,11 @@ class BriefingGenerator:
         # Relationship alerts
         rel_alerts = check_contact_frequency(self.db)
 
+        # Render stored-UTC timestamps in profile TZ so the diary matches
+        # the user's clock, not the system's.
         interactions_text = "\n".join(
-            f"[{i['timestamp'][11:16]}] {'←' if i['direction'] == 'in' else '→'} {s(i['content'], 120)}"
+            f"[{fmt_local_time(i['timestamp'], self.profile.timezone, today)}] "
+            f"{'←' if i['direction'] == 'in' else '→'} {s(i['content'], 120)}"
             for i in interactions[:40]
         )
 
@@ -256,7 +269,7 @@ class BriefingGenerator:
             )
 
         try:
-            response = await self.router.chat(
+            response = await self.llm.chat(
                 system=DIARY_SYSTEM_PROMPT.format(
                     name=self.profile.name,
                     date=today,

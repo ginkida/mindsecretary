@@ -235,6 +235,7 @@ class TelegramBot:
             await update.message.reply_text("Контактов пока нет.")
             return
         lines = ["👥 *Контакты*\n"]
+        now_local = self.brain.db.local_now_naive()
         for c in contacts[:20]:
             line = f"• *{c['name']}*"
             if c.get("relation"):
@@ -242,7 +243,10 @@ class TelegramBot:
             if c.get("last_contact"):
                 try:
                     last = datetime.fromisoformat(c["last_contact"])
-                    days = (datetime.now() - last).days
+                    # last_contact is a profile-local naive string; compare
+                    # against local naive "now" to avoid the Docker-system-
+                    # UTC-vs-local offset shifting days by +/-1.
+                    days = (now_local - last).days
                     line += f" — {days}д назад"
                 except (ValueError, TypeError):
                     pass
@@ -515,8 +519,9 @@ class TelegramBot:
         await update.message.reply_text("⏳ Готовлю экспорт...")
 
         db = self.brain.db
+        exported_at = tz_now(self.brain.profile.timezone).isoformat()
         data = {
-            "exported_at": datetime.now().isoformat(),
+            "exported_at": exported_at,
             "memories": db.db.execute(
                 "SELECT id, content, category, importance, related_person, "
                 "related_date, source_type, source_ref, confidence, created_at "
@@ -538,7 +543,10 @@ class TelegramBot:
 
         json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         doc = io.BytesIO(json_bytes)
-        doc.name = f"mindsecretary_export_{datetime.now().strftime('%Y%m%d')}.json"
+        doc.name = (
+            f"mindsecretary_export_"
+            f"{tz_now(self.brain.profile.timezone).strftime('%Y%m%d')}.json"
+        )
 
         await update.message.reply_document(
             document=doc,

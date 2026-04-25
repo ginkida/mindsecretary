@@ -3,14 +3,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 from ..learning.mood import check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
-from ..llm.router import ModelRouter
+from ..llm.client import LLMClient
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
-from . import DAYS_RU, tz_now
+from . import DAYS_RU, fmt_local_time, tz_now
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
@@ -44,9 +43,9 @@ class BrainResponse:
 
 
 class Brain:
-    def __init__(self, router: ModelRouter, memory: Memory, db: Database,
+    def __init__(self, llm: LLMClient, memory: Memory, db: Database,
                  profile: Profile, settings: Settings):
-        self.router = router
+        self.llm = llm
         self.memory = memory
         self.db = db
         self.profile = profile
@@ -113,7 +112,7 @@ class Brain:
 
         for _round in range(self.settings.max_tool_rounds):
             try:
-                response = await self.router.chat(
+                response = await self.llm.chat(
                     system=system_prompt,
                     messages=messages,
                     tools=TOOL_DEFINITIONS,
@@ -241,22 +240,8 @@ class Brain:
     }
 
     def _fmt_local_time(self, ts: str, today_local: str) -> str:
-        """UTC ISO-ish timestamp → local HH:MM (MM-DD HH:MM if not today).
-
-        `interactions.timestamp` is stored via SQLite's `datetime('now')`
-        which is always UTC. Convert to profile timezone for display so the
-        LLM sees times that match the user's clock.
-        """
-        try:
-            utc_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            local = utc_naive.replace(tzinfo=timezone.utc).astimezone(
-                ZoneInfo(self.profile.timezone)
-            )
-        except (ValueError, TypeError):
-            return "??:??"
-        if local.strftime("%Y-%m-%d") == today_local:
-            return local.strftime("%H:%M")
-        return local.strftime("%m-%d %H:%M")
+        """Thin wrapper over `fmt_local_time` that bakes in the profile TZ."""
+        return fmt_local_time(ts, self.profile.timezone, today_local)
 
     def _build_history_turns(
         self, limit: int = CONVERSATION_HISTORY_TURNS,

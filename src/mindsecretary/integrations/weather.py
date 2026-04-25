@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -23,6 +24,30 @@ WMO_CODES = {
 }
 
 
+def _merge_rain_hours(
+    rain: list[tuple[int, int, int]],
+) -> list[tuple[int, int, int]]:
+    """Collapse consecutive hourly rain entries into (start, end, max_prob) ranges.
+
+    rain items are (hour, prob, weather_code); returned (start_hour, end_hour,
+    max_prob) where start/end are inclusive hour indices. Used by the
+    scheduler and the briefing to render "13:00-16:00 (до 80%)" instead of
+    a flat hour list.
+    """
+    if not rain:
+        return []
+    ordered = sorted(rain, key=lambda x: x[0])
+    ranges: list[list[int]] = []
+    for hour, prob, _code in ordered:
+        if ranges and hour == ranges[-1][1] + 1:
+            ranges[-1][1] = hour
+            if prob > ranges[-1][2]:
+                ranges[-1][2] = prob
+        else:
+            ranges.append([hour, hour, prob])
+    return [(s, e, p) for s, e, p in ranges]
+
+
 class WeatherClient:
     """Open-Meteo API — бесплатный, без ключа."""
 
@@ -32,6 +57,15 @@ class WeatherClient:
         self.lat = latitude
         self.lon = longitude
         self.tz = timezone
+        # Resolve ZoneInfo once so _parse can compute local "now" correctly.
+        # datetime.now() defaults to system TZ (UTC in slim Docker images);
+        # without this the rain_today filter skips the wrong hours and
+        # leaks past-hour entries into the hourly forecast.
+        try:
+            self._tz_info: ZoneInfo | None = ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning("Invalid weather timezone %r, falling back to system TZ", timezone)
+            self._tz_info = None
         self.client = httpx.AsyncClient(timeout=10.0)
 
     async def get_forecast(self, days: int = 1) -> dict:
@@ -86,17 +120,30 @@ class WeatherClient:
                 "wind_max": (daily.get("wind_speed_10m_max") or [None])[i],
             })
 
-        # Hourly — find rain windows for today
+        # Hourly — find rain windows for today, in the user's local TZ.
+        # Times from Open-Meteo are already local because the request passes
+        # `timezone=self.tz`, but "now" must be computed in the same TZ —
+        # otherwise we compare local forecast hours against UTC/system hours
+        # and leak past hours (the "rain at 13:00 sent at 18:56" bug).
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])
         precip_probs = hourly.get("precipitation_probability", [])
-        rain_hours = []
-        now_hour = datetime.now().hour
-        for i, t in enumerate(times[:24]):  # only today
-            hour = int(t[11:13]) if len(t) > 12 else 0
+        weather_codes = hourly.get("weather_code", [])
+        now_local = datetime.now(self._tz_info) if self._tz_info else datetime.now()
+        today_str = now_local.strftime("%Y-%m-%d")
+        now_hour = now_local.hour
+        rain_hours: list[tuple[int, int, int]] = []
+        for i, t in enumerate(times):
+            if len(t) < 13 or not t.startswith(today_str):
+                continue
+            try:
+                hour = int(t[11:13])
+            except ValueError:
+                continue
             prob = precip_probs[i] if i < len(precip_probs) else 0
+            code = weather_codes[i] if i < len(weather_codes) else 0
             if hour >= now_hour and prob and prob >= 50:
-                rain_hours.append((hour, prob))
+                rain_hours.append((hour, int(prob), int(code)))
 
         result["rain_today"] = rain_hours
 
@@ -119,8 +166,15 @@ class WeatherClient:
 
         rain = forecast.get("rain_today", [])
         if rain:
-            hours = ", ".join(f"{h}:00 ({p}%)" for h, p in rain[:3])
-            text += f"\nДождь ожидается: {hours}"
+            # rain entries are (hour, prob, code); collapse consecutive hours
+            # into ranges so the briefing reads "13:00-16:00" not "13, 14, 15".
+            ranges = _merge_rain_hours(rain)
+            parts = [
+                f"{s:02d}:00" if s == e else f"{s:02d}:00-{(e + 1) % 24:02d}:00"
+                for s, e, _prob in ranges
+            ]
+            max_prob = max((p for _s, _e, p in ranges), default=0)
+            text += f"\nДождь ожидается: {', '.join(parts)} (до {max_prob}%)"
 
         return text
 

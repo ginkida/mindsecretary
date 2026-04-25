@@ -1,7 +1,7 @@
 """Tests for habit streak tracking and recurring reminders."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -13,7 +13,10 @@ class TestHabitStats:
         assert tmp_db.get_habit_stats() == []
 
     def test_streak_counting(self, tmp_db: Database):
-        today = datetime.now()
+        # Anchor on the DB's clock so the "today" used for the log dates
+        # matches the one `get_habit_stats` compares against (breaks at
+        # UTC vs local wall-clock boundaries otherwise).
+        today = tmp_db._now()
         # Log 3 consecutive days
         for i in range(3):
             d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -24,7 +27,7 @@ class TestHabitStats:
         assert stats[0]["streak"] == 3
 
     def test_streak_breaks_on_miss(self, tmp_db: Database):
-        today = datetime.now()
+        today = tmp_db._now()
         tmp_db.log_habit("reading", done=True, date=today.strftime("%Y-%m-%d"))
         # Skip yesterday
         tmp_db.log_habit("reading", done=False,
@@ -35,7 +38,7 @@ class TestHabitStats:
         assert stats[0]["streak"] == 1  # Only today counts
 
     def test_week_rate(self, tmp_db: Database):
-        today = datetime.now()
+        today = tmp_db._now()
         for i in range(4):
             d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             tmp_db.log_habit("meditation", done=True, date=d)

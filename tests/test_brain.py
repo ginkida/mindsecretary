@@ -382,7 +382,7 @@ class TestProcessInjectsHistory:
                 )
 
         brain = _make_brain("UTC")
-        brain.router = FakeRouter()
+        brain.llm = FakeRouter()
         brain.db = tmp_db
         brain.settings.daily_cost_limit_usd = 100.0
         brain.settings.max_tool_rounds = 5
@@ -430,7 +430,7 @@ class TestProcessInjectsHistory:
                 )
 
         brain = _make_brain("UTC")
-        brain.router = FakeRouter()
+        brain.llm = FakeRouter()
         brain.db = tmp_db
         brain.settings.daily_cost_limit_usd = 100.0
         brain.settings.max_tool_rounds = 5
@@ -464,7 +464,7 @@ class TestProcessInjectsHistory:
                 )
 
         brain = _make_brain("UTC")
-        brain.router = FakeRouter()
+        brain.llm = FakeRouter()
         brain.db = tmp_db
         brain.settings.daily_cost_limit_usd = 100.0
         brain.settings.max_tool_rounds = 5
