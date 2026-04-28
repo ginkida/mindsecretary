@@ -576,11 +576,18 @@ class TestBirthdayAlertFormat:
         assert "(326)" not in result
         assert "🎂 Сегодня ДР: X" == result
 
-    def test_invalid_birthday_format_falls_back_to_md(self):
-        """Garbage in the birthday column shouldn't crash the alert —
-        defensive parse keeps things going with whatever's there."""
-        result = self._format({"name": "X", "birthday": "garbage"})
-        # 5+ chars is the threshold — "garbage" qualifies. With month/day
-        # split failing, we land in the today-fallback branch.
-        # We just assert it doesn't crash and produces SOME string.
-        assert isinstance(result, str)
+    def test_invalid_birthday_returns_empty(self):
+        """Garbage in the birthday column should be SKIPPED, not rendered.
+        Earlier the function fell back to '📅 Скоро ДР: X — rbage' (slice
+        of the garbage), which leaks DB corruption into Telegram. The
+        early MM-DD validation now drops such rows; /people still shows
+        the contact, the bot just doesn't fire a birthday alert for them."""
+        # Pure non-numeric garbage — 7 chars passes the length gate but
+        # fails MM-DD parse.
+        assert self._format({"name": "X", "birthday": "garbage"}) == ""
+        # Out-of-range month — 13 doesn't exist
+        assert self._format({"name": "X", "birthday": "2026-13-15"}) == ""
+        # Out-of-range day — Feb has no 32
+        assert self._format({"name": "X", "birthday": "2026-02-32"}) == ""
+        # Missing dash separator
+        assert self._format({"name": "X", "birthday": "20260415"}) == ""

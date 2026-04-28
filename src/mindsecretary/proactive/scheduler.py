@@ -328,6 +328,19 @@ class ProactiveScheduler:
         if not bday or len(bday) < 5:
             return ""
         bday_md = bday[-5:]
+        # Validate MM-DD shape early — birthday column is mostly clean
+        # (LLM tool sets it via update_contact) but a corrupted row like
+        # "garbage" would otherwise reach the fallback render path and
+        # produce "📅 Скоро ДР: X — rbage", which looks broken to the user.
+        # Better to skip silently — the contact still appears in /people.
+        try:
+            mm, dd = bday_md.split("-")
+            month_check = int(mm)
+            day_check = int(dd)
+            if not (1 <= month_check <= 12 and 1 <= day_check <= 31):
+                return ""
+        except (ValueError, AttributeError):
+            return ""
         name = contact.get("name") or "?"
         relation = f" ({contact['relation']})" if contact.get("relation") else ""
 
