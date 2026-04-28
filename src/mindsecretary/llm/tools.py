@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
-from datetime import datetime, timezone as _dt_timezone
+from datetime import datetime, timedelta, timezone as _dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -137,6 +137,37 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["text", "trigger_at"],
+        },
+    },
+    {
+        "name": "get_reminders",
+        "description": (
+            "Перечислить отложенные напоминания (status=pending). Используй, "
+            "когда пользователь спрашивает «что у меня в напоминаниях», "
+            "«какие на этой неделе напоминания» или нужно сослаться на ранее "
+            "поставленное напоминание перед его изменением. Включает "
+            "просроченные. days_ahead ограничивает окно вперёд (по умолчанию "
+            "все). Не путай с get_open_loops — там агрегат по всем хвостам."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": (
+                        "Сколько дней вперёд от сегодня показывать (опционально). "
+                        "Просроченные пендинг-напоминания включаются всегда."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Максимум записей (по умолчанию 20).",
+                },
+            },
         },
     },
     {
@@ -413,6 +444,11 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "get_open_loops":
         clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
 
+    if name == "get_reminders":
+        if clean.get("days_ahead") is not None:
+            clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
+        clean["limit"] = max(1, min(50, int(clean.get("limit", 20))))
+
     if name == "search_conversations":
         clean["days"] = max(1, min(365, int(clean.get("days", 30))))
         clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
@@ -608,6 +644,51 @@ class ToolExecutor:
         self.db.create_reminder(text, trigger_at, priority, recurrence)
         rec_str = f" (повтор: {recurrence})" if recurrence else ""
         return f"Reminder set: {text} at {trigger_at}{rec_str}"
+
+    def _handle_get_reminders(self, days_ahead: int | None = None,
+                              limit: int = 20) -> str:
+        rows = self.db.get_pending_reminders()
+        if not rows:
+            return "Нет отложенных напоминаний."
+
+        # `reminders.trigger_at` is profile-local naive (per CLAUDE.md TZ
+        # convention) — same source as db.local_now_naive(), so compare
+        # directly without TZ conversion.
+        now_local = self.db.local_now_naive()
+        upper_bound: datetime | None = None
+        if days_ahead is not None:
+            upper_bound = now_local + timedelta(days=days_ahead)
+
+        filtered: list[dict] = []
+        for r in rows:
+            trigger_str = r.get("trigger_at") or ""
+            # Always keep overdue (trigger <= now); window only restricts
+            # future ones, so user still sees what's already late.
+            if upper_bound is not None:
+                try:
+                    trig = datetime.fromisoformat(trigger_str.replace(" ", "T"))
+                except (ValueError, TypeError):
+                    filtered.append(r)  # unparseable — keep, don't silently drop
+                    continue
+                if trig > now_local and trig > upper_bound:
+                    continue
+            filtered.append(r)
+
+        if not filtered:
+            return f"Нет отложенных напоминаний на ближайшие {days_ahead} дн."
+
+        lines: list[str] = []
+        for r in filtered[:limit]:
+            ts = (r.get("trigger_at") or "?")[:16]
+            prio = r.get("priority") or "medium"
+            rec = r.get("recurrence")
+            rec_tag = f" ({rec})" if rec else ""
+            text = (r.get("text") or "")[:200]
+            lines.append(f"- {ts} [{prio}]{rec_tag}: {text}")
+
+        if len(filtered) > limit:
+            lines.append(f"... и ещё {len(filtered) - limit} (увеличь limit чтобы увидеть)")
+        return "\n".join(lines)
 
     def _handle_update_contact(self, name: str, relation: str | None = None,
                                birthday: str | None = None,

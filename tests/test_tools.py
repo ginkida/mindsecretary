@@ -95,6 +95,26 @@ class TestSanitizeArgs:
         args = _sanitize_args("get_open_loops", {"days_ahead": 99})
         assert args["days_ahead"] == 7
 
+    def test_get_reminders_defaults(self):
+        args = _sanitize_args("get_reminders", {})
+        # days_ahead omitted = no window filter
+        assert args.get("days_ahead") is None
+        assert args["limit"] == 20
+
+    def test_get_reminders_days_ahead_clamped(self):
+        args_low = _sanitize_args("get_reminders", {"days_ahead": 0})
+        assert args_low["days_ahead"] == 1
+
+        args_high = _sanitize_args("get_reminders", {"days_ahead": 9999})
+        assert args_high["days_ahead"] == 365
+
+    def test_get_reminders_limit_clamped(self):
+        args_low = _sanitize_args("get_reminders", {"limit": 0})
+        assert args_low["limit"] == 1
+
+        args_high = _sanitize_args("get_reminders", {"limit": 999})
+        assert args_high["limit"] == 50
+
     def test_ephemeral_state_valid(self):
         args = _sanitize_args("set_ephemeral_state", {
             "key": "location",
@@ -244,3 +264,101 @@ class TestSearchConversationsHandler:
         assert "…" in result
         # Trailing marker shouldn't appear — it's past char 300
         assert "UNIQUEMARKER" not in result
+
+
+class TestGetRemindersHandler:
+    """ToolExecutor handler for get_reminders. The LLM has create_reminder
+    but used to be blind to its own pending list — user could ask 'что у
+    меня в напоминаниях' and the bot would hallucinate."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_reminders", {})
+        assert result == "Нет отложенных напоминаний."
+
+    @pytest.mark.asyncio
+    async def test_lists_pending_with_priority_and_recurrence(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # trigger_at is profile-local naive; tmp_db has no TZ so just use
+        # a fixed string. Both reminders are far in the future so days_ahead
+        # filter test won't false-positive on these.
+        tmp_db.create_reminder("позвонить маме", "2099-01-15 18:00:00", "high")
+        tmp_db.create_reminder("книга в библиотеку", "2099-02-01 12:00:00",
+                               "medium", recurrence="weekly")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_reminders", {})
+
+        # Sorted by trigger_at ASC — позвонить first
+        first, second = result.split("\n", 1)
+        assert "позвонить маме" in first
+        assert "[high]" in first
+        assert "книга" in second
+        assert "(weekly)" in second  # recurrence tag rendered
+        # Seconds dropped from output — minute precision is enough for users
+        assert "18:00:00" not in first
+        assert "18:00" in first
+
+    @pytest.mark.asyncio
+    async def test_days_ahead_filters_far_future_keeps_overdue(self, tmp_db):
+        """Overdue reminders MUST always show — filter only restricts
+        forward window. Otherwise a user asking 'что на эту неделю' would
+        miss something they were supposed to do yesterday."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        overdue = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        soon = (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        far = (now + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+        tmp_db.create_reminder("вчерашнее", overdue, "high")
+        tmp_db.create_reminder("через 2 дня", soon, "medium")
+        tmp_db.create_reminder("через месяц", far, "low")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_reminders", {"days_ahead": 7})
+
+        assert "вчерашнее" in result   # overdue always kept
+        assert "через 2 дня" in result  # within 7-day window
+        assert "через месяц" not in result  # past window — dropped
+
+    @pytest.mark.asyncio
+    async def test_limit_truncates_output(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        for i in range(5):
+            ts = (now + timedelta(days=i + 1)).strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.create_reminder(f"reminder {i}", ts, "medium")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_reminders", {"limit": 3})
+
+        # 3 visible + 1 ellipsis line about the rest
+        assert result.count("\n- ") == 2  # 3 items = 2 inter-line breaks
+        assert "ещё 2" in result
+
+    @pytest.mark.asyncio
+    async def test_does_not_show_sent_reminders(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        r = tmp_db.create_reminder("done thing", "2099-01-01 10:00:00", "low")
+        tmp_db.mark_reminder_sent(r["id"])
+        tmp_db.create_reminder("still pending", "2099-01-02 10:00:00", "low")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_reminders", {})
+
+        assert "still pending" in result
+        assert "done thing" not in result
