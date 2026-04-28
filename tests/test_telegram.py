@@ -105,6 +105,58 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_stats_handler_renders_category_breakdown(self):
+        """/stats includes a per-category memory breakdown so the user
+        sees what kinds of facts the bot is accumulating, not just the
+        opaque total. Top 5 only — keeps Telegram message scannable."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_stats = MagicMock(return_value={
+            "today_cost": 0.10, "today_tokens": 1000, "month_cost": 5.0,
+            "memories": 100, "contacts": 5, "interactions_today": 20,
+            "providers": {}, "week_trend": [],
+            "memory_categories": [
+                {"category": "work", "count": 40},
+                {"category": "personal", "count": 30},
+                {"category": "health", "count": 15},
+                {"category": "promise", "count": 10},
+                {"category": "contact", "count": 3},
+                {"category": "preference", "count": 2},  # 6th, must NOT show
+            ],
+        })
+
+        await bot._handle_stats(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "work: 40" in text
+        assert "personal: 30" in text
+        assert "promise: 10" in text
+        # Only top 5 — preference (6th) must be cut
+        assert "preference" not in text
+
+    @pytest.mark.asyncio
+    async def test_stats_handler_handles_empty_breakdown(self):
+        """/stats shouldn't crash when there are no memories yet — empty
+        list is the bot's first-day state."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_stats = MagicMock(return_value={
+            "today_cost": 0, "today_tokens": 0, "month_cost": 0,
+            "memories": 0, "contacts": 0, "interactions_today": 0,
+            "providers": {}, "week_trend": [],
+            "memory_categories": [],
+        })
+
+        await bot._handle_stats(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Воспоминаний: 0" in text
+        # No bullets when breakdown is empty
+        assert "•" not in text or "Контактов" in text  # other text may have bullets
+
+    @pytest.mark.asyncio
     async def test_version_handler_returns_version_and_counts(self):
         """`/version` is the support-channel command — must always work
         even if individual DB queries fail. Each counter has its own

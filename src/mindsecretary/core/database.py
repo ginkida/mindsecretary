@@ -1152,6 +1152,17 @@ class Database:
             "SELECT COUNT(*) FROM memories WHERE status = 'active'"
         ).fetchone()[0]
 
+        # Memory category breakdown — what kinds of facts the external
+        # brain is accumulating. Surfaces the user's actual usage shape
+        # ("oh I have 60 work / 50 personal / 30 promise") which the bare
+        # total never reveals. Sorted by count desc so the dominant
+        # categories are visible without scrolling.
+        mem_categories = self.db.execute(
+            "SELECT category, COUNT(*) as cnt FROM memories "
+            "WHERE status = 'active' GROUP BY category "
+            "ORDER BY cnt DESC, category"
+        ).fetchall()
+
         # Contact count
         contact_count = self.db.execute(
             "SELECT COUNT(*) FROM contacts"
@@ -1190,6 +1201,10 @@ class Database:
             "today_tokens": today_tokens,
             "month_cost": month_cost,
             "memories": mem_count,
+            "memory_categories": [
+                {"category": r["category"], "count": r["cnt"]}
+                for r in mem_categories
+            ],
             "contacts": contact_count,
             "interactions_today": interactions_today,
             "providers": providers,

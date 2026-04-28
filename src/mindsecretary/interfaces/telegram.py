@@ -246,6 +246,15 @@ class TelegramBot:
             lines.append(f"\n📈 7 дней: {trend_str}")
         lines.extend([
             f"\n🧠 Воспоминаний: {stats['memories']}",
+        ])
+        # Top 5 memory categories — quick read on what kinds of facts the
+        # bot is accumulating. Capped to 5 so the message stays scannable
+        # in Telegram even with many categories in use.
+        cat_breakdown = stats.get("memory_categories", [])
+        if cat_breakdown:
+            for c in cat_breakdown[:5]:
+                lines.append(f"  • {c['category']}: {c['count']}")
+        lines.extend([
             f"👤 Контактов: {stats['contacts']}",
             f"💬 Взаимодействий сегодня: {stats['interactions_today']}",
         ])

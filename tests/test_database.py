@@ -512,12 +512,51 @@ class TestStats:
         assert stats["memories"] == 0
         assert stats["contacts"] == 0
         assert stats["today_cost"] == 0
+        assert stats["memory_categories"] == []  # empty stats → empty breakdown
 
     def test_log_cost(self, tmp_db: Database):
         tmp_db.log_cost("anthropic", input_tokens=1000, output_tokens=500)
         stats = tmp_db.get_stats()
         assert stats["today_cost"] > 0
         assert stats["today_tokens"] == 1500
+
+    def test_memory_category_breakdown_sorted_desc(self, tmp_db: Database):
+        """Breakdown surfaces what kinds of facts are accumulating —
+        sorted by count desc so the dominant categories show first."""
+        # Insert directly to avoid Memory.save's embed dependency
+        for cat, count in [("work", 5), ("personal", 3), ("health", 1)]:
+            for i in range(count):
+                tmp_db.db.execute(
+                    "INSERT INTO memories (id, content, embedding, category, status) "
+                    "VALUES (?, ?, x'', ?, 'active')",
+                    (f"{cat}{i}", f"fact {cat} {i}", cat),
+                )
+        tmp_db.db.commit()
+
+        stats = tmp_db.get_stats()
+        breakdown = stats["memory_categories"]
+        # Sorted by count desc: work=5, personal=3, health=1
+        assert [c["category"] for c in breakdown] == ["work", "personal", "health"]
+        assert [c["count"] for c in breakdown] == [5, 3, 1]
+        assert stats["memories"] == 9  # total matches sum
+
+    def test_memory_category_breakdown_excludes_deleted(self, tmp_db: Database):
+        """Soft-deleted memories must NOT appear in the breakdown — same
+        filter as the bare `memories` count, otherwise totals diverge."""
+        tmp_db.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, status) "
+            "VALUES ('a1', 'kept', x'', 'work', 'active')"
+        )
+        tmp_db.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, status) "
+            "VALUES ('a2', 'gone', x'', 'work', 'deleted')"
+        )
+        tmp_db.db.commit()
+
+        stats = tmp_db.get_stats()
+        # Only one active 'work' memory — deleted one shouldn't show up
+        assert stats["memory_categories"] == [{"category": "work", "count": 1}]
+        assert stats["memories"] == 1
 
 
 class TestCostBreaker:
