@@ -168,7 +168,8 @@ class TelegramBot:
             "/undo — восстановить удалённое\n"
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
-            "/forget — удалить воспоминание",
+            "/forget — удалить воспоминание\n"
+            "/version — версия и базовые счётчики",
         )
         # Show notification count
         try:
@@ -178,6 +179,50 @@ class TelegramBot:
                 await update.message.reply_text(f"📬 Уведомлений сегодня: {count}/{limit}")
         except Exception:
             pass
+
+    @staticmethod
+    def _resolve_version() -> str:
+        """Read package version from installed metadata.
+
+        Falls back to "unknown" if the package isn't installed (rare —
+        editable install via `pip install -e .` is the entry path) so
+        /version never crashes on a corner case.
+        """
+        try:
+            from importlib.metadata import PackageNotFoundError, version
+            return version("mindsecretary")
+        except (ImportError, PackageNotFoundError):
+            return "unknown"
+
+    async def _handle_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_user(update):
+            return
+        ver = self._resolve_version()
+        # Lightweight self-introspection: sizes that prove the bot is
+        # alive and accumulating state, without dragging in /stats's
+        # full cost-and-token report. Each query catches its own
+        # exception so a single broken table doesn't sink the whole
+        # response.
+        def _safe(fn, default=0):
+            try:
+                return fn()
+            except Exception:
+                return default
+        memories = _safe(self.brain.memory.count)
+        contacts_count = _safe(
+            lambda: len(self.brain.db.get_contacts("")),
+        )
+        pending_reminders = _safe(
+            lambda: len(self.brain.db.get_pending_reminders()),
+        )
+        text = (
+            f"🤖 MindSecretary v{ver}\n"
+            f"🧠 Воспоминаний: {memories}\n"
+            f"👤 Контактов: {contacts_count}\n"
+            f"⏰ Pending-напоминаний: {pending_reminders}\n"
+            f"🌍 TZ: {self.brain.profile.timezone or 'system'}"
+        )
+        await update.message.reply_text(text)
 
     async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
@@ -825,6 +870,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("goals", self._handle_goals))
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
         self.app.add_handler(CommandHandler("export", self._handle_export))
+        self.app.add_handler(CommandHandler("version", self._handle_version))
 
         # Confirmation callback for /forget
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))

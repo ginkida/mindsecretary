@@ -105,6 +105,50 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_version_handler_returns_version_and_counts(self):
+        """`/version` is the support-channel command — must always work
+        even if individual DB queries fail. Each counter has its own
+        try/except so a single broken table doesn't take down the whole
+        response."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.count = MagicMock(return_value=42)
+        brain.db.get_contacts = MagicMock(return_value=[
+            {"id": "x"}, {"id": "y"}, {"id": "z"},
+        ])
+        brain.db.get_pending_reminders = MagicMock(return_value=[{"id": "r1"}])
+        brain.profile.timezone = "Asia/Almaty"
+
+        await bot._handle_version(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        text = update.message.reply_text.await_args.args[0]
+        assert "MindSecretary" in text
+        assert "Воспоминаний: 42" in text
+        assert "Контактов: 3" in text
+        assert "Pending-напоминаний: 1" in text
+        assert "Asia/Almaty" in text
+
+    @pytest.mark.asyncio
+    async def test_version_handler_resilient_to_db_errors(self):
+        """A single broken counter must not crash /version — falls back
+        to 0 for the offender and still returns a valid response."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.count = MagicMock(side_effect=RuntimeError("memory broken"))
+        brain.db.get_contacts = MagicMock(return_value=[])
+        brain.db.get_pending_reminders = MagicMock(side_effect=RuntimeError("reminders broken"))
+        brain.profile.timezone = "UTC"
+
+        await bot._handle_version(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Воспоминаний: 0" in text
+        assert "Pending-напоминаний: 0" in text
+
+    @pytest.mark.asyncio
     async def test_forget_falls_back_without_markdown(self):
         bot, brain = _make_bot()
         update = _make_update()

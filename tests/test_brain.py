@@ -481,6 +481,35 @@ class TestProcessInjectsHistory:
         }
 
 
+class TestSystemPromptToolGuidance:
+    """The Anthropic API gets tool schemas via the `tools=` param, but the
+    'Инструменты' section in MAIN_SYSTEM_PROMPT tells Claude *when* to
+    call each one. Whenever a new LLM tool ships, the prompt MUST mention
+    it — otherwise Claude will underuse the tool because no behavioural
+    hint exists. This test is the canary."""
+
+    def test_prompt_mentions_every_custom_tool(self):
+        """All custom (non-native) tool names must appear by name in the
+        system prompt's tool guidance section. Drift here is invisible
+        until users notice the bot ignoring a feature."""
+        from mindsecretary.llm.prompts import MAIN_SYSTEM_PROMPT
+        from mindsecretary.llm.tools import TOOL_DEFINITIONS
+
+        # Native server-side tools (web_search) have a 'type' field;
+        # custom tools have 'input_schema'. Skip the native ones — they're
+        # documented in the prompt's body separately.
+        custom_names = [
+            t["name"] for t in TOOL_DEFINITIONS
+            if "input_schema" in t
+        ]
+        missing = [n for n in custom_names if n not in MAIN_SYSTEM_PROMPT]
+        assert not missing, (
+            f"MAIN_SYSTEM_PROMPT missing tool guidance for: {missing}. "
+            "Add a `- toolname — when-to-call-it` line to the "
+            "Инструменты section so Claude knows when to use it."
+        )
+
+
 class TestMoodTodaySection:
     """`_section_mood_today` reads today's user messages and feeds a
     real-time sentiment signal into the main prompt. This covers the
