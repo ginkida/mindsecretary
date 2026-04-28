@@ -110,3 +110,58 @@ class TestEveningHabitsSlot:
 
         system_prompt = llm.chat.call_args.kwargs["system"]
         assert "🔥 Серии" not in system_prompt  # 1d streak hidden
+
+
+class TestMorningHabitsSlot:
+    """Morning briefing surfaces active streaks for motivation framing
+    ('don't break it today'). Mirrors v0.13.6 evening habits but the
+    framing is forward-looking, not retrospective."""
+
+    @pytest.mark.asyncio
+    async def test_active_streak_surfaces_in_morning_prompt(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        # Inject memory mock so generate_morning's two memory.search calls
+        # don't blow up on the MagicMock memory we built.
+        from unittest.mock import AsyncMock
+        bg.memory.search = AsyncMock(return_value=[])
+
+        today = db._now()
+        for i in range(5):
+            d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            db.log_habit("зарядка", done=True, date=d)
+
+        await bg.generate_morning()
+
+        system_prompt = llm.chat.call_args.kwargs["system"]
+        assert "🔥 Серии" in system_prompt
+        assert "зарядка" in system_prompt
+        assert "5д" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_no_streak_renders_zero_state(self, tmp_path):
+        """When there are habits logged but no streak ≥3, show 'all from
+        scratch' framing — sub-3 streaks don't deserve a flex but the
+        absence of any streak is still a useful signal for tone."""
+        bg, db, llm = _make_briefing(tmp_path)
+        from unittest.mock import AsyncMock
+        bg.memory.search = AsyncMock(return_value=[])
+
+        today_str = db._now().strftime("%Y-%m-%d")
+        db.log_habit("чтение", done=True, date=today_str)  # 1d streak
+
+        await bg.generate_morning()
+
+        system_prompt = llm.chat.call_args.kwargs["system"]
+        assert "🔥 Серии" not in system_prompt  # 1d hidden
+        assert "Серий нет, всё с нуля" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_no_habits_renders_explicit_placeholder(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        from unittest.mock import AsyncMock
+        bg.memory.search = AsyncMock(return_value=[])
+
+        await bg.generate_morning()
+
+        system_prompt = llm.chat.call_args.kwargs["system"]
+        assert "Привычки не отслеживаются" in system_prompt

@@ -94,6 +94,24 @@ class BriefingGenerator:
         open_loops = self.db.get_open_loops(days_ahead=2, limit_per_section=3)
         open_loops_text = self._format_open_loops(open_loops)
 
+        # Habits: morning gets the motivation framing — "don't break your
+        # streak today" works while user is planning the day. Evening
+        # (v0.13.6) gets the reflective framing — "you held it, here's
+        # how today went". Different framings, same data source.
+        habit_stats = self.db.get_habit_stats()
+        if habit_stats:
+            active_streaks = [h for h in habit_stats if h["streak"] >= 3]
+            if active_streaks:
+                streaks_str = ", ".join(
+                    f"{s(h['name'], 60)} — {h['streak']}д"
+                    for h in active_streaks
+                )
+                habits_text = f"🔥 Серии: {streaks_str}"
+            else:
+                habits_text = "Серий нет, всё с нуля."
+        else:
+            habits_text = "Привычки не отслеживаются."
+
         prompt = BRIEFING_SYSTEM_PROMPT.format(
             name=self.profile.name,
             style=self.profile.style,
@@ -104,6 +122,7 @@ class BriefingGenerator:
             events=events_text,
             birthdays=birthdays_text,
             reminders=reminders_text,
+            habits=habits_text,
             promises=promises_text,
             open_loops=open_loops_text,
             memories=memories_text,
