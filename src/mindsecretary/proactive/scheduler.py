@@ -110,8 +110,14 @@ class ProactiveScheduler:
             # Warn when approaching limit (80%+)
             if count >= limit * 0.8:
                 text += f"\n\n⚠️ Уведомлений сегодня: {count + 1}/{limit}"
-        except Exception:
-            pass  # Don't block sends if counting fails
+        except Exception as e:
+            # Don't block sends if counting fails — but DO log so ops can
+            # see DB-related failures instead of silently shipping past
+            # the rate limit.
+            logger.warning(
+                "Notification-count check failed (%s); proceeding without limit gate",
+                type(e).__name__,
+            )
         try:
             await self.send_fn(text)
             self.db.log_interaction(
@@ -197,8 +203,14 @@ class ProactiveScheduler:
                 lines.append(
                     f"Тихий контакт: {first['name']} — не общались {first['days_since']} дней"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            # Quiet-contact check is best-effort — failure shouldn't block
+            # the rest of the action nudge, but ops needs to see broken
+            # contact-frequency queries (typically a TZ or column-rename
+            # regression) instead of silently dropping the section.
+            logger.warning(
+                "Quiet-contact check in nudge failed: %s", type(e).__name__,
+            )
 
         if not lines:
             return None

@@ -130,6 +130,41 @@ class TestActionNudge:
         assert "На контроле" in text
         assert "Call Mom" in text
 
+    def test_quiet_contact_failure_logs_and_continues(self, caplog):
+        """Pre-fix: quiet-contact check inside _build_action_nudge swallowed
+        all exceptions silently. Now ops sees a warning and the rest of
+        the nudge still renders."""
+        import logging as _log
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.get_open_loops.return_value = {
+            "counts": {
+                "overdue_reminders": 1, "due_today_reminders": 0,
+                "upcoming_events": 0, "pending_goals": 0, "due_decisions": 0,
+            },
+            "overdue_reminders": [
+                {"text": "Call Mom", "trigger_at": "2026-04-15 09:00:00"},
+            ],
+            "due_today_reminders": [], "upcoming_events": [],
+            "pending_goals": [], "due_decisions": [],
+        }
+        with patch(
+            "mindsecretary.proactive.scheduler.check_contact_frequency",
+            side_effect=RuntimeError("DB schema drift"),
+        ), patch(
+            "mindsecretary.proactive.scheduler.tz_now",
+            return_value=datetime(2026, 4, 15, 12, 30, 0),
+        ), caplog.at_level(_log.WARNING):
+            text = s._build_action_nudge()
+
+        # Nudge content still rendered — overdue reminder isn't lost
+        assert text is not None
+        assert "Call Mom" in text
+        # Failure surfaced in logs (no longer silent)
+        assert any(
+            "Quiet-contact check" in record.message
+            for record in caplog.records
+        )
+
     def test_ignores_nonurgent_open_items(self):
         s = _make_scheduler(["23:00", "07:00"])
         s.db.get_open_loops.return_value = {
