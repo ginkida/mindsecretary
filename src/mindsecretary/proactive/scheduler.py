@@ -286,23 +286,92 @@ class ProactiveScheduler:
     async def _check_birthdays(self):
         """Daily birthday alert with 7-day dedup per contact."""
         try:
-            today_md = tz_now(self.profile.timezone).strftime("%m-%d")
+            now = tz_now(self.profile.timezone)
+            today_md = now.strftime("%m-%d")
             upcoming = self.db.get_upcoming_birthdays(days=3, skip_recent_alerts=True)
             for c in upcoming:
-                bday = c.get("birthday", "") or ""
-                bday_md = bday[-5:] if len(bday) >= 5 else bday
-                name = c["name"]
-                relation = f" ({c['relation']})" if c.get("relation") else ""
-
-                if bday_md == today_md:
-                    text = f"🎂 Сегодня день рождения: {name}{relation}!"
-                else:
-                    text = f"📅 Скоро день рождения: {name}{relation} — {bday}"
-
+                text = self._format_birthday_alert(c, now, today_md)
+                if not text:
+                    continue
                 if await self._send_proactive(text, kind="birthday_alert"):
                     self.db.mark_birthday_alerted(c["id"])
         except Exception as e:
             logger.error("Birthday check failed: %s", type(e).__name__)
+
+    @staticmethod
+    def _format_birthday_alert(contact: dict, now: datetime, today_md: str) -> str:
+        """Render a birthday alert line for one contact.
+
+        The DB stores birthdays as either 'YYYY-MM-DD' (full) or 'MM-DD'
+        (year unknown). When the year is present we compute age this
+        year, which makes "Маше исполняется 35" type framing possible.
+        For year-less rows we omit the parens entirely — better than
+        rendering a wrong age guess.
+
+        Days-until is computed against the next occurrence of the
+        birthday (this year if upcoming, next year if MM-DD already
+        passed). 0 days = today, 1 day = tomorrow, etc.
+        """
+        bday = (contact.get("birthday") or "").strip()
+        if not bday or len(bday) < 5:
+            return ""
+        bday_md = bday[-5:]
+        name = contact.get("name") or "?"
+        relation = f" ({contact['relation']})" if contact.get("relation") else ""
+
+        # Pull year if we have one; YYYY-MM-DD has length >= 10.
+        birth_year: int | None = None
+        if len(bday) >= 10:
+            try:
+                birth_year = int(bday[:4])
+            except (ValueError, TypeError):
+                birth_year = None
+
+        # Compute age if we know the year. Use the next occurrence year
+        # so an alert 3 days before the birthday says "isthis year's age"
+        # rather than "last year's age".
+        age_str = ""
+        if birth_year is not None:
+            try:
+                month, day = (int(x) for x in bday_md.split("-"))
+                next_year = now.year if (month, day) >= (now.month, now.day) else now.year + 1
+                age = next_year - birth_year
+                if 0 < age < 150:
+                    age_str = f" ({age})"
+            except (ValueError, TypeError):
+                age_str = ""
+
+        if bday_md == today_md:
+            return f"🎂 Сегодня ДР: {name}{age_str}{relation}"
+
+        # Days-until: count calendar days from `now` to the next bday_md.
+        try:
+            month, day = (int(x) for x in bday_md.split("-"))
+            target_year = now.year if (month, day) >= (now.month, now.day) else now.year + 1
+            target = now.replace(
+                year=target_year, month=month, day=day,
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            today_midnight = now.replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            days_until = (target - today_midnight).days
+        except (ValueError, TypeError):
+            days_until = None
+
+        if days_until is None or days_until <= 0:
+            # Defensive: can't compute or somehow today — fall back to
+            # the today-format so we don't render "через 0 дней" or
+            # negative numbers.
+            return f"📅 Скоро ДР: {name}{age_str}{relation} — {bday_md}"
+
+        plural = "день" if days_until == 1 else (
+            "дня" if 2 <= days_until <= 4 else "дней"
+        )
+        return (
+            f"📅 ДР через {days_until} {plural}: "
+            f"{name}{age_str}{relation} — {bday_md}"
+        )
 
     def _load_alerted_rain(self, today: str) -> set[int]:
         """Return hours already alerted for today, empty set on new day/missing.

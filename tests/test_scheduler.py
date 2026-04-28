@@ -466,3 +466,86 @@ class TestNudgeCooldown:
         s._send_proactive.assert_awaited_once_with(
             "⚠️ На контроле", kind="open_loops_nudge",
         )
+
+
+class TestBirthdayAlertFormat:
+    """Birthday alert text used to dump the raw 'YYYY-MM-DD' birthday into
+    the message — uninformative to the user and missing the age calc the
+    DB already had data for. Reformatter computes days-until + age (when
+    year is known) + the right Russian plural for the day count."""
+
+    @staticmethod
+    def _format(contact, year=2026, month=4, day=28):
+        from mindsecretary.proactive.scheduler import ProactiveScheduler
+        now = datetime(year, month, day, 9, 0, 0)
+        today_md = now.strftime("%m-%d")
+        return ProactiveScheduler._format_birthday_alert(contact, now, today_md)
+
+    def test_today_with_year_shows_age(self):
+        result = self._format({
+            "name": "Маша", "relation": "друг", "birthday": "1990-04-28",
+        })
+        # Turning 36 in 2026 — age computed from next-occurrence year
+        assert "🎂 Сегодня ДР: Маша (36) (друг)" == result
+
+    def test_today_without_year_omits_age(self):
+        """Year-less birthdays must NOT render parens — guessing an age
+        is worse than skipping it."""
+        result = self._format({
+            "name": "Аня", "relation": "коллега", "birthday": "04-28",
+        })
+        assert "(0)" not in result
+        assert "🎂 Сегодня ДР: Аня (коллега)" == result
+
+    def test_upcoming_with_year_renders_days_and_age(self):
+        result = self._format({
+            "name": "Иван", "relation": "брат", "birthday": "1985-04-30",
+        })
+        # 2 days from 04-28 to 04-30 → "2 дня" (genitive plural)
+        assert "📅 ДР через 2 дня:" in result
+        assert "Иван (41) (брат)" in result
+        assert "04-30" in result
+
+    def test_upcoming_without_year_omits_age(self):
+        result = self._format({"name": "Olga", "birthday": "04-29"})
+        assert "(0)" not in result
+        # 1 day = nominative singular "день"
+        assert "📅 ДР через 1 день:" in result
+        assert "Olga" in result
+        assert "04-29" in result
+
+    def test_year_wrap_picks_next_year(self):
+        """Birthday in January, today in December → days-until counts
+        forward into next year, age uses next year's value."""
+        result = self._format(
+            {"name": "Боб", "birthday": "1980-01-05"},
+            year=2026, month=12, day=30,
+        )
+        # 6 days from Dec 30 to Jan 5 next year
+        assert "📅 ДР через 6 дней:" in result
+        assert "Боб (47)" in result  # 47 = 2027 - 1980
+
+    def test_empty_birthday_returns_empty_string(self):
+        """Defensive: caller skips empty results — avoids '🎂 Сегодня ДР: !'"""
+        assert self._format({"name": "X", "birthday": ""}) == ""
+        assert self._format({"name": "X", "birthday": None}) == ""
+        assert self._format({"name": "X"}) == ""
+
+    def test_implausible_age_omitted(self):
+        """A birth year of 1700 (typo, junk data) gives age > 150 — the
+        guard drops the parens so we don't render '(326)' which would
+        make the bot look broken."""
+        result = self._format({
+            "name": "X", "birthday": "1700-04-28",
+        })
+        assert "(326)" not in result
+        assert "🎂 Сегодня ДР: X" == result
+
+    def test_invalid_birthday_format_falls_back_to_md(self):
+        """Garbage in the birthday column shouldn't crash the alert —
+        defensive parse keeps things going with whatever's there."""
+        result = self._format({"name": "X", "birthday": "garbage"})
+        # 5+ chars is the threshold — "garbage" qualifies. With month/day
+        # split failing, we land in the today-fallback branch.
+        # We just assert it doesn't crash and produces SOME string.
+        assert isinstance(result, str)
