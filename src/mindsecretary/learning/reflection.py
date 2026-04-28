@@ -123,9 +123,23 @@ class WeeklyReflection:
         return text
 
     def _format_interactions(self, interactions: list[dict]) -> str:
+        # `interactions` arrives DESC by timestamp from get_interactions
+        # (newest first). Pre-fix this method did `lines[-100:]` to "cap
+        # at 100" — but that returned the OLDEST 100 entries from the
+        # DESC list, silently dropping the most recent ones. So a busy
+        # week with >100 interactions had the weekly review analyzing
+        # stale early-week context while ignoring everything from the
+        # last few days.
+        #
+        # Fix: take the newest 100 (front of the DESC list), then reverse
+        # so the rendered block reads chronologically — old → new — which
+        # is how humans expect a "log" to flow.
+        latest = list(interactions[:100])
+        latest.reverse()
+
         lines = []
         tz = self.profile.timezone
-        for i in interactions:
+        for i in latest:
             raw_ts = i.get("timestamp") or ""
             # Convert UTC-stored timestamp to the user's local clock.
             # fmt_local_time returns MM-DD HH:MM when the row is from a
@@ -137,7 +151,7 @@ class WeeklyReflection:
             content = sanitize_for_context(i.get("content") or "", 120)
             fb = f" [{i['feedback']}]" if i.get("feedback") else ""
             lines.append(f"{local_stamp} {direction} ({msg_type}{fb}) {content}")
-        return "\n".join(lines[-100:])  # last 100
+        return "\n".join(lines)
 
     def _get_habits_summary(self, since: datetime, until: datetime) -> str:
         rows = self.db.db.execute(
