@@ -417,3 +417,95 @@ class TestCancelReminderHandler:
         te = ToolExecutor(db=tmp_db, memory=MagicMock())
         result = await te.execute("cancel_reminder", {"text_hint": "   "})
         assert "non-empty" in result
+
+
+class TestRescheduleReminderHandler:
+    @pytest.mark.asyncio
+    async def test_reschedules_unique_match(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("дантист в среду", "2099-01-15 10:00:00", "high")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "дантист",
+            "new_trigger_at": "2099-01-20 14:00:00",
+        })
+
+        assert "Перенесено" in result
+        assert "дантист в среду" in result
+        assert "2099-01-20 14:00" in result
+        # Persisted
+        pending = tmp_db.get_pending_reminders()
+        assert pending[0]["trigger_at"] == "2099-01-20 14:00:00"
+
+    @pytest.mark.asyncio
+    async def test_no_match(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "nope", "new_trigger_at": "2099-01-20 14:00:00",
+        })
+        assert "Не нашёл" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_disclosure(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("дантист 1", "2099-01-15 10:00:00")
+        tmp_db.create_reminder("дантист 2", "2099-02-15 10:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "дантист", "new_trigger_at": "2099-01-20 14:00:00",
+        })
+
+        assert "Перенесено: дантист 1" in result
+        assert "Похожих ещё 1" in result
+
+    @pytest.mark.asyncio
+    async def test_iso_t_separator_normalized(self, tmp_db):
+        """LLM may pass YYYY-MM-DDTHH:MM (schema-suggested format) — sanitize
+        normalizes to space separator before hitting the DB."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("дантист", "2099-01-15 10:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("reschedule_reminder", {
+            "text_hint": "дантист",
+            "new_trigger_at": "2099-01-20T14:00",  # T-separator
+        })
+
+        pending = tmp_db.get_pending_reminders()
+        # Whatever exact format the sanitize layer normalized to, it must
+        # contain a space (DB convention) and the new date+time
+        assert "T" not in pending[0]["trigger_at"]
+        assert "2099-01-20 14:00" in pending[0]["trigger_at"]
+
+    @pytest.mark.asyncio
+    async def test_empty_hint_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "  ", "new_trigger_at": "2099-01-20 14:00:00",
+        })
+        assert "non-empty" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_new_trigger_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "x", "new_trigger_at": "",
+        })
+        assert "new_trigger_at" in result

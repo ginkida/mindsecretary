@@ -329,6 +329,38 @@ class Database:
         "monthly": timedelta(days=30),
     }
 
+    def reschedule_reminder_by_hint(self, hint: str,
+                                    new_trigger_at: str) -> dict | None:
+        """Move the most-imminent pending reminder matching `hint` to
+        `new_trigger_at`. Returns the updated row dict (with the new
+        trigger_at), or None if nothing matched.
+
+        For recurring reminders this changes only the upcoming instance's
+        trigger_at — the series continues from there. Sent reminders are
+        excluded (you'd create a new one, not reschedule a fired one).
+        """
+        if not hint or not hint.strip():
+            return None
+        if not new_trigger_at or not new_trigger_at.strip():
+            return None
+        escaped = self._escape_like(hint.strip().lower())
+        row = self.db.execute(
+            "SELECT * FROM reminders "
+            "WHERE status = 'pending' AND pylower(text) LIKE ? ESCAPE '\\' "
+            "ORDER BY trigger_at LIMIT 1",
+            (f"%{escaped}%",),
+        ).fetchone()
+        if not row:
+            return None
+        self.db.execute(
+            "UPDATE reminders SET trigger_at = ? WHERE id = ?",
+            (new_trigger_at, row["id"]),
+        )
+        self.db.commit()
+        updated = dict(row)
+        updated["trigger_at"] = new_trigger_at
+        return updated
+
     def cancel_reminder_by_hint(self, hint: str) -> dict | None:
         """Cancel the most-imminent pending reminder whose text matches `hint`
         (case-insensitive substring, Cyrillic-aware via pylower).

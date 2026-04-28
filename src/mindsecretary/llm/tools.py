@@ -140,6 +140,36 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "reschedule_reminder",
+        "description": (
+            "Перенести pending-напоминание на новое время. Вызывай когда "
+            "пользователь говорит «перенеси на завтра», «давай в 18:00 "
+            "вместо 14:00». Поиск по подстроке в тексте — кириллица "
+            "учитывается. Если совпадает несколько, переносится ближайшее "
+            "по времени; в ответе будет указано сколько ещё осталось похожих. "
+            "Для recurring серии переносится только следующая instance — "
+            "серия продолжается от нового времени. Не используй для уже "
+            "отправленных (status='sent') — создай новое."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {
+                    "type": "string",
+                    "description": (
+                        "Ключевое слово или фраза из текста напоминания "
+                        "(напр. 'дантист', 'Маше позвонить')."
+                    ),
+                },
+                "new_trigger_at": {
+                    "type": "string",
+                    "description": "Новое время в формате YYYY-MM-DDTHH:MM",
+                },
+            },
+            "required": ["text_hint", "new_trigger_at"],
+        },
+    },
+    {
         "name": "cancel_reminder",
         "description": (
             "Отменить отложенное напоминание (status pending → cancelled). "
@@ -475,6 +505,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # so a 5000-char value is just wasted matcher work.
         clean["text_hint"] = str(hint)[:200]
 
+    if name == "reschedule_reminder":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+
     if name == "get_reminders":
         if clean.get("days_ahead") is not None:
             clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
@@ -504,6 +538,7 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     _DT_FIELDS = {
         "create_event": ("start_at", "end_at"),
         "create_reminder": ("trigger_at",),
+        "reschedule_reminder": ("new_trigger_at",),
     }
     for field in _DT_FIELDS.get(name, ()):
         val = clean.get(field)
@@ -675,6 +710,24 @@ class ToolExecutor:
         self.db.create_reminder(text, trigger_at, priority, recurrence)
         rec_str = f" (повтор: {recurrence})" if recurrence else ""
         return f"Reminder set: {text} at {trigger_at}{rec_str}"
+
+    def _handle_reschedule_reminder(self, text_hint: str,
+                                    new_trigger_at: str) -> str:
+        if not text_hint or not text_hint.strip():
+            return "reschedule_reminder requires a non-empty text_hint"
+        if not new_trigger_at or not new_trigger_at.strip():
+            return "reschedule_reminder requires new_trigger_at"
+        # Count first so we can disclose ambiguity in the response.
+        total = self.db.count_pending_reminders_matching(text_hint)
+        updated = self.db.reschedule_reminder_by_hint(text_hint, new_trigger_at)
+        if not updated:
+            return f"Не нашёл pending-напоминаний по '{text_hint[:80]}'"
+        text = (updated.get("text") or "")[:120]
+        msg = f"Перенесено: {text} → {new_trigger_at[:16]}"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно перенести и их."
+        return msg
 
     def _handle_cancel_reminder(self, text_hint: str) -> str:
         if not text_hint or not text_hint.strip():

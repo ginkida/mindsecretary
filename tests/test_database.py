@@ -106,6 +106,71 @@ class TestReminders:
         assert tmp_db.count_pending_reminders_matching("nope") == 0
         assert tmp_db.count_pending_reminders_matching("") == 0
 
+    def test_reschedule_reminder_by_hint_picks_soonest(self, tmp_db: Database):
+        """When hint matches multiple, reschedule the soonest — same
+        intent shape as cancel_reminder_by_hint."""
+        tmp_db.create_reminder("дантист в среду", "2099-01-15 10:00:00")
+        tmp_db.create_reminder("дантист в апреле", "2099-04-10 10:00:00")
+        tmp_db.create_reminder("парикмахер", "2099-01-20 10:00:00")
+
+        updated = tmp_db.reschedule_reminder_by_hint(
+            "дантист", "2099-01-20 14:00:00",
+        )
+        assert updated is not None
+        assert updated["text"] == "дантист в среду"
+        assert updated["trigger_at"] == "2099-01-20 14:00:00"
+
+        # Verify persisted, and that the second 'дантист' is untouched
+        all_pending = tmp_db.get_pending_reminders()
+        assert len(all_pending) == 3  # nothing was deleted
+        moved = next(r for r in all_pending if r["text"] == "дантист в среду")
+        assert moved["trigger_at"] == "2099-01-20 14:00:00"
+        same = next(r for r in all_pending if r["text"] == "дантист в апреле")
+        assert same["trigger_at"] == "2099-04-10 10:00:00"
+
+    def test_reschedule_reminder_no_match(self, tmp_db: Database):
+        tmp_db.create_reminder("X", "2099-01-15 10:00:00")
+        result = tmp_db.reschedule_reminder_by_hint(
+            "nonexistent", "2099-01-16 10:00:00",
+        )
+        assert result is None
+
+    def test_reschedule_reminder_cyrillic_case_insensitive(self, tmp_db: Database):
+        tmp_db.create_reminder("стоматолог запись", "2099-01-15 10:00:00")
+        updated = tmp_db.reschedule_reminder_by_hint(
+            "СТОМАТОЛОГ", "2099-01-20 10:00:00",
+        )
+        assert updated is not None
+        assert updated["trigger_at"] == "2099-01-20 10:00:00"
+
+    def test_reschedule_excludes_sent_reminders(self, tmp_db: Database):
+        r = tmp_db.create_reminder("done thing", "2099-01-15 10:00:00")
+        tmp_db.mark_reminder_sent(r["id"])
+        result = tmp_db.reschedule_reminder_by_hint(
+            "done thing", "2099-01-20 10:00:00",
+        )
+        assert result is None  # sent rows are not reschedulable
+
+    def test_reschedule_recurring_keeps_recurrence(self, tmp_db: Database):
+        """Reschedule changes only trigger_at — recurrence metadata stays
+        intact so the series continues from the new time."""
+        tmp_db.create_reminder(
+            "weekly thing", "2099-01-15 10:00:00",
+            priority="medium", recurrence="weekly",
+        )
+        tmp_db.reschedule_reminder_by_hint(
+            "weekly thing", "2099-01-22 10:00:00",
+        )
+        pending = tmp_db.get_pending_reminders()
+        assert len(pending) == 1
+        assert pending[0]["recurrence"] == "weekly"
+        assert pending[0]["trigger_at"] == "2099-01-22 10:00:00"
+
+    def test_reschedule_empty_args_return_none(self, tmp_db: Database):
+        tmp_db.create_reminder("X", "2099-01-15 10:00:00")
+        assert tmp_db.reschedule_reminder_by_hint("", "2099-01-20 10:00:00") is None
+        assert tmp_db.reschedule_reminder_by_hint("X", "") is None
+
     def test_cancel_reminder_recurring_does_not_create_next(self, tmp_db: Database):
         """Cancellation stops the series — NO auto-roll like mark_reminder_sent.
         User intent on 'отмени' is 'stop bothering me', not 'skip this one'."""
