@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from ..learning.mood import check_contact_frequency, get_mood_trend
+from ..learning.mood import analyze_mood, check_contact_frequency, get_mood_trend
 from ..llm.prompts import MAIN_SYSTEM_PROMPT
 from ..llm.client import LLMClient
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
@@ -202,6 +202,7 @@ class Brain:
             today_events=self._section_events(now, s),
             today_goals=self._section_goals(s),
             pending_decisions=self._section_decisions(s),
+            mood_today=self._section_mood_today(),
             mood_trend=self._section_mood_trend(),
             theme_clusters=self._section_theme_clusters(s),
             quiet_contacts=self._section_quiet_contacts(s),
@@ -437,6 +438,37 @@ class Brain:
                 tail += " · по расписанию" if tail else " (по расписанию)"
             lines.append(f"{label}: {value}{tail}")
         return "\n".join(lines)
+
+    def _section_mood_today(self) -> str:
+        """Real-time mood signal from today's user messages.
+
+        Different from mood_trend (multi-day labels) — this is *right
+        now*. Without it, the bot reads weeks-old drift but misses fresh
+        stress in today's conversation. Keyword-based analyzer is the
+        same one feeding the diary and weekly review, so the signal
+        quality matches what's already trusted elsewhere.
+        """
+        try:
+            start_utc_s, _ = self.db._local_day_utc_bounds()
+            today_start = datetime.strptime(start_utc_s, "%Y-%m-%d %H:%M:%S")
+            messages = self.db.get_interactions(since=today_start, limit=50)
+            user_msgs = [m for m in messages if m.get("direction") == "in"]
+            # Need at least a few messages to call it a signal — single
+            # angry word in one message is too noisy to reshape tone over.
+            if len(user_msgs) < 3:
+                return "Сигналов мало (мало сообщений сегодня)."
+            mood = analyze_mood(messages)
+            label = mood.get("label", "?")
+            score = mood.get("score", 0.0)
+            signals = mood.get("signals", []) or []
+            top = ", ".join(signals[:5])
+            line = f"{label} (счёт {score:+.2f})"
+            if top:
+                line += f"; ключевые слова: {top}"
+            return line
+        except Exception as e:
+            logger.warning("Section mood_today failed: %s", type(e).__name__)
+            return "Нет данных."
 
     def _section_mood_trend(self) -> str:
         try:

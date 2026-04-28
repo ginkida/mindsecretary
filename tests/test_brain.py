@@ -479,3 +479,84 @@ class TestProcessInjectsHistory:
         assert captured["messages"][0] == {
             "role": "user", "content": "первое сообщение",
         }
+
+
+class TestMoodTodaySection:
+    """`_section_mood_today` reads today's user messages and feeds a
+    real-time sentiment signal into the main prompt. This covers the
+    fresh-stress gap that mood_trend (multi-day labels) misses."""
+
+    def test_too_few_messages_returns_low_signal(self):
+        brain = _make_brain("UTC")
+        brain.db._local_day_utc_bounds = MagicMock(
+            return_value=("2099-01-01 00:00:00", "2099-01-02 00:00:00"),
+        )
+        brain.db.get_interactions = MagicMock(return_value=[
+            {"direction": "in", "content": "ок"},
+            {"direction": "in", "content": "хорошо"},
+        ])
+        result = brain._section_mood_today()
+        assert "Сигналов мало" in result
+
+    def test_negative_signals_surface_label_and_keywords(self):
+        brain = _make_brain("UTC")
+        brain.db._local_day_utc_bounds = MagicMock(
+            return_value=("2099-01-01 00:00:00", "2099-01-02 00:00:00"),
+        )
+        # 4 negative messages — total_signals ≥ 1 keeps score honest;
+        # short messages also add the avg_len penalty when no signals.
+        brain.db.get_interactions = MagicMock(return_value=[
+            {"direction": "in", "content": "ужасно устал сегодня"},
+            {"direction": "in", "content": "опять провал по дедлайну"},
+            {"direction": "in", "content": "жалею что согласился"},
+            {"direction": "in", "content": "болит голова и стресс"},
+        ])
+        result = brain._section_mood_today()
+        # Label is one of {negative, neutral, positive, unknown} — keyword
+        # heuristic sometimes lands at neutral on borderline texts. The
+        # contract we care about: signals get surfaced so Claude has
+        # vocabulary to anchor on.
+        assert "ключевые слова" in result
+        # At least one of the negative signals should appear in the output
+        signal_words = {"устал", "провал", "жалею", "болит", "стресс"}
+        assert any(w in result for w in signal_words)
+
+    def test_positive_signals_label_positive(self):
+        brain = _make_brain("UTC")
+        brain.db._local_day_utc_bounds = MagicMock(
+            return_value=("2099-01-01 00:00:00", "2099-01-02 00:00:00"),
+        )
+        brain.db.get_interactions = MagicMock(return_value=[
+            {"direction": "in", "content": "круто всё получилось"},
+            {"direction": "in", "content": "наконец-то закрыл задачу"},
+            {"direction": "in", "content": "отлично прошло сегодня"},
+            {"direction": "in", "content": "доволен результатом"},
+        ])
+        result = brain._section_mood_today()
+        assert "positive" in result.lower()
+        assert "счёт +" in result  # positive score formatted with sign
+
+    def test_db_failure_degrades_gracefully(self):
+        brain = _make_brain("UTC")
+        brain.db._local_day_utc_bounds = MagicMock(
+            side_effect=RuntimeError("db down"),
+        )
+        result = brain._section_mood_today()
+        assert result == "Нет данных."
+
+    def test_outgoing_messages_excluded_from_count(self):
+        """Only direction='in' user messages should count toward the
+        threshold — bot's own outputs aren't the user's mood."""
+        brain = _make_brain("UTC")
+        brain.db._local_day_utc_bounds = MagicMock(
+            return_value=("2099-01-01 00:00:00", "2099-01-02 00:00:00"),
+        )
+        brain.db.get_interactions = MagicMock(return_value=[
+            {"direction": "in", "content": "ок"},
+            {"direction": "out", "content": "брифинг"},
+            {"direction": "out", "content": "напоминание"},
+            {"direction": "out", "content": "вопрос"},
+        ])
+        result = brain._section_mood_today()
+        # Only 1 user message → still below the 3-message threshold
+        assert "Сигналов мало" in result
