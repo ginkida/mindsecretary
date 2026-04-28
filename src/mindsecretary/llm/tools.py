@@ -54,6 +54,35 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "update_memory",
+        "description": (
+            "Заменить содержимое одного факта в памяти. Вызывай когда "
+            "пользователь корректирует ранее сохранённое: «больше не работаю "
+            "в Yandex, теперь в Сбере», «Петя теперь муж Маши, а не друг». "
+            "Если совпадает несколько записей по hint, обновление НЕ "
+            "выполняется — будет возвращён список найденных и количество, "
+            "уточни hint и вызови снова. Не используй для добавления новых "
+            "фактов — для этого save_memory."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {
+                    "type": "string",
+                    "description": (
+                        "Подстрока из старого содержимого факта "
+                        "(напр. 'Yandex', 'друг Маши')."
+                    ),
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "Новое содержимое факта целиком.",
+                },
+            },
+            "required": ["text_hint", "new_content"],
+        },
+    },
+    {
         "name": "search_memory",
         "description": "Семантический поиск по памяти — прошлое, люди, обещания, переживания.",
         "input_schema": {
@@ -505,6 +534,12 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # so a 5000-char value is just wasted matcher work.
         clean["text_hint"] = str(hint)[:200]
 
+    if name == "update_memory":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+        # new_content gets the global MAX_STR_LEN cap from the generic
+        # truncate above; nothing extra needed here.
+
     if name == "reschedule_reminder":
         hint = clean.get("text_hint") or ""
         clean["text_hint"] = str(hint)[:200]
@@ -652,6 +687,39 @@ class ToolExecutor:
                                      source_ref=source_ref,
                                      confidence=self._default_memory_confidence(request_context))
         return f"Saved memory {mid}: {content[:60]}..."
+
+    async def _handle_update_memory(self, text_hint: str,
+                                    new_content: str) -> str:
+        result = await self.memory.update_by_hint(text_hint, new_content)
+        status = result.get("status")
+        if status == "invalid":
+            return "update_memory requires non-empty text_hint and new_content"
+        if status == "not_found":
+            return f"Не нашёл в памяти ничего по '{text_hint[:80]}'"
+        if status == "ambiguous":
+            count = result.get("count", 0)
+            samples = result.get("samples") or []
+            sample_lines = "\n".join(
+                f"  - [{s.get('id')}] {s.get('content', '')}"
+                for s in samples
+            )
+            return (
+                f"По '{text_hint[:80]}' нашлось {count} записей — слишком "
+                f"много, обновление не выполнено. Уточни hint и вызови снова. "
+                f"Примеры найденного:\n{sample_lines}"
+            )
+        if status == "embed_failed":
+            return (
+                "Voyage embed недоступен — память не обновлена, "
+                "старая запись осталась. Попробуй позже."
+            )
+        if status == "ok":
+            mem = result.get("memory") or {}
+            mem_id = mem.get("id", "?")
+            content = (mem.get("content") or "")[:120]
+            cat = mem.get("category", "?")
+            return f"Обновлено [{mem_id}] [{cat}]: {content}"
+        return f"update_memory unknown status: {status}"
 
     async def _handle_search_memory(self, query: str,
                                     category: str | None = None) -> str:

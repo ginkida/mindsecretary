@@ -419,6 +419,104 @@ class TestCancelReminderHandler:
         assert "non-empty" in result
 
 
+class TestUpdateMemoryHandler:
+    """ToolExecutor handler for update_memory. Covers the not_found,
+    ambiguous, and embed_failed branches the underlying Memory method
+    distinguishes — Claude needs distinct error messages, not a generic
+    'failed'."""
+
+    @pytest.mark.asyncio
+    async def test_ok_returns_id_category_content(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.update_by_hint = AsyncMock(return_value={
+            "status": "ok",
+            "memory": {"id": "abc12345", "content": "работает в Сбере",
+                       "category": "work"},
+        })
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("update_memory", {
+            "text_hint": "Yandex",
+            "new_content": "работает в Сбере",
+        })
+
+        assert "Обновлено" in result
+        assert "abc12345" in result
+        assert "[work]" in result
+        assert "работает в Сбере" in result
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.update_by_hint = AsyncMock(return_value={"status": "not_found"})
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("update_memory", {
+            "text_hint": "nope", "new_content": "x",
+        })
+        assert "Не нашёл" in result and "nope" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_lists_samples(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.update_by_hint = AsyncMock(return_value={
+            "status": "ambiguous",
+            "count": 3,
+            "samples": [
+                {"id": "a1", "content": "Yandex офис"},
+                {"id": "b2", "content": "Yandex удалённо"},
+                {"id": "c3", "content": "раньше Yandex"},
+            ],
+        })
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("update_memory", {
+            "text_hint": "Yandex", "new_content": "Сбер",
+        })
+
+        assert "3 записей" in result
+        assert "уточни" in result.lower()
+        assert "[a1]" in result and "[b2]" in result and "[c3]" in result
+
+    @pytest.mark.asyncio
+    async def test_embed_failed_keeps_user_informed(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.update_by_hint = AsyncMock(return_value={"status": "embed_failed"})
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("update_memory", {
+            "text_hint": "x", "new_content": "y",
+        })
+        # Distinct error so Claude can suggest "попробуй позже" vs hallucinating success
+        assert "Voyage" in result and "не обновлена" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_args_branch(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.update_by_hint = AsyncMock(return_value={"status": "invalid"})
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("update_memory", {
+            "text_hint": "", "new_content": "y",
+        })
+        assert "non-empty" in result
+
+
 class TestRescheduleReminderHandler:
     @pytest.mark.asyncio
     async def test_reschedules_unique_match(self, tmp_db):

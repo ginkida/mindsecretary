@@ -29,6 +29,14 @@ class Memory:
         self._ensure_table()
 
     def _ensure_table(self):
+        # Register pylower defensively — Memory.update_by_hint relies on it.
+        # The same function is also registered by Database.__init__, but
+        # Memory may be wired to a connection without that path (test
+        # fixtures, future refactors). create_function is idempotent on
+        # the same connection, so the double-register is safe.
+        self.db.create_function(
+            "pylower", 1, lambda s: s.lower() if isinstance(s, str) else s,
+        )
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
@@ -154,6 +162,76 @@ class Memory:
         )
         self.db.commit()
         return memory_id
+
+    @staticmethod
+    def _escape_like(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    async def update_by_hint(self, hint: str, new_content: str) -> dict:
+        """Replace the content of a single active memory matched by `hint`.
+
+        Returns one of:
+        - {"status": "ok", "memory": {id, content, category}}
+        - {"status": "not_found"}
+        - {"status": "ambiguous", "count": N, "samples": [{id, content}, ...]}
+        - {"status": "embed_failed"}  — Voyage down; row left untouched
+        - {"status": "invalid"}       — empty hint or empty new_content
+
+        Multiple-match case refuses to update — memories are more sensitive
+        than reminder timing, so we force the caller to disambiguate
+        rather than guessing which row to overwrite.
+        """
+        if (not hint or not hint.strip()
+                or not new_content or not new_content.strip()):
+            return {"status": "invalid"}
+
+        escaped = self._escape_like(hint.strip().lower())
+        rows = self.db.execute(
+            "SELECT id, content, category, importance, confidence "
+            "FROM memories "
+            "WHERE status = 'active' AND pylower(content) LIKE ? ESCAPE '\\'",
+            (f"%{escaped}%",),
+        ).fetchall()
+
+        if not rows:
+            return {"status": "not_found"}
+        if len(rows) > 1:
+            samples = [
+                {"id": r["id"], "content": (r["content"] or "")[:120]}
+                for r in rows[:3]
+            ]
+            return {"status": "ambiguous", "count": len(rows), "samples": samples}
+
+        row = rows[0]
+        try:
+            new_emb = (await self._embed([new_content]))[0]
+        except Exception as e:
+            logger.error("Voyage embed failed during update (%s) — row %s untouched",
+                         type(e).__name__, row["id"])
+            return {"status": "embed_failed"}
+        if not np.any(new_emb):
+            # Defensive: zero-vector means embed silently degraded; same
+            # outcome as exception for the caller — don't corrupt the row.
+            return {"status": "embed_failed"}
+
+        # Bump confidence to 0.95 — user just explicitly corrected this fact,
+        # treat it like a high-confidence signal regardless of prior source.
+        new_conf = max(float(row["confidence"] or 0.0), 0.95)
+        self.db.execute(
+            "UPDATE memories SET content = ?, embedding = ?, "
+            "confidence = ?, last_accessed = datetime('now') WHERE id = ?",
+            (new_content, new_emb.tobytes(), new_conf, row["id"]),
+        )
+        self.db.commit()
+        logger.info("Memory %s updated via hint", row["id"])
+        return {
+            "status": "ok",
+            "memory": {
+                "id": row["id"],
+                "content": new_content,
+                "category": row["category"],
+            },
+        }
 
     def _find_duplicate(self, embedding: np.ndarray, category: str) -> dict | None:
         """Find an existing memory with very high cosine similarity."""
