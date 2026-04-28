@@ -103,6 +103,46 @@ class TestContacts:
         assert len(bdays) == 1
         assert bdays[0]["name"] == "Eve"
 
+    # --- Cyrillic-aware case folding (pylower) ---
+    # SQLite's native lower() is ASCII-only — without pylower these would
+    # silently fail for Russian users (~the entire user base of this app).
+
+    def test_upsert_dedup_cyrillic_case_insensitive(self, tmp_db: Database):
+        """Saving 'Иван' then 'иван' should update the same row, not create
+        a duplicate. Native SQLite lower() leaves Cyrillic untouched —
+        regression risk if pylower wiring breaks."""
+        tmp_db.upsert_contact("Иван", relation="брат")
+        c2 = tmp_db.upsert_contact("иван", notes="любит шахматы")
+
+        assert c2["name"] == "Иван"  # original casing preserved
+        assert "шахматы" in (c2.get("notes") or "")
+        # Only one contact row exists
+        all_contacts = tmp_db.get_contacts("иван")
+        assert len(all_contacts) == 1
+
+    def test_get_contacts_cyrillic_case_insensitive(self, tmp_db: Database):
+        tmp_db.upsert_contact("Маша", relation="коллега")
+
+        # Lower-case query against capitalized stored name
+        assert len(tmp_db.get_contacts("маша")) == 1
+        # Upper-case query against capitalized stored name (SQLite lower()
+        # would fail this — pylower passes)
+        assert len(tmp_db.get_contacts("МАША")) == 1
+        # Substring on relation
+        assert len(tmp_db.get_contacts("КОЛЛЕГА")) == 1
+
+    def test_log_habit_dedup_cyrillic_case_insensitive(self, tmp_db: Database):
+        """Habit name 'Зарядка' followed by 'зарядка' should merge into one
+        habit row — same Cyrillic case-fold issue as contacts."""
+        tmp_db.log_habit("Зарядка", True)
+        tmp_db.log_habit("зарядка", True)
+        tmp_db.log_habit("ЗАРЯДКА", False)
+
+        rows = tmp_db.db.execute(
+            "SELECT COUNT(*) FROM habits WHERE pylower(name) = 'зарядка'"
+        ).fetchone()
+        assert rows[0] == 1  # All three log_habit calls hit the same habit row
+
 
 class TestInteractions:
     def test_log_and_get_interactions(self, tmp_db: Database):

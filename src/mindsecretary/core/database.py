@@ -369,14 +369,17 @@ class Database:
     def upsert_contact(self, name: str, relation: str | None = None,
                        birthday: str | None = None, notes: str | None = None,
                        phone: str | None = None) -> dict:
+        # pylower (Python str.lower) instead of SQLite native lower() — the
+        # latter is ASCII-only, so "Иван" stays "Иван" and dedup against an
+        # earlier "иван" fails. Same problem for aliases and get_contacts.
         existing = self.db.execute(
-            "SELECT * FROM contacts WHERE lower(name) = lower(?)", (name,)
+            "SELECT * FROM contacts WHERE pylower(name) = ?", (name.lower(),)
         ).fetchone()
         # Also check aliases (comma-separated) for fuzzy matching
         if not existing:
             escaped = self._escape_like(name.lower())
             existing = self.db.execute(
-                "SELECT * FROM contacts WHERE lower(aliases) LIKE ? ESCAPE '\\'",
+                "SELECT * FROM contacts WHERE pylower(aliases) LIKE ? ESCAPE '\\'",
                 (f"%{escaped}%",),
             ).fetchone()
 
@@ -419,10 +422,12 @@ class Database:
         return dict(row)
 
     def get_contacts(self, query: str) -> list[dict]:
+        # pylower for Cyrillic-aware case folding — SQLite's lower() only
+        # handles ASCII, which silently breaks search on Russian names.
         escaped = self._escape_like(query.lower())
         rows = self.db.execute(
-            "SELECT * FROM contacts WHERE lower(name) LIKE ? ESCAPE '\\' "
-            "OR lower(relation) LIKE ? ESCAPE '\\' "
+            "SELECT * FROM contacts WHERE pylower(name) LIKE ? ESCAPE '\\' "
+            "OR pylower(relation) LIKE ? ESCAPE '\\' "
             "ORDER BY mention_count DESC",
             (f"%{escaped}%", f"%{escaped}%"),
         ).fetchall()
@@ -578,7 +583,8 @@ class Database:
         date = date or self._now().strftime("%Y-%m-%d")
 
         habit = self.db.execute(
-            "SELECT id FROM habits WHERE lower(name) = lower(?)", (habit_name,)
+            "SELECT id FROM habits WHERE pylower(name) = ?",
+            (habit_name.lower(),),
         ).fetchone()
 
         if not habit:
