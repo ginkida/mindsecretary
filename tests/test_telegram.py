@@ -105,6 +105,92 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_export_includes_all_user_owned_tables(self, tmp_path):
+        """/export used to dump only memories/contacts/diary/events/
+        decisions — losing the user's reminder history, habits, goals,
+        and chat log on migration. Expanded to cover every user-owned
+        table; ephemeral_state/api_costs/preferences stay excluded by
+        design (transient or bot-internal)."""
+        from datetime import datetime as _dt
+        from io import BytesIO
+        import json as _json
+        from mindsecretary.core.database import Database
+        from mindsecretary.interfaces.telegram import TelegramBot
+
+        db = Database(tmp_path / "test.db", timezone="UTC")
+        db.db.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY, content TEXT, embedding BLOB,
+                category TEXT, importance INTEGER DEFAULT 5,
+                related_person TEXT, related_date TEXT,
+                source_type TEXT, source_ref TEXT,
+                confidence REAL DEFAULT 1.0,
+                status TEXT DEFAULT 'active',
+                created_at TEXT DEFAULT (datetime('now')),
+                last_accessed TEXT
+            )
+        """)
+        db.db.commit()
+
+        # Seed every relevant table
+        db.create_reminder("call mom", "2099-01-01 10:00:00")
+        db.create_daily_goal("write report")
+        db.log_habit("yoga", done=True)
+        db.upsert_contact("Alice")
+        db.create_event("Meeting", "2099-02-01 14:00:00")
+        db.create_decision("buy bike")
+        db.log_interaction("in", "text", "hello")
+
+        # Real bot wired to the real DB
+        brain = MagicMock()
+        brain.db = db
+        brain.profile.timezone = "UTC"
+        brain.settings.rate_limit_per_minute = 20
+
+        bot = TelegramBot(
+            token="x", allowed_user_id=1, brain=brain, stt=MagicMock(),
+        )
+
+        update = _make_update()
+        update.message.reply_text = AsyncMock()
+        update.message.reply_document = AsyncMock()
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_export(update, context)
+
+        # The "preparing..." message goes first, then the document
+        update.message.reply_document.assert_awaited_once()
+        call = update.message.reply_document.await_args
+        doc = call.kwargs["document"]
+        assert isinstance(doc, BytesIO)
+        doc.seek(0)
+        payload = _json.loads(doc.read().decode("utf-8"))
+
+        # All formerly-missing tables now appear with the seeded rows
+        assert len(payload["reminders"]) == 1
+        assert payload["reminders"][0]["text"] == "call mom"
+        assert len(payload["daily_goals"]) == 1
+        assert payload["daily_goals"][0]["title"] == "write report"
+        assert len(payload["habits"]) == 1
+        assert payload["habits"][0]["name"] == "yoga"
+        assert len(payload["habit_log"]) == 1
+        assert payload["habit_log"][0]["done"] == 1
+        assert len(payload["interactions"]) == 1
+        assert payload["interactions"][0]["content"] == "hello"
+
+        # Pre-existing tables still populated
+        assert len(payload["events"]) == 1
+        assert len(payload["decisions"]) == 1
+        assert len(payload["contacts"]) == 1
+
+        # Caption mentions the new categories so the user sees the scope
+        caption = call.kwargs["caption"]
+        assert "напоминаний" in caption
+        assert "привычек" in caption
+        assert "целей" in caption
+        assert "взаимодействий" in caption
+
+    @pytest.mark.asyncio
     async def test_stats_handler_renders_category_breakdown(self):
         """/stats includes a per-category memory breakdown so the user
         sees what kinds of facts the bot is accumulating, not just the

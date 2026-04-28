@@ -574,6 +574,12 @@ class TelegramBot:
 
         db = self.brain.db
         exported_at = tz_now(self.brain.profile.timezone).isoformat()
+        # User-owned data: everything the user has personally created or
+        # the bot has captured on their behalf. Excluded:
+        # - ephemeral_state — transient by design (TTL ≤72h, no historic value)
+        # - api_costs / preferences — bot-internal accounting, not user content
+        # - memories.embedding — BLOB, expensive to serialize and useless
+        #   without the original Voyage model+API; users can re-embed.
         data = {
             "exported_at": exported_at,
             "memories": db.db.execute(
@@ -590,9 +596,32 @@ class TelegramBot:
             "decisions": db.db.execute(
                 "SELECT * FROM decisions ORDER BY created_at DESC LIMIT 200"
             ).fetchall(),
+            "reminders": db.db.execute(
+                "SELECT * FROM reminders ORDER BY trigger_at DESC LIMIT 500"
+            ).fetchall(),
+            "daily_goals": db.db.execute(
+                "SELECT * FROM daily_goals ORDER BY date DESC, created_at DESC "
+                "LIMIT 1000"
+            ).fetchall(),
+            "habits": db.db.execute(
+                "SELECT * FROM habits ORDER BY name"
+            ).fetchall(),
+            "habit_log": db.db.execute(
+                "SELECT * FROM habit_log ORDER BY date DESC LIMIT 2000"
+            ).fetchall(),
+            # Recent interactions only — full chat history can balloon past
+            # Telegram's 50MB doc limit on heavy users. 2000 rows ≈ 40 days
+            # at 50 interactions/day, which captures the practical window
+            # users would want to migrate.
+            "interactions": db.db.execute(
+                "SELECT id, direction, message_type, content, "
+                "voice_duration_sec, timestamp, metadata "
+                "FROM interactions ORDER BY timestamp DESC LIMIT 2000"
+            ).fetchall(),
         }
         # Convert sqlite3.Row objects to dicts
-        for key in ("memories", "events", "decisions"):
+        for key in ("memories", "events", "decisions", "reminders",
+                    "daily_goals", "habits", "habit_log", "interactions"):
             data[key] = [dict(r) for r in data[key]]
 
         json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
@@ -604,9 +633,14 @@ class TelegramBot:
 
         await update.message.reply_document(
             document=doc,
-            caption=f"📦 Экспорт: {len(data['memories'])} воспоминаний, "
-                    f"{len(data['contacts'])} контактов, "
-                    f"{len(data['diary'])} записей дневника",
+            caption=(
+                f"📦 Экспорт: {len(data['memories'])} воспоминаний, "
+                f"{len(data['contacts'])} контактов, "
+                f"{len(data['reminders'])} напоминаний, "
+                f"{len(data['habits'])} привычек, "
+                f"{len(data['daily_goals'])} целей, "
+                f"{len(data['interactions'])} взаимодействий"
+            ),
         )
 
     async def _handle_habits(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
