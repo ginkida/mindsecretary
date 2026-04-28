@@ -12,6 +12,9 @@ import voyageai
 
 logger = logging.getLogger(__name__)
 
+_VOYAGE_MAX_RETRIES = 3
+_VOYAGE_BASE_DELAY = 1.0  # seconds
+
 
 class Memory:
     def __init__(self, db: sqlite3.Connection, voyage_api_key: str,
@@ -67,16 +70,40 @@ class Memory:
                 if "duplicate column" not in str(e).lower():
                     raise
 
-    async def _embed(self, texts: list[str]) -> list[np.ndarray]:
-        result = await asyncio.to_thread(
-            self.voyage.embed, texts, model=self.model, input_type="document",
+    async def _embed_with_retry(self, texts: list[str], input_type: str):
+        """Call Voyage embed with 3x exp-backoff retry on transient failures.
+
+        Voyage SDK doesn't expose typed errors for transient vs terminal,
+        so we retry on any Exception (matches STT pattern). Terminal failure
+        propagates to caller, which falls back to status='embed_failed'.
+        """
+        last_error: Exception | None = None
+        for attempt in range(_VOYAGE_MAX_RETRIES):
+            try:
+                return await asyncio.to_thread(
+                    self.voyage.embed, texts, model=self.model, input_type=input_type,
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < _VOYAGE_MAX_RETRIES - 1:
+                    delay = _VOYAGE_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Voyage embed attempt %d/%d failed (%s), retrying in %.1fs",
+                        attempt + 1, _VOYAGE_MAX_RETRIES, type(e).__name__, delay,
+                    )
+                    await asyncio.sleep(delay)
+        logger.error(
+            "Voyage embed failed after %d attempts: %s",
+            _VOYAGE_MAX_RETRIES, type(last_error).__name__,
         )
+        raise last_error  # type: ignore[misc]
+
+    async def _embed(self, texts: list[str]) -> list[np.ndarray]:
+        result = await self._embed_with_retry(texts, "document")
         return [np.array(e, dtype=np.float32) for e in result.embeddings]
 
     async def _embed_query(self, text: str) -> np.ndarray:
-        result = await asyncio.to_thread(
-            self.voyage.embed, [text], model=self.model, input_type="query",
-        )
+        result = await self._embed_with_retry([text], "query")
         return np.array(result.embeddings[0], dtype=np.float32)
 
     _DEDUP_THRESHOLD = 0.92
