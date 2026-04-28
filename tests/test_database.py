@@ -405,6 +405,87 @@ class TestDailyGoals:
     def test_complete_nonexistent_goal(self, tmp_db: Database):
         assert tmp_db.complete_daily_goal_by_hint("nothing") is None
 
+    def test_complete_goal_cyrillic_case_insensitive(self, tmp_db: Database):
+        """Title 'зарядка' must match LLM-supplied hint 'ЗАРЯДКА' — pylower
+        path. SQLite native lower() leaves Cyrillic untouched, so the
+        old ASCII-only LIKE missed common case mismatches."""
+        tmp_db.create_daily_goal("сделать зарядку утром")
+        result = tmp_db.complete_daily_goal_by_hint("ЗАРЯДКУ", status="completed")
+        assert result is not None
+        assert result["status"] == "completed"
+        assert "зарядку" in result["title"]
+
+    def test_skip_stale_pending_goals_marks_yesterday(self, tmp_db: Database):
+        """Pending goals from prior days must auto-flip to skipped — they
+        clutter completion-rate analytics if left alone."""
+        from datetime import timedelta as _td
+        today = tmp_db._now()
+        yesterday = (today - _td(days=1)).strftime("%Y-%m-%d")
+        last_week = (today - _td(days=7)).strftime("%Y-%m-%d")
+        today_str = today.strftime("%Y-%m-%d")
+
+        tmp_db.create_daily_goal("вчерашнее", date=yesterday)
+        tmp_db.create_daily_goal("на прошлой неделе", date=last_week)
+        tmp_db.create_daily_goal("сегодняшнее", date=today_str)
+
+        skipped = tmp_db.skip_stale_pending_goals()
+        assert skipped == 2  # yesterday + last_week, NOT today
+
+        rows = {
+            r["title"]: r for r in tmp_db.db.execute(
+                "SELECT title, status, reflection FROM daily_goals"
+            ).fetchall()
+        }
+        assert rows["вчерашнее"]["status"] == "skipped"
+        assert "[авто]" in (rows["вчерашнее"]["reflection"] or "")
+        assert rows["на прошлой неделе"]["status"] == "skipped"
+        assert rows["сегодняшнее"]["status"] == "pending"
+
+    def test_skip_stale_pending_goals_does_not_overwrite_completed(self, tmp_db: Database):
+        """Already-resolved goals (completed/skipped/partial) must NOT be
+        re-marked. The auto-skip only touches genuinely-abandoned 'pending'
+        rows from prior days — no rewriting history."""
+        from datetime import timedelta as _td
+        yesterday = (tmp_db._now() - _td(days=1)).strftime("%Y-%m-%d")
+        for status in ("completed", "skipped", "partial"):
+            tmp_db.db.execute(
+                "INSERT INTO daily_goals (date, title, status, reflection) "
+                "VALUES (?, ?, ?, 'user-provided')",
+                (yesterday, f"goal-{status}", status),
+            )
+        tmp_db.db.commit()
+
+        tmp_db.skip_stale_pending_goals()
+
+        rows = tmp_db.db.execute(
+            "SELECT title, status, reflection FROM daily_goals"
+        ).fetchall()
+        for r in rows:
+            assert r["status"] != "pending"
+            # Original reflection must NOT be replaced by the auto-note
+            assert r["reflection"] == "user-provided"
+
+    def test_skip_stale_preserves_existing_reflection(self, tmp_db: Database):
+        """If a stale-pending row somehow already has a reflection, COALESCE
+        keeps it — auto-note only fills NULL. Edge case but worth locking
+        in: user's words always outrank the bot's bookkeeping."""
+        from datetime import timedelta as _td
+        yesterday = (tmp_db._now() - _td(days=1)).strftime("%Y-%m-%d")
+        tmp_db.db.execute(
+            "INSERT INTO daily_goals (date, title, status, reflection) "
+            "VALUES (?, 'X', 'pending', 'был занят, не успел')",
+            (yesterday,),
+        )
+        tmp_db.db.commit()
+
+        tmp_db.skip_stale_pending_goals()
+
+        row = tmp_db.db.execute(
+            "SELECT status, reflection FROM daily_goals WHERE title = 'X'"
+        ).fetchone()
+        assert row["status"] == "skipped"
+        assert row["reflection"] == "был занят, не успел"
+
 
 class TestDiary:
     def test_save_and_get_diary(self, tmp_db: Database):
@@ -551,6 +632,39 @@ class TestCleanup:
             "cleanup cutoff is using profile-local clock instead of UTC, "
             "creating a TZ-offset drift in the retention window"
         )
+
+    def test_cleanup_invokes_skip_stale_pending_goals(self, tmp_db: Database):
+        """cleanup_old_data must invoke the goal sweep — without this,
+        stale goals never get auto-marked even with retention enabled."""
+        from datetime import timedelta as _td
+        yesterday = (tmp_db._now() - _td(days=1)).strftime("%Y-%m-%d")
+        tmp_db.create_daily_goal("ghost", date=yesterday)
+
+        counts = tmp_db.cleanup_old_data(days=90)
+
+        assert counts["stale_goals"] == 1
+        row = tmp_db.db.execute(
+            "SELECT status FROM daily_goals WHERE title = 'ghost'"
+        ).fetchone()
+        assert row["status"] == "skipped"
+
+    def test_cleanup_runs_goal_sweep_even_when_retention_disabled(
+        self, tmp_db: Database,
+    ):
+        """The stale-goal sweep is independent of retention horizon — it
+        runs even when days <= 0 (the 'disabled' setting). Otherwise users
+        who turn off retention would lose this hygiene entirely."""
+        from datetime import timedelta as _td
+        yesterday = (tmp_db._now() - _td(days=1)).strftime("%Y-%m-%d")
+        tmp_db.create_daily_goal("ghost", date=yesterday)
+
+        counts = tmp_db.cleanup_old_data(days=0)
+
+        assert counts["stale_goals"] == 1
+        # Other counts stay zero — retention disabled, no row deletions
+        assert counts["interactions"] == 0
+        assert counts["api_costs"] == 0
+        assert counts["memories"] == 0
 
     def test_cleanup_hard_deletes_old_soft_deleted_memories(self, tmp_db: Database, raw_conn):
         raw_conn.execute(

@@ -882,15 +882,21 @@ class Database:
 
     def complete_daily_goal_by_hint(self, hint: str, status: str = "completed",
                                     reflection: str | None = None) -> dict | None:
-        """Find today's pending goal by keyword and mark it."""
+        """Find today's pending goal by keyword and mark it.
+
+        pylower for Cyrillic case-insensitivity — `title` is user-supplied
+        free text (often Russian), and SQLite's native LOWER is ASCII-only,
+        so an LLM-produced hint with a different case ('ЗАРЯДКА' vs
+        stored 'зарядка') would silently miss.
+        """
         today = self._now().strftime("%Y-%m-%d")
         if status not in (Status.COMPLETED, Status.SKIPPED, Status.PARTIAL):
             status = Status.COMPLETED
-        escaped = self._escape_like(hint)
+        escaped = self._escape_like(hint.lower())
         row = self.db.execute(
             "SELECT id, title FROM daily_goals "
             "WHERE date = ? AND status = 'pending' "
-            "AND title LIKE ? ESCAPE '\\' "
+            "AND pylower(title) LIKE ? ESCAPE '\\' "
             "ORDER BY created_at LIMIT 1",
             (today, f"%{escaped}%"),
         ).fetchone()
@@ -1015,6 +1021,26 @@ class Database:
             "counts": counts,
         }
 
+    def skip_stale_pending_goals(self) -> int:
+        """Mark `pending` daily_goals from before today as `skipped`.
+
+        Goals stay `pending` forever if the user never reports back —
+        polluting completion-rate analytics and slowly accumulating
+        rows. Conservative auto-marking (skipped, not deleted, with an
+        explicit reflection note) keeps the audit trail clear: future
+        readers can tell user-skipped from auto-skipped at a glance.
+        """
+        today = self._now().strftime("%Y-%m-%d")
+        cur = self.db.execute(
+            "UPDATE daily_goals "
+            "SET status = 'skipped', "
+            "    reflection = COALESCE(reflection, '[авто] не закрыто к концу дня') "
+            "WHERE date < ? AND status = 'pending'",
+            (today,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
     def cleanup_old_data(self, days: int = 90) -> dict:
         """Delete interactions and api_costs older than `days`.
 
@@ -1030,7 +1056,14 @@ class Database:
         retention silently skews by a few hours per cycle. CLAUDE.md
         flags this whole class of mixed-TZ comparisons.
         """
-        counts: dict[str, int] = {"interactions": 0, "api_costs": 0, "memories": 0}
+        counts: dict[str, int] = {
+            "interactions": 0, "api_costs": 0,
+            "memories": 0, "stale_goals": 0,
+        }
+        # Stale goal sweep is independent of retention horizon — it always
+        # runs, since stale-pending pollutes analytics regardless of how
+        # long the rows persist.
+        counts["stale_goals"] = self.skip_stale_pending_goals()
         if days <= 0:
             return counts
         # Use SQL_TS_FMT (space-separated) so string comparison matches DB
