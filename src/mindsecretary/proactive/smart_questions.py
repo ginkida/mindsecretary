@@ -29,6 +29,11 @@ GAPS_PROMPT = """\
 Последние взаимодействия:
 {recent}
 
+Вопросы, которые ты уже задавал недавно (НЕ повторяй и НЕ перефразируй
+эти темы — пользователь либо ответил, либо проигнорировал, и второй
+заход выглядит как лень):
+{previous_questions}
+
 Задача: найди 1 самый полезный вопрос, который стоит задать пользователю.
 
 Типы вопросов (выбери один):
@@ -42,10 +47,17 @@ GAPS_PROMPT = """\
 - Вопрос должен быть естественным, не допросом
 - Не повторяй то, что уже знаешь
 - Не спрашивай про очевидное
+- НЕ задавай вопрос на ту же тему, что в списке выше — даже в другой формулировке
 - Максимум 1-2 предложения
 
-Ответь ТОЛЬКО текстом вопроса, без пояснений. Если нечего спрашивать — ответь "SKIP".\
+Ответь ТОЛЬКО текстом вопроса, без пояснений. Если все темы уже покрыты
+или нечего спрашивать — ответь "SKIP".\
 """
+
+# How many past questions to show the LLM. Each is short (≤200 chars after
+# sanitize), so 7 fits easily within the smart-question context budget while
+# covering ~a week at the 8h cooldown.
+_PREVIOUS_QUESTIONS_LIMIT = 7
 
 
 class SmartQuestions:
@@ -130,12 +142,32 @@ class SmartQuestions:
             if i.get('direction') == 'in'
         )
 
+        # Past smart_question outputs — feed back so the LLM doesn't ask
+        # the same gap-question twice. Cooldown was time-based only;
+        # without this the bot would re-ask "Кто такой Петя?" every few
+        # days because the underlying gap (Петя has no relation set)
+        # persists until the user answers.
+        try:
+            past_q_rows = self.db.get_interactions(
+                message_type="smart_question", limit=_PREVIOUS_QUESTIONS_LIMIT,
+            )
+        except Exception as e:
+            logger.warning("Smart question history fetch failed: %s",
+                           type(e).__name__)
+            past_q_rows = []
+        previous_text = "\n".join(
+            f"- {s(r.get('content') or '', 200)}"
+            for r in past_q_rows
+            if (r.get("content") or "").strip()
+        ) or "Пока не задавал."
+
         try:
             response = await self.llm.chat(
                 system=GAPS_PROMPT.format(
                     contacts=contacts_text,
                     memories=memories_text,
                     recent=recent_text,
+                    previous_questions=previous_text,
                 ),
                 messages=[{"role": "user", "content": "Сгенерируй вопрос."}],
                 max_tokens=200,
