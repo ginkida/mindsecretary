@@ -175,6 +175,27 @@ class BriefingGenerator:
         completed = [i for i in interactions
                      if i.get("message_type") == "reminder" and i.get("direction") == "out"]
 
+        # Habits: active streaks and what wasn't logged today.
+        # Habit names are user-origin (created via log_habit from voice/text)
+        # so they go through sanitize_for_context like other free-text fields.
+        habit_stats = self.db.get_habit_stats()
+        if habit_stats:
+            active_streaks = [h for h in habit_stats if h["streak"] >= 3]
+            unlogged = [h for h in habit_stats if not h.get("logged_today")]
+            habit_lines: list[str] = []
+            if active_streaks:
+                streaks_str = ", ".join(
+                    f"{s(h['name'], 60)} — {h['streak']}д"
+                    for h in active_streaks
+                )
+                habit_lines.append(f"🔥 Серии: {streaks_str}")
+            if unlogged:
+                unlogged_str = ", ".join(s(h["name"], 60) for h in unlogged[:5])
+                habit_lines.append(f"Не отмечено сегодня: {unlogged_str}")
+            habits_text = "\n".join(habit_lines) or "Всё отмечено, серий нет."
+        else:
+            habits_text = "Привычки не отслеживаются."
+
         # Daily goals (sanitize user-origin text before prompt injection)
         goals = self.db.get_daily_goals(today)
         if goals:
@@ -198,6 +219,7 @@ class BriefingGenerator:
             events=events_text,
             completed=f"{len(completed)} напоминаний отправлено",
             daily_goals=goals_text,
+            habits=habits_text,
             weather_tomorrow=weather_tomorrow,
             events_tomorrow=events_tomorrow_text,
         )

@@ -641,27 +641,44 @@ class Database:
         return {"habit": habit_name, "date": date, "done": done}
 
     def get_habit_stats(self) -> list[dict]:
-        """Get all habits with current streak and 7-day completion rate."""
+        """Get all habits with current streak and 7-day completion rate.
+
+        Streak walks calendar days back from today: a day is in the streak
+        only if it has a `done=1` log. A missing day (no row) OR a `done=0`
+        row both break the streak — without the calendar walk, logs of
+        Mon/Tue/Wed/Fri (Thu missing) would falsely count as a 4-day streak
+        because the inner loop only iterated rows, not days.
+        """
         habits = self.db.execute(
             "SELECT id, name FROM habits ORDER BY name"
         ).fetchall()
         results = []
-        today = self._now().strftime("%Y-%m-%d")
+        now = self._now()
+        today_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_str = today_dt.strftime("%Y-%m-%d")
         for h in habits:
-            # Current streak: consecutive days with done=1, counting back from today
             logs = self.db.execute(
                 "SELECT date, done FROM habit_log WHERE habit_id = ? "
                 "AND date <= ? ORDER BY date DESC LIMIT 60",
-                (h["id"], today),
+                (h["id"], today_str),
             ).fetchall()
+            done_by_date = {log["date"]: bool(log["done"]) for log in logs}
+
             streak = 0
-            for log in logs:
-                if log["done"]:
+            day = today_dt
+            # 60-day cap matches the LIMIT 60 above — we never have data
+            # past that anyway, so capping the walk avoids an unbounded
+            # backward scan if someone has 60 consecutive done days.
+            for _ in range(60):
+                key = day.strftime("%Y-%m-%d")
+                if done_by_date.get(key):
                     streak += 1
+                    day = day - timedelta(days=1)
                 else:
                     break
+
             # 7-day rate
-            week_start = (self._now() - timedelta(days=6)).strftime("%Y-%m-%d")
+            week_start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
             week_logs = self.db.execute(
                 "SELECT COUNT(*) as cnt FROM habit_log "
                 "WHERE habit_id = ? AND date >= ? AND done = 1",
@@ -673,6 +690,7 @@ class Database:
                 "streak": streak,
                 "week_done": week_done,
                 "week_rate": round(week_done / 7 * 100),
+                "logged_today": today_str in done_by_date,
             })
         return results
 

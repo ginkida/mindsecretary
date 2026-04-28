@@ -37,6 +37,36 @@ class TestHabitStats:
         stats = tmp_db.get_habit_stats()
         assert stats[0]["streak"] == 1  # Only today counts
 
+    def test_streak_breaks_on_unlogged_gap(self, tmp_db: Database):
+        """A missing day (no row at all) must break the streak — earlier
+        the loop just iterated rows, so logs on day 0 / -2 / -3 (gap on
+        -1) showed streak=3 instead of 1. Conservative model: missing
+        day = unknown = break."""
+        today = tmp_db._now()
+        for offset in (0, 2, 3):  # log day 0, skip day 1, log days 2 + 3
+            d = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            tmp_db.log_habit("yoga", done=True, date=d)
+        stats = tmp_db.get_habit_stats()
+        assert stats[0]["streak"] == 1  # only today counts; gap on day -1
+
+    def test_streak_zero_when_today_not_logged(self, tmp_db: Database):
+        """Streak is zero if today wasn't logged, even with prior done logs.
+        Catches the off-by-one shape where 'most recent done log' != 'today'."""
+        today = tmp_db._now()
+        # Log yesterday and 2-days-ago, but NOT today
+        for offset in (1, 2):
+            d = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            tmp_db.log_habit("walk", done=True, date=d)
+        stats = tmp_db.get_habit_stats()
+        assert stats[0]["streak"] == 0
+        assert stats[0]["logged_today"] is False
+
+    def test_logged_today_flag(self, tmp_db: Database):
+        today = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.log_habit("water", done=True, date=today)
+        stats = tmp_db.get_habit_stats()
+        assert stats[0]["logged_today"] is True
+
     def test_week_rate(self, tmp_db: Database):
         today = tmp_db._now()
         for i in range(4):
