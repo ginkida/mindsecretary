@@ -329,6 +329,46 @@ class Database:
         "monthly": timedelta(days=30),
     }
 
+    def cancel_reminder_by_hint(self, hint: str) -> dict | None:
+        """Cancel the most-imminent pending reminder whose text matches `hint`
+        (case-insensitive substring, Cyrillic-aware via pylower).
+
+        Returns the cancelled row dict, or None if nothing matched.
+        Recurring reminders: cancellation stops the series — we do NOT
+        auto-create a next occurrence (that's mark_reminder_sent's job),
+        because user intent on "отмени напоминание" is "stop bothering me".
+        """
+        if not hint or not hint.strip():
+            return None
+        escaped = self._escape_like(hint.strip().lower())
+        row = self.db.execute(
+            "SELECT * FROM reminders "
+            "WHERE status = 'pending' AND pylower(text) LIKE ? ESCAPE '\\' "
+            "ORDER BY trigger_at LIMIT 1",
+            (f"%{escaped}%",),
+        ).fetchone()
+        if not row:
+            return None
+        self.db.execute(
+            "UPDATE reminders SET status = 'cancelled' WHERE id = ?",
+            (row["id"],),
+        )
+        self.db.commit()
+        return dict(row)
+
+    def count_pending_reminders_matching(self, hint: str) -> int:
+        """How many pending reminders match `hint` — used by the cancel
+        handler to disclose ambiguity ("matched 3, cancelled the soonest")."""
+        if not hint or not hint.strip():
+            return 0
+        escaped = self._escape_like(hint.strip().lower())
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM reminders "
+            "WHERE status = 'pending' AND pylower(text) LIKE ? ESCAPE '\\'",
+            (f"%{escaped}%",),
+        ).fetchone()
+        return int(row[0])
+
     def mark_reminder_sent(self, reminder_id: str):
         row = self.db.execute(
             "SELECT text, trigger_at, priority, recurrence FROM reminders WHERE id = ?",

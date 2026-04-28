@@ -362,3 +362,58 @@ class TestGetRemindersHandler:
 
         assert "still pending" in result
         assert "done thing" not in result
+
+
+class TestCancelReminderHandler:
+    """ToolExecutor handler for cancel_reminder. Symmetric with
+    create_reminder — closes the CRUD loop on reminders."""
+
+    @pytest.mark.asyncio
+    async def test_cancels_unique_match(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("дантист в среду", "2099-01-15 10:00:00", "high")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_reminder", {"text_hint": "дантист"})
+
+        assert "Отменено" in result
+        assert "дантист в среду" in result
+        # Status flipped to cancelled — no longer in pending
+        assert tmp_db.get_pending_reminders() == []
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_reminder", {"text_hint": "nope"})
+        assert "Не нашёл" in result and "nope" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_disclosure(self, tmp_db):
+        """If the hint matches multiple, the response must say so — Claude
+        should ask the user to disambiguate or explicitly cancel the rest."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("дантист 1", "2099-01-15 10:00:00")
+        tmp_db.create_reminder("дантист 2", "2099-02-15 10:00:00")
+        tmp_db.create_reminder("дантист 3", "2099-03-15 10:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_reminder", {"text_hint": "дантист"})
+
+        assert "Отменено: дантист 1" in result
+        assert "Похожих ещё 2" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_hint_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_reminder", {"text_hint": "   "})
+        assert "non-empty" in result

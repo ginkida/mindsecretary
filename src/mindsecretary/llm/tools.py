@@ -140,6 +140,31 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "cancel_reminder",
+        "description": (
+            "Отменить отложенное напоминание (status pending → cancelled). "
+            "Вызывай когда пользователь говорит «отмени напоминание про X», "
+            "«не надо больше про Y». Поиск по подстроке в тексте — кириллица "
+            "учитывается. Если совпадает несколько, отменяется ближайшее по "
+            "времени; в ответе будет указано сколько ещё осталось похожих, "
+            "чтобы ты мог уточнить или отменить остальные. Для recurring "
+            "напоминаний это останавливает серию — следующее не создаётся."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {
+                    "type": "string",
+                    "description": (
+                        "Ключевое слово или фраза из текста напоминания "
+                        "(напр. 'дантист', 'Маше позвонить')."
+                    ),
+                },
+            },
+            "required": ["text_hint"],
+        },
+    },
+    {
         "name": "get_reminders",
         "description": (
             "Перечислить отложенные напоминания (status=pending). Используй, "
@@ -444,6 +469,12 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "get_open_loops":
         clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
 
+    if name == "cancel_reminder":
+        hint = clean.get("text_hint") or ""
+        # Tool-side cap independent of MAX_STR_LEN — hint goes into LIKE
+        # so a 5000-char value is just wasted matcher work.
+        clean["text_hint"] = str(hint)[:200]
+
     if name == "get_reminders":
         if clean.get("days_ahead") is not None:
             clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
@@ -644,6 +675,23 @@ class ToolExecutor:
         self.db.create_reminder(text, trigger_at, priority, recurrence)
         rec_str = f" (повтор: {recurrence})" if recurrence else ""
         return f"Reminder set: {text} at {trigger_at}{rec_str}"
+
+    def _handle_cancel_reminder(self, text_hint: str) -> str:
+        if not text_hint or not text_hint.strip():
+            return "cancel_reminder requires a non-empty text_hint"
+        # Count first so we can disclose ambiguity in the response —
+        # single-threaded SQLite, no race with the cancel below.
+        total = self.db.count_pending_reminders_matching(text_hint)
+        cancelled = self.db.cancel_reminder_by_hint(text_hint)
+        if not cancelled:
+            return f"Не нашёл pending-напоминаний по '{text_hint[:80]}'"
+        text = (cancelled.get("text") or "")[:120]
+        trigger = (cancelled.get("trigger_at") or "?")[:16]
+        msg = f"Отменено: {text} ({trigger})"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно отменить и их."
+        return msg
 
     def _handle_get_reminders(self, days_ahead: int | None = None,
                               limit: int = 20) -> str:

@@ -61,6 +61,62 @@ class TestReminders:
         assert len(due) == 1
         assert due[0]["text"] == "Past"
 
+    def test_cancel_reminder_by_hint_picks_soonest(self, tmp_db: Database):
+        """When hint matches multiple, cancel the most-imminent one — that's
+        almost always what the user means by 'отмени напоминание про X'."""
+        tmp_db.create_reminder("дантист в среду", "2099-01-15 10:00:00")
+        tmp_db.create_reminder("дантист в апреле", "2099-04-10 10:00:00")
+        tmp_db.create_reminder("парикмахер", "2099-01-20 10:00:00")
+
+        cancelled = tmp_db.cancel_reminder_by_hint("дантист")
+        assert cancelled is not None
+        assert cancelled["text"] == "дантист в среду"  # earliest match
+
+        # Other "дантист" still pending; non-matching reminder also pending
+        pending = tmp_db.get_pending_reminders()
+        texts = [p["text"] for p in pending]
+        assert "дантист в апреле" in texts
+        assert "парикмахер" in texts
+        assert "дантист в среду" not in texts
+
+    def test_cancel_reminder_by_hint_no_match(self, tmp_db: Database):
+        tmp_db.create_reminder("X", "2099-01-15 10:00:00")
+        result = tmp_db.cancel_reminder_by_hint("nonexistent")
+        assert result is None
+
+    def test_cancel_reminder_by_hint_cyrillic_case_insensitive(self, tmp_db: Database):
+        """Hint 'СТОМАТОЛОГ' must match stored 'стоматолог' — pylower path."""
+        tmp_db.create_reminder("стоматолог запись", "2099-01-15 10:00:00")
+        cancelled = tmp_db.cancel_reminder_by_hint("СТОМАТОЛОГ")
+        assert cancelled is not None
+        assert cancelled["text"] == "стоматолог запись"
+
+    def test_cancel_reminder_excludes_sent_reminders(self, tmp_db: Database):
+        r = tmp_db.create_reminder("done thing", "2099-01-15 10:00:00")
+        tmp_db.mark_reminder_sent(r["id"])
+        # Same text still searchable but sent rows must NOT be cancellable
+        result = tmp_db.cancel_reminder_by_hint("done thing")
+        assert result is None
+
+    def test_count_pending_reminders_matching(self, tmp_db: Database):
+        tmp_db.create_reminder("дантист 1", "2099-01-15 10:00:00")
+        tmp_db.create_reminder("дантист 2", "2099-02-15 10:00:00")
+        tmp_db.create_reminder("парикмахер", "2099-01-20 10:00:00")
+        assert tmp_db.count_pending_reminders_matching("дантист") == 2
+        assert tmp_db.count_pending_reminders_matching("nope") == 0
+        assert tmp_db.count_pending_reminders_matching("") == 0
+
+    def test_cancel_reminder_recurring_does_not_create_next(self, tmp_db: Database):
+        """Cancellation stops the series — NO auto-roll like mark_reminder_sent.
+        User intent on 'отмени' is 'stop bothering me', not 'skip this one'."""
+        tmp_db.create_reminder(
+            "weekly thing", "2099-01-15 10:00:00",
+            priority="medium", recurrence="weekly",
+        )
+        tmp_db.cancel_reminder_by_hint("weekly thing")
+        pending = tmp_db.get_pending_reminders()
+        assert pending == []  # No next-week instance was auto-created
+
 
 class TestContacts:
     def test_upsert_creates_new_contact(self, tmp_db: Database):
