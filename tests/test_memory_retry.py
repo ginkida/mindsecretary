@@ -253,3 +253,99 @@ class TestMemoryUpdateByHint:
         result = await memory.update_by_hint("СТОМАТОЛОГ", "новый врач")
         assert result["status"] == "ok"
         assert result["memory"]["content"] == "новый врач"
+
+
+class TestMemoryDeleteByHint:
+    """delete_by_hint mirrors update_by_hint's safety contract: ambiguous
+    hint refuses; soft-delete preserves /undo."""
+
+    @pytest.mark.asyncio
+    async def test_unique_match_soft_deletes(self):
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("шахматы по выходным", "personal")
+
+        result = await memory.delete_by_hint("шахматы")
+
+        assert result["status"] == "ok"
+        assert result["memory"]["id"] == mem_id
+        # Status is now 'deleted', not removed — /undo path stays open
+        row = memory.db.execute(
+            "SELECT status FROM memories WHERE id = ?", (mem_id,),
+        ).fetchone()
+        assert row["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_undo_after_delete_works(self):
+        """Confirms the soft-delete contract: get_last_deleted + restore
+        chain still works after delete_by_hint, same as /forget."""
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("факт про Y", "personal")
+
+        await memory.delete_by_hint("факт про Y")
+        last = memory.get_last_deleted()
+        assert last is not None
+        assert last["id"] == mem_id
+
+        restored = memory.restore(mem_id)
+        assert restored is True
+        row = memory.db.execute(
+            "SELECT status FROM memories WHERE id = ?", (mem_id,),
+        ).fetchone()
+        assert row["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_not_found(self):
+        memory, _ = _make_memory()
+        result = await memory.delete_by_hint("nope")
+        assert result == {"status": "not_found"}
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_refuses(self):
+        memory, voyage = _make_memory()
+        embeds = []
+        for _ in range(3):
+            v = np.random.randn(1024).astype(np.float32)
+            v /= np.linalg.norm(v)
+            embeds.append(MagicMock(embeddings=[v.tolist()]))
+        voyage.embed.side_effect = embeds
+
+        await memory.save("факт A про шахматы", "personal")
+        await memory.save("факт B про шахматы", "personal")
+        await memory.save("факт C про шахматы", "personal")
+
+        result = await memory.delete_by_hint("шахматы")
+        assert result["status"] == "ambiguous"
+        assert result["count"] == 3
+        assert len(result["samples"]) == 3
+        # All three rows still active — no destructive action under ambiguity
+        active = memory.db.execute(
+            "SELECT COUNT(*) FROM memories WHERE status = 'active'",
+        ).fetchone()
+        assert active[0] == 3
+
+    @pytest.mark.asyncio
+    async def test_invalid_args(self):
+        memory, _ = _make_memory()
+        assert (await memory.delete_by_hint(""))["status"] == "invalid"
+        assert (await memory.delete_by_hint("  "))["status"] == "invalid"
+
+    @pytest.mark.asyncio
+    async def test_already_deleted_excluded(self):
+        """Already-deleted rows mustn't be matched by hint — otherwise
+        a delete after delete would 'succeed' and the second user could
+        not understand why /undo restores something they meant gone."""
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("про работу", "work")
+        memory.delete(mem_id)
+
+        result = await memory.delete_by_hint("работ")
+        assert result == {"status": "not_found"}

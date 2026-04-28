@@ -419,6 +419,81 @@ class TestCancelReminderHandler:
         assert "non-empty" in result
 
 
+class TestDeleteMemoryHandler:
+    """ToolExecutor handler for delete_memory mirrors update_memory's
+    branch dispatch: distinct user-facing string per status so Claude
+    knows what to tell the user."""
+
+    @pytest.mark.asyncio
+    async def test_ok_returns_id_category_undo_hint(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.delete_by_hint = AsyncMock(return_value={
+            "status": "ok",
+            "memory": {"id": "abc12345", "content": "шахматы",
+                       "category": "personal"},
+        })
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("delete_memory", {"text_hint": "шахматы"})
+
+        assert "Удалено" in result
+        assert "abc12345" in result
+        assert "[personal]" in result
+        # Critical: tell the user about /undo so they can recover
+        assert "/undo" in result
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.delete_by_hint = AsyncMock(return_value={"status": "not_found"})
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("delete_memory", {"text_hint": "nope"})
+        assert "Не нашёл" in result and "nope" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_refuses(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.delete_by_hint = AsyncMock(return_value={
+            "status": "ambiguous",
+            "count": 3,
+            "samples": [
+                {"id": "a1", "content": "факт A про шахматы"},
+                {"id": "b2", "content": "факт B про шахматы"},
+                {"id": "c3", "content": "факт C про шахматы"},
+            ],
+        })
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("delete_memory", {"text_hint": "шахматы"})
+
+        # User-facing copy must NOT say "удалено" on the ambiguous path —
+        # otherwise the user thinks deletion happened
+        assert "удаление не выполнено" in result
+        assert "[a1]" in result and "[b2]" in result and "[c3]" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_branch(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.delete_by_hint = AsyncMock(return_value={"status": "invalid"})
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("delete_memory", {"text_hint": ""})
+        assert "non-empty" in result
+
+
 class TestUpdateMemoryHandler:
     """ToolExecutor handler for update_memory. Covers the not_found,
     ambiguous, and embed_failed branches the underlying Memory method

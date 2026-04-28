@@ -233,6 +233,51 @@ class Memory:
             },
         }
 
+    async def delete_by_hint(self, hint: str) -> dict:
+        """Soft-delete a single active memory matched by `hint` (status →
+        'deleted'). Same shape as update_by_hint:
+        {ok, not_found, ambiguous, invalid}.
+
+        Single-match required: ambiguous hint REFUSES the delete and
+        returns count + 3 samples. Memories are too sensitive to delete a
+        guess — same reasoning as update_by_hint.
+
+        Soft delete (not row removal) preserves /undo via Memory.restore
+        and the existing get_last_deleted helper.
+        """
+        if not hint or not hint.strip():
+            return {"status": "invalid"}
+
+        escaped = self._escape_like(hint.strip().lower())
+        rows = self.db.execute(
+            "SELECT id, content, category FROM memories "
+            "WHERE status = 'active' AND pylower(content) LIKE ? ESCAPE '\\'",
+            (f"%{escaped}%",),
+        ).fetchall()
+
+        if not rows:
+            return {"status": "not_found"}
+        if len(rows) > 1:
+            samples = [
+                {"id": r["id"], "content": (r["content"] or "")[:120]}
+                for r in rows[:3]
+            ]
+            return {"status": "ambiguous", "count": len(rows), "samples": samples}
+
+        row = rows[0]
+        # Reuse the existing delete() so /undo and last_accessed bookkeeping
+        # stay consistent across delete paths (LLM tool vs /forget command).
+        self.delete(row["id"])
+        logger.info("Memory %s deleted via hint", row["id"])
+        return {
+            "status": "ok",
+            "memory": {
+                "id": row["id"],
+                "content": row["content"],
+                "category": row["category"],
+            },
+        }
+
     def _find_duplicate(self, embedding: np.ndarray, category: str) -> dict | None:
         """Find an existing memory with very high cosine similarity."""
         rows = self.db.execute(

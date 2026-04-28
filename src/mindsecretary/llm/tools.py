@@ -54,6 +54,30 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "delete_memory",
+        "description": (
+            "Удалить (soft-delete, восстанавливается через /undo) один факт "
+            "из памяти. Вызывай когда {name} говорит «забудь что X», "
+            "«это уже не актуально», «удали факт про Y». Если совпадает "
+            "несколько записей — удаление НЕ выполняется, будут возвращены "
+            "найденные и количество. Уточни hint и вызови снова. Не "
+            "используй для исправления факта — для этого update_memory."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {
+                    "type": "string",
+                    "description": (
+                        "Подстрока из содержимого факта "
+                        "(напр. 'Yandex', 'шахматы')."
+                    ),
+                },
+            },
+            "required": ["text_hint"],
+        },
+    },
+    {
         "name": "update_memory",
         "description": (
             "Заменить содержимое одного факта в памяти. Вызывай когда "
@@ -540,6 +564,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # new_content gets the global MAX_STR_LEN cap from the generic
         # truncate above; nothing extra needed here.
 
+    if name == "delete_memory":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+
     if name == "reschedule_reminder":
         hint = clean.get("text_hint") or ""
         clean["text_hint"] = str(hint)[:200]
@@ -687,6 +715,33 @@ class ToolExecutor:
                                      source_ref=source_ref,
                                      confidence=self._default_memory_confidence(request_context))
         return f"Saved memory {mid}: {content[:60]}..."
+
+    async def _handle_delete_memory(self, text_hint: str) -> str:
+        result = await self.memory.delete_by_hint(text_hint)
+        status = result.get("status")
+        if status == "invalid":
+            return "delete_memory requires non-empty text_hint"
+        if status == "not_found":
+            return f"Не нашёл в памяти ничего по '{text_hint[:80]}'"
+        if status == "ambiguous":
+            count = result.get("count", 0)
+            samples = result.get("samples") or []
+            sample_lines = "\n".join(
+                f"  - [{s.get('id')}] {s.get('content', '')}"
+                for s in samples
+            )
+            return (
+                f"По '{text_hint[:80]}' нашлось {count} записей — слишком "
+                f"много, удаление не выполнено. Уточни hint и вызови снова. "
+                f"Примеры найденного:\n{sample_lines}"
+            )
+        if status == "ok":
+            mem = result.get("memory") or {}
+            mem_id = mem.get("id", "?")
+            content = (mem.get("content") or "")[:120]
+            cat = mem.get("category", "?")
+            return f"Удалено [{mem_id}] [{cat}]: {content} (можно восстановить через /undo)"
+        return f"delete_memory unknown status: {status}"
 
     async def _handle_update_memory(self, text_hint: str,
                                     new_content: str) -> str:
