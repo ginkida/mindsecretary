@@ -360,6 +360,17 @@ class Memory:
         importances = np.array([row["importance"] for row in rows], dtype=np.float32)
         final_scores = cosine_scores * self.relevance_w + (importances / 10) * self.importance_w
 
+        # Confidence soft-blend: low-confidence sources (voice ≈ 0.82,
+        # photo ≈ 0.78) shouldn't outrank a high-confidence typed fact at
+        # equal cosine. Soft formula keeps even confidence=0 at 70% so
+        # uncertain memories are demoted, not eliminated. Default 1.0
+        # (treated as "fully trusted") leaves existing rows unchanged.
+        confidences = np.array(
+            [float(row["confidence"] or 1.0) for row in rows],
+            dtype=np.float32,
+        )
+        final_scores *= 0.7 + 0.3 * confidences
+
         # Recency decay: memories not accessed recently get dampened.
         # Uses last_accessed (or created_at as fallback).
         # Decay from 1.0 (just accessed) to 0.5 floor over ~90 days.

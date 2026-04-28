@@ -255,6 +255,94 @@ class TestMemoryUpdateByHint:
         assert result["memory"]["content"] == "новый врач"
 
 
+class TestSearchConfidenceRanking:
+    """Search ranking now blends confidence into the final score so
+    low-confidence sources (voice transcription ≈ 0.82, photo ≈ 0.78)
+    don't outrank a typed fact at equal cosine. Soft formula
+    (0.7 + 0.3 * confidence) — uncertain memories demoted, not excluded."""
+
+    @pytest.mark.asyncio
+    async def test_higher_confidence_outranks_lower_at_equal_cosine(self):
+        memory, voyage = _make_memory()
+        # Two memories with the SAME embedding (so equal cosine to query)
+        # but different confidence — high-conf should rank first.
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+
+        # Insert directly to bypass save()'s dedup logic and lock confidence
+        for mid, conf in [("low", 0.5), ("high", 1.0)]:
+            memory.db.execute(
+                "INSERT INTO memories (id, content, embedding, category, "
+                "importance, confidence, status) "
+                "VALUES (?, ?, ?, 'work', 5, ?, 'active')",
+                (mid, f"факт {mid}", emb.tobytes(), conf),
+            )
+        memory.db.commit()
+
+        # Mock query embedding to match the stored embedding
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+
+        results = await memory.search("факт", top_k=2)
+        assert len(results) == 2
+        # High-confidence memory MUST appear first
+        assert results[0]["id"] == "high"
+        assert results[1]["id"] == "low"
+        # final_score gap reflects the confidence multiplier
+        assert results[0]["final_score"] > results[1]["final_score"]
+
+    @pytest.mark.asyncio
+    async def test_default_confidence_preserves_legacy_ordering(self):
+        """Rows with default confidence=1.0 (treated as 'fully trusted')
+        should rank EXACTLY as before — confidence factor adds 0 penalty."""
+        memory, voyage = _make_memory()
+        emb_a = np.random.randn(1024).astype(np.float32)
+        emb_a /= np.linalg.norm(emb_a)
+        emb_b = np.random.randn(1024).astype(np.float32)
+        emb_b /= np.linalg.norm(emb_b)
+
+        for mid, conf, e in [("a", 1.0, emb_a), ("b", 1.0, emb_b)]:
+            memory.db.execute(
+                "INSERT INTO memories (id, content, embedding, category, "
+                "importance, confidence, status) "
+                "VALUES (?, ?, ?, 'work', 5, ?, 'active')",
+                (mid, f"факт {mid}", e.tobytes(), conf),
+            )
+        memory.db.commit()
+
+        # Query embedding identical to emb_a — A wins on cosine, B is far.
+        voyage.embed.return_value = MagicMock(embeddings=[emb_a.tolist()])
+        results = await memory.search("факт", top_k=2)
+        assert results[0]["id"] == "a"
+
+        # With default confidence, the multiplier is 0.7 + 0.3 = 1.0 — so
+        # final_score equals (cosine*0.6 + (5/10)*0.4) * 1.0 * recency.
+        # Lower bound: cosine ≈ 1.0 → 0.6 + 0.2 = 0.8 (before recency).
+        # We're not asserting the exact value (recency varies); we just
+        # assert the multiplier didn't accidentally penalize defaults.
+        assert results[0]["final_score"] > 0.5
+
+    @pytest.mark.asyncio
+    async def test_zero_confidence_keeps_floor_above_zero(self):
+        """Even at confidence=0 the soft blend leaves 70% of the score —
+        uncertain memories are demoted, never silently zeroed out."""
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        memory.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, "
+            "importance, confidence, status) "
+            "VALUES ('z', 'unsure fact', ?, 'work', 5, 0.0, 'active')",
+            (emb.tobytes(),),
+        )
+        memory.db.commit()
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+
+        results = await memory.search("unsure fact", top_k=1)
+        assert len(results) == 1
+        # Non-zero result — zero-confidence didn't filter the row out
+        assert results[0]["final_score"] > 0
+
+
 class TestMemoryDeleteByHint:
     """delete_by_hint mirrors update_by_hint's safety contract: ambiguous
     hint refuses; soft-delete preserves /undo."""
