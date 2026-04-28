@@ -495,6 +495,63 @@ class TestCleanup:
         assert "old" not in contents
         assert "recent" in contents
 
+    def test_cleanup_cutoff_aligns_with_utc_storage(self, tmp_path):
+        """Regression: cleanup_old_data used `self._now()` (profile-local
+        naive) for the cutoff while interactions.timestamp / api_costs are
+        UTC-naive. On a profile TZ like Asia/Almaty (UTC+5), a row written
+        at "now - 90 days, exactly" UTC would be wrongly evaluated against
+        a local-clock cutoff drifted by 5 hours, leading to retention
+        skew on every weekly cleanup.
+
+        Test rebuilds the scenario: profile TZ in the future (UTC+5),
+        retention 90 days, a row stamped at 89 days 23 hours ago in UTC.
+        Correct behavior: row is KEPT (still inside window). Pre-fix
+        would compare against a local cutoff 5h ahead → row deleted.
+        """
+        from datetime import datetime, timedelta, timezone
+        db = Database(tmp_path / "test.db", timezone="Asia/Almaty")
+        # memories is created by Memory class normally — replicate the
+        # conftest tmp_db fixture's workaround so cleanup's three DELETEs
+        # all run.
+        db.db.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                category TEXT NOT NULL,
+                importance INTEGER DEFAULT 5,
+                related_person TEXT,
+                related_date TEXT,
+                source_type TEXT,
+                source_ref TEXT,
+                confidence REAL DEFAULT 1.0,
+                status TEXT DEFAULT 'active',
+                created_at TEXT DEFAULT (datetime('now')),
+                last_accessed TEXT
+            )
+        """)
+        db.db.commit()
+        # Row 89d 23h old in UTC — well inside a 90-day retention window.
+        almost_90d_old_utc = (
+            datetime.now(timezone.utc) - timedelta(days=89, hours=23)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        db.db.execute(
+            "INSERT INTO interactions (timestamp, direction, content) "
+            "VALUES (?, 'in', 'borderline')",
+            (almost_90d_old_utc,),
+        )
+        db.db.commit()
+
+        db.cleanup_old_data(days=90)
+
+        rows = db.db.execute("SELECT content FROM interactions").fetchall()
+        contents = [r["content"] for r in rows]
+        assert "borderline" in contents, (
+            "89d 23h-old UTC row was deleted by 90-day retention — "
+            "cleanup cutoff is using profile-local clock instead of UTC, "
+            "creating a TZ-offset drift in the retention window"
+        )
+
     def test_cleanup_hard_deletes_old_soft_deleted_memories(self, tmp_db: Database, raw_conn):
         raw_conn.execute(
             "INSERT INTO memories (id, content, embedding, category, status, last_accessed) "
