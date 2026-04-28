@@ -105,6 +105,100 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_about_no_args_shows_usage(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        bot._check_rate_limit = lambda: True
+
+        await bot._handle_about(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Использование: /about" in text
+
+    @pytest.mark.asyncio
+    async def test_about_no_match_returns_friendly_message(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["NobodyExists"])
+        bot._check_rate_limit = lambda: True
+        brain.db.get_contacts = MagicMock(return_value=[])
+
+        await bot._handle_about(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Не нашёл контакта" in text
+        assert "/memory" in text  # suggests fallback search path
+
+    @pytest.mark.asyncio
+    async def test_about_runs_pre_meeting_prompt(self):
+        """Success path: contact found → memories searched → promises
+        searched → LLM call with PRE_MEETING_PROMPT → reply."""
+        from unittest.mock import AsyncMock
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["Маша"])
+        bot._check_rate_limit = lambda: True
+
+        brain.db.get_contacts = MagicMock(return_value=[{
+            "id": "c1", "name": "Маша", "relation": "коллега",
+            "birthday": "1990-04-29", "last_contact": "2026-04-20 10:00:00",
+            "mention_count": 7, "notes": "любит чай, дочь Лиза",
+        }])
+        brain.memory.search = AsyncMock(side_effect=[
+            [{"category": "work", "content": "вместе на проекте Альфа",
+              "score": 0.8, "final_score": 0.7}],
+            [],  # no promises
+        ])
+        brain.llm.chat = AsyncMock(return_value=MagicMock(
+            text="👤 Маша (36) — коллега\nПоследний контакт 20 апр.",
+        ))
+        bot._typing = AsyncMock()
+
+        await bot._handle_about(update, context)
+
+        # LLM called with PRE_MEETING_PROMPT-shaped system text
+        assert brain.llm.chat.await_count == 1
+        call = brain.llm.chat.await_args
+        system = call.kwargs["system"]
+        assert "Имя: Маша" in system
+        assert "коллега" in system
+        # Memories block surfaced
+        assert "Альфа" in system
+        # User-facing reply contains the LLM output
+        update.message.reply_text.assert_awaited()
+        first_reply = update.message.reply_text.await_args_list[-1].args[0]
+        assert "Маша" in first_reply
+
+    @pytest.mark.asyncio
+    async def test_about_picks_most_mentioned_when_multiple_match(self):
+        """get_contacts returns matches sorted by mention_count desc,
+        and /about uses [0] — the most-mentioned hit. Common first names
+        like 'Маша' should resolve to the one the user talks about most."""
+        from unittest.mock import AsyncMock
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["Маша"])
+        bot._check_rate_limit = lambda: True
+
+        brain.db.get_contacts = MagicMock(return_value=[
+            {"id": "c1", "name": "Маша Иванова", "relation": "колл.",
+             "mention_count": 25, "notes": ""},
+            {"id": "c2", "name": "Маша Петрова", "relation": "знак.",
+             "mention_count": 3, "notes": ""},
+        ])
+        brain.memory.search = AsyncMock(return_value=[])
+        brain.llm.chat = AsyncMock(return_value=MagicMock(text="brief"))
+        bot._typing = AsyncMock()
+
+        await bot._handle_about(update, context)
+
+        system = brain.llm.chat.await_args.kwargs["system"]
+        # First name comes from the higher-mention contact
+        assert "Маша Иванова" in system
+        assert "Маша Петрова" not in system
+
+    @pytest.mark.asyncio
     async def test_export_includes_all_user_owned_tables(self, tmp_path):
         """/export used to dump only memories/contacts/diary/events/
         decisions — losing the user's reminder history, habits, goals,

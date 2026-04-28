@@ -169,6 +169,7 @@ class TelegramBot:
             "/export — экспорт данных в JSON\n"
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание\n"
+            "/about <имя> — брифинг про человека\n"
             "/version — версия и базовые счётчики",
         )
         # Show notification count
@@ -567,6 +568,108 @@ class TelegramBot:
         except Exception:
             await update.message.reply_text("\n".join(lines))
 
+    async def _handle_about(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Pre-meeting brief: who this person is, last contact, open
+        promises, what to ask. Wires up the long-defined PRE_MEETING_PROMPT
+        which had no caller before this command. User-invoked, costs an
+        LLM call per use — same shape as /review."""
+        if not self._check_user(update):
+            return
+        if not await self._require_rate_limit(update):
+            return
+        from ..core.prompt_safety import sanitize_for_context
+        from ..llm.prompts import PRE_MEETING_PROMPT
+
+        query = " ".join(context.args) if context.args else ""
+        if not query:
+            await update.message.reply_text(
+                "Использование: /about <имя>\nПример: /about Маша",
+            )
+            return
+        if len(query) > 100:
+            await update.message.reply_text("Слишком длинное имя.")
+            return
+
+        contacts = self.brain.db.get_contacts(query)
+        if not contacts:
+            await update.message.reply_text(
+                f"Не нашёл контакта по '{query}'. "
+                f"Если человек упоминался — попробуй /memory {query}.",
+            )
+            return
+
+        # get_contacts is already ORDER BY mention_count DESC — pick the
+        # most-frequently-mentioned match. Multi-match is normal for
+        # common first names ("Маша" matches all Mashas).
+        c = contacts[0]
+        s = sanitize_for_context
+
+        # Contact info block — name, relation, birthday, notes, recency.
+        info_parts = [f"Имя: {s(c['name'], 100)}"]
+        if c.get("relation"):
+            info_parts.append(f"Связь: {s(c['relation'], 100)}")
+        if c.get("birthday"):
+            info_parts.append(f"ДР: {c['birthday']}")
+        if c.get("last_contact"):
+            info_parts.append(f"Последний контакт: {c['last_contact'][:16]}")
+        if c.get("mention_count"):
+            info_parts.append(f"Упоминаний: {c['mention_count']}")
+        if c.get("notes"):
+            info_parts.append(f"Заметки: {s(c['notes'], 500)}")
+        contact_info = "\n".join(info_parts)
+
+        # Relevant memories — semantic search by name plus the broader
+        # context the LLM might cite (jobs, recent decisions, etc.).
+        try:
+            memories = await self.brain.memory.search(c["name"], top_k=8)
+        except Exception:
+            memories = []
+        memories_text = "\n".join(
+            f"- [{m['category']}] {s(m['content'], 220)}" for m in memories
+        ) or "Релевантной памяти нет."
+
+        # Open promises — semantically search inside the 'promise' category
+        # to surface anything tied to this person. We don't strictly filter
+        # by related_person (most promises don't set it) — the LLM can
+        # judge relevance from content.
+        try:
+            promises = await self.brain.memory.search(
+                f"обещание {c['name']}", category="promise", top_k=5,
+            )
+        except Exception:
+            promises = []
+        promises_text = "\n".join(
+            f"- {s(p['content'], 220)}" for p in promises
+        ) or "Незакрытых обещаний не нашёл."
+
+        prompt = PRE_MEETING_PROMPT.format(
+            contact_info=contact_info,
+            memories=memories_text,
+            promises=promises_text,
+        )
+
+        await self._typing(update)
+        try:
+            response = await self.brain.llm.chat(
+                system=prompt,
+                messages=[
+                    {"role": "user",
+                     "content": f"Подготовь брифинг про {c['name']}."},
+                ],
+                max_tokens=600,
+            )
+            text = (response.text or "").strip() or "Ничего не нашёл."
+        except Exception as e:
+            logger.error("about brief failed: %s", type(e).__name__)
+            await update.message.reply_text("Не удалось подготовить брифинг.")
+            return
+
+        for part in _split_message(text):
+            try:
+                await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(part)
+
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
@@ -914,6 +1017,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("habits", self._handle_habits))
         self.app.add_handler(CommandHandler("export", self._handle_export))
         self.app.add_handler(CommandHandler("version", self._handle_version))
+        self.app.add_handler(CommandHandler("about", self._handle_about))
 
         # Confirmation callback for /forget
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))
