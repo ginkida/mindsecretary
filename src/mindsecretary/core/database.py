@@ -409,14 +409,32 @@ class Database:
         self.db.execute(
             "UPDATE reminders SET status = 'sent' WHERE id = ?", (reminder_id,)
         )
-        # Auto-create next occurrence for recurring reminders
+        # Auto-create next occurrence for recurring reminders.
+        #
+        # Roll the next trigger forward past `now` if needed: when the bot
+        # was down for several periods, naive `old + delta` lands in the
+        # past too, fires immediately on the next 5-min check, marks itself
+        # sent, creates ANOTHER past trigger — repeating until caught up.
+        # User sees N back-to-back fires of the same daily reminder. Spam.
+        #
+        # Catch-up loop sends ONE fire (the original due row), schedules the
+        # next FUTURE occurrence. The bounded delta (1d/7d/30d) makes
+        # iteration count tiny even after long downtime — at most ~365 hops
+        # for "daily" after a year offline.
         if row and row["recurrence"] in self._RECURRENCE_DELTAS:
             delta = self._RECURRENCE_DELTAS[row["recurrence"]]
             try:
                 old_trigger = datetime.fromisoformat(
                     row["trigger_at"].replace(" ", "T")
                 )
+                # `trigger_at` is profile-local naive (LLM tool writes via
+                # _SQL_TS_FMT.strftime on a tz-aware self._now()). Compare
+                # against the same clock so rollforward respects the user's
+                # day boundary, not UTC.
+                now_local = self.local_now_naive()
                 next_trigger = old_trigger + delta
+                while next_trigger <= now_local:
+                    next_trigger += delta
                 self.create_reminder(
                     row["text"], next_trigger.strftime(self._SQL_TS_FMT),
                     row["priority"], row["recurrence"],

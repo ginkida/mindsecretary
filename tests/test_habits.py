@@ -85,27 +85,85 @@ class TestRecurringReminders:
         assert len(pending) == 0
 
     def test_daily_recurrence_creates_next(self, tmp_db: Database):
-        r = tmp_db.create_reminder("Daily task", "2026-04-15 09:00:00",
+        # Future trigger so the catch-up loop (added v0.13.15) doesn't roll
+        # past the +1d boundary — this test covers the basic on-time path.
+        r = tmp_db.create_reminder("Daily task", "2099-04-15 09:00:00",
                                    recurrence="daily")
         tmp_db.mark_reminder_sent(r["id"])
         pending = tmp_db.get_pending_reminders()
         assert len(pending) == 1
         assert pending[0]["text"] == "Daily task"
         assert pending[0]["recurrence"] == "daily"
-        assert "2026-04-16" in pending[0]["trigger_at"]
+        assert "2099-04-16" in pending[0]["trigger_at"]
 
     def test_weekly_recurrence_creates_next(self, tmp_db: Database):
-        r = tmp_db.create_reminder("Weekly review", "2026-04-15 18:00:00",
+        r = tmp_db.create_reminder("Weekly review", "2099-04-15 18:00:00",
                                    recurrence="weekly")
         tmp_db.mark_reminder_sent(r["id"])
         pending = tmp_db.get_pending_reminders()
         assert len(pending) == 1
-        assert "2026-04-22" in pending[0]["trigger_at"]
+        assert "2099-04-22" in pending[0]["trigger_at"]
 
     def test_monthly_recurrence_creates_next(self, tmp_db: Database):
-        r = tmp_db.create_reminder("Monthly report", "2026-04-15 10:00:00",
+        r = tmp_db.create_reminder("Monthly report", "2099-04-15 10:00:00",
                                    recurrence="monthly")
         tmp_db.mark_reminder_sent(r["id"])
         pending = tmp_db.get_pending_reminders()
         assert len(pending) == 1
-        assert "2026-05-15" in pending[0]["trigger_at"]
+        assert "2099-05-15" in pending[0]["trigger_at"]
+
+    def test_recurring_catchup_rolls_past_now(self, tmp_db: Database):
+        """If bot was offline for multiple periods, a daily reminder set 5
+        days ago should NOT fire 5 times back-to-back when bot returns.
+        mark_reminder_sent rolls next_trigger forward past now in one
+        UPDATE — pre-fix it advanced by exactly +1 day, leaving next still
+        in the past, retriggering on the next 5-min check, repeat. Spam."""
+        from datetime import timedelta as _td
+        five_days_ago = (tmp_db.local_now_naive() - _td(days=5)).strftime(
+            "%Y-%m-%d %H:%M:%S",
+        )
+        r = tmp_db.create_reminder("daily water", five_days_ago,
+                                   recurrence="daily")
+
+        tmp_db.mark_reminder_sent(r["id"])
+
+        pending = tmp_db.get_pending_reminders()
+        assert len(pending) == 1
+        # Next must be in the FUTURE — that's the point of the catch-up
+        from datetime import datetime as _dt
+        next_trigger = _dt.fromisoformat(
+            pending[0]["trigger_at"].replace(" ", "T"),
+        )
+        assert next_trigger > tmp_db.local_now_naive(), (
+            "next recurring trigger landed in the past — bot would fire it "
+            "again on the next 5-min check, leading to spam after downtime"
+        )
+
+    def test_recurring_catchup_picks_first_future_occurrence(self, tmp_db: Database):
+        """Roll forward should land on the FIRST future occurrence, not jump
+        ahead arbitrarily. Daily reminder from 5 days ago caught up at
+        12:00 today should land tomorrow at the same hour, not later."""
+        from datetime import timedelta as _td
+        now_local = tmp_db.local_now_naive()
+        # Anchor the test trigger at noon-of-(now-5days) to make the
+        # expected next-occurrence math deterministic.
+        anchor = now_local.replace(hour=12, minute=0, second=0, microsecond=0)
+        five_days_ago_at_noon = anchor - _td(days=5)
+
+        r = tmp_db.create_reminder(
+            "daily noon thing",
+            five_days_ago_at_noon.strftime("%Y-%m-%d %H:%M:%S"),
+            recurrence="daily",
+        )
+        tmp_db.mark_reminder_sent(r["id"])
+
+        pending = tmp_db.get_pending_reminders()
+        assert len(pending) == 1
+        from datetime import datetime as _dt
+        next_trigger = _dt.fromisoformat(
+            pending[0]["trigger_at"].replace(" ", "T"),
+        )
+        # Next must be in the future, AND within the next 24 hours (the
+        # daily delta) — anything farther means we over-rolled.
+        assert next_trigger > now_local
+        assert next_trigger - now_local <= _td(days=1)
