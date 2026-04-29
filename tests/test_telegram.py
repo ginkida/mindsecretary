@@ -105,6 +105,99 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_learnings_empty_state(self):
+        """Empty learnings state mentions BOTH the auto cron (Sunday 20:00)
+        and the on-demand /review escape hatch — user should know they
+        don't have to wait until Sunday."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.get_by_category = MagicMock(return_value=[])
+
+        await bot._handle_learnings(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Пока без learnings" in text
+        assert "/review" in text
+        assert "воскресенье" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_learnings_renders_top_10_with_meta(self):
+        """Output must include each learning's content, importance, and
+        creation date — those are the dimensions that turn a flat list
+        into something the user can prioritize."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.get_by_category = MagicMock(return_value=[
+            {"content": "Утренние брифинги работают только до 9", "importance": 9,
+             "confidence": 0.85, "created_at": "2026-04-15 20:00:00"},
+            {"content": "Понедельник всегда тяжёлый", "importance": 7,
+             "confidence": 0.7, "created_at": "2026-04-08 20:00:00"},
+        ])
+
+        await bot._handle_learnings(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Learnings" in text
+        assert "Утренние брифинги" in text
+        assert "Понедельник всегда" in text
+        # Importance + confidence + created date all surface
+        assert "imp 9" in text and "imp 7" in text
+        assert "conf 0.85" in text
+        assert "2026-04-15" in text
+
+    @pytest.mark.asyncio
+    async def test_learnings_truncates_to_10_with_remainder_hint(self):
+        """get_by_category sorts by importance DESC, /learnings caps at
+        10 to fit one Telegram bubble. Remainder gets a footer line so
+        the user knows there's more to see."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.get_by_category = MagicMock(return_value=[
+            {"content": f"learning {i}", "importance": 10 - (i // 3),
+             "confidence": 0.5, "created_at": "2026-04-15"}
+            for i in range(15)
+        ])
+
+        await bot._handle_learnings(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        # First 10 visible
+        for i in range(10):
+            assert f"learning {i}" in text
+        # 11+ not shown
+        assert "learning 11" not in text
+        assert "learning 14" not in text
+        # Footer mentions the remainder
+        assert "ещё 5" in text
+
+    @pytest.mark.asyncio
+    async def test_learnings_falls_back_without_markdown(self):
+        """Same fallback pattern as /forget — if Telegram rejects the
+        markdown (e.g. unbalanced underscores in user-supplied content),
+        retry without parse_mode."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.memory.get_by_category = MagicMock(return_value=[
+            {"content": "broken_markdown _ here", "importance": 5,
+             "confidence": 0.5, "created_at": "2026-04-15"},
+        ])
+        update.message.reply_text = AsyncMock(
+            side_effect=[Exception("parse error"), None],
+        )
+
+        await bot._handle_learnings(update, context)
+
+        assert update.message.reply_text.await_count == 2
+        first_call = update.message.reply_text.await_args_list[0]
+        second_call = update.message.reply_text.await_args_list[1]
+        assert first_call.kwargs.get("parse_mode") == ParseMode.MARKDOWN
+        assert "parse_mode" not in second_call.kwargs
+
+    @pytest.mark.asyncio
     async def test_about_no_args_shows_usage(self):
         bot, brain = _make_bot()
         update = _make_update()

@@ -170,6 +170,7 @@ class TelegramBot:
             "/review — запустить недельный обзор\n"
             "/forget — удалить воспоминание\n"
             "/about <имя> — брифинг про человека\n"
+            "/learnings — накопленные инсайты из weekly review\n"
             "/version — версия и базовые счётчики",
         )
         # Show notification count
@@ -567,6 +568,49 @@ class TelegramBot:
             )
         except Exception:
             await update.message.reply_text("\n".join(lines))
+
+    async def _handle_learnings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show accumulated learnings extracted by the weekly review.
+
+        Weekly review (Sundays at 20:00) writes insights to
+        memory.category='learning'. They quietly accumulate but were
+        only reachable via `/memory learning` — assuming the user knew
+        that category name. /learnings is the direct surface.
+        """
+        if not self._check_user(update):
+            return
+        learnings = self.brain.memory.get_by_category("learning")
+        if not learnings:
+            await update.message.reply_text(
+                "Пока без learnings. Они появятся после первого "
+                "недельного обзора (воскресенье 20:00) — или запусти "
+                "сейчас командой /review.",
+            )
+            return
+
+        # get_by_category already sorts by importance DESC. Cap at 10
+        # so the message fits in one Telegram bubble even after many
+        # weekly reviews.
+        top = learnings[:10]
+        lines = ["📚 *Learnings*\n"]
+        for m in top:
+            content = m["content"][:280]
+            imp = m.get("importance") or 5
+            conf = float(m.get("confidence") or 0.0)
+            created = (m.get("created_at") or "")[:10]
+            tail = f"_imp {imp}_"
+            if conf:
+                tail += f" · _conf {conf:.2f}_"
+            if created:
+                tail += f" · _{created}_"
+            lines.append(f"• {content}\n  {tail}")
+        if len(learnings) > 10:
+            lines.append(f"\n_…и ещё {len(learnings) - 10}._")
+        text = "\n\n".join(lines)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
 
     async def _handle_about(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Pre-meeting brief: who this person is, last contact, open
@@ -1018,6 +1062,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("export", self._handle_export))
         self.app.add_handler(CommandHandler("version", self._handle_version))
         self.app.add_handler(CommandHandler("about", self._handle_about))
+        self.app.add_handler(CommandHandler("learnings", self._handle_learnings))
 
         # Confirmation callback for /forget
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))
