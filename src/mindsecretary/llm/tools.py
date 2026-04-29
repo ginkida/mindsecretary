@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone as _dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -688,6 +689,12 @@ class ToolExecutor:
         if handler is None:
             logger.warning("Unknown tool called: %s", name)
             return f"Unknown tool: {name}"
+        # Wall-clock timing covers async waits too — tools like search_memory
+        # spend most of their time inside Voyage embed calls, and only
+        # `time.monotonic()` (not CPU time) reflects what the user sees.
+        # Logged on both branches so ops can correlate slow LLM rounds with
+        # the offending tool without adding tracing infrastructure.
+        start = time.monotonic()
         try:
             safe_args = _sanitize_args(name, arguments)
             if "request_context" in inspect.signature(handler).parameters:
@@ -697,10 +704,15 @@ class ToolExecutor:
             # Support both sync and async handlers (weather is async)
             if inspect.isawaitable(result):
                 result = await result
-            logger.info("Tool %s OK", name)
+            elapsed_ms = (time.monotonic() - start) * 1000
+            logger.info("Tool %s OK (%.0fms)", name, elapsed_ms)
             return result
         except Exception as e:
-            logger.error("Tool %s failed: %s", name, type(e).__name__)
+            elapsed_ms = (time.monotonic() - start) * 1000
+            logger.error(
+                "Tool %s failed (%.0fms): %s",
+                name, elapsed_ms, type(e).__name__,
+            )
             return f"Error executing {name}: {type(e).__name__}"
 
     async def _handle_save_memory(self, content: str, category: str, importance: int,

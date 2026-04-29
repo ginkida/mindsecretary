@@ -419,6 +419,67 @@ class TestCancelReminderHandler:
         assert "non-empty" in result
 
 
+class TestExecuteLatencyLogging:
+    """ToolExecutor.execute logs elapsed wall-clock ms on both success
+    and failure branches. The log line is the only ops signal for slow
+    tools without adding tracing infrastructure — drift here is invisible
+    until users complain about lag."""
+
+    @pytest.mark.asyncio
+    async def test_success_log_includes_ms(self, tmp_db, caplog):
+        from unittest.mock import MagicMock
+        import logging as _log
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        with caplog.at_level(_log.INFO, logger="mindsecretary.llm.tools"):
+            await te.execute("get_reminders", {})
+        oks = [
+            r for r in caplog.records
+            if r.levelno == _log.INFO and "Tool get_reminders OK" in r.message
+        ]
+        assert oks, "expected an OK log for get_reminders"
+        # Format: "Tool X OK (Yms)" — ms is the trailing ops signal.
+        assert "ms)" in oks[0].message
+        # Sanity: the elapsed should be non-negative (the format is %.0f
+        # so 0ms is valid for a fast no-op call).
+        import re
+        m = re.search(r"\((\d+)ms\)", oks[0].message)
+        assert m is not None
+        assert int(m.group(1)) >= 0
+
+    @pytest.mark.asyncio
+    async def test_failure_log_includes_ms(self, tmp_db, caplog):
+        from unittest.mock import MagicMock
+        import logging as _log
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        # Force a handler-side exception by making the underlying memory
+        # call raise. update_memory hits memory.update_by_hint which we
+        # patch to raise.
+        from unittest.mock import AsyncMock
+        memory.update_by_hint = AsyncMock(side_effect=RuntimeError("boom"))
+
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        with caplog.at_level(_log.ERROR, logger="mindsecretary.llm.tools"):
+            result = await te.execute(
+                "update_memory",
+                {"text_hint": "x", "new_content": "y"},
+            )
+        # Caller still gets a structured error message back
+        assert "Error executing update_memory" in result
+        # And ops sees timing alongside the failure type
+        fails = [
+            r for r in caplog.records
+            if r.levelno == _log.ERROR and "Tool update_memory failed" in r.message
+        ]
+        assert fails
+        # Format is "Tool X failed (Yms): ErrType" — both ms and type present
+        assert "ms)" in fails[0].message
+        assert "RuntimeError" in fails[0].message
+
+
 class TestDeleteMemoryHandler:
     """ToolExecutor handler for delete_memory mirrors update_memory's
     branch dispatch: distinct user-facing string per status so Claude
