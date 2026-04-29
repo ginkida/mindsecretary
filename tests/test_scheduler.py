@@ -106,6 +106,60 @@ class TestInQuietHours:
         assert s._in_quiet_hours() is False
 
 
+class TestConversationAwareDefer:
+    """`_send_proactive` skips firing when the user has sent a message
+    in the last N minutes — prevents scheduled jobs from interrupting
+    an active conversation. Reminders (separate code path via
+    monitor.check_reminders → send_fn) intentionally bypass."""
+
+    @pytest.mark.asyncio
+    async def test_skips_when_user_recently_active(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        # Pretend the user just typed something
+        s.db.has_recent_user_messages = MagicMock(return_value=True)
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("☀️ Доброе утро", kind="morning_briefing")
+
+        assert result is False
+        # Critical: send_fn must NOT have been called — message dropped
+        s.send_fn.assert_not_called()
+        # And no notification logged (would inflate the daily count)
+        s.db.log_interaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_user_quiet(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.has_recent_user_messages = MagicMock(return_value=False)
+        s.db.count_notifications_today = MagicMock(return_value=0)
+        s.profile.notification_limit = 10
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("☀️ Доброе утро", kind="morning_briefing")
+
+        assert result is True
+        s.send_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_recency_check_db_error_does_not_block_send(self):
+        """If has_recent_user_messages raises (DB transient issue), we
+        log and proceed with the send — missing a briefing over a
+        broken query is worse than risking an interrupt."""
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.has_recent_user_messages = MagicMock(
+            side_effect=RuntimeError("db locked"),
+        )
+        s.db.count_notifications_today = MagicMock(return_value=0)
+        s.profile.notification_limit = 10
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("text", kind="evening_summary")
+
+        # Send still happened despite the recency check failing
+        assert result is True
+        s.send_fn.assert_awaited_once()
+
+
 class TestActionNudge:
     def test_builds_nudge_from_open_loops(self):
         s = _make_scheduler(["23:00", "07:00"])

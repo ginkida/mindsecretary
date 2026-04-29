@@ -87,17 +87,40 @@ class ProactiveScheduler:
         # Wraps midnight (e.g. 23:00-07:00)
         return now >= start or now < end
 
-    async def _send_proactive(self, text: str, kind: str = "notification") -> bool:
-        """Send a proactive message respecting quiet hours and notification limit.
+    # Defer scheduled jobs when the user has been active in the last N
+    # minutes — nothing kills flow like getting a morning briefing while
+    # you're mid-typing. Reminders take a separate path
+    # (monitor.check_reminders → send_fn) and intentionally bypass this.
+    _CONVERSATION_DEFER_MINUTES = 5
 
-        Returns True if actually sent, False if dropped (quiet hours / limit / error).
-        Logs every sent message as message_type='notification' for counting.
+    async def _send_proactive(self, text: str, kind: str = "notification") -> bool:
+        """Send a proactive message respecting quiet hours, notification
+        limit, and active-conversation deferral.
+
+        Returns True if actually sent, False if dropped (quiet hours /
+        limit / active conversation / error). Logs every sent message
+        as message_type='notification' for counting.
         """
         if not text:
             return False
         if self._in_quiet_hours():
             logger.info("Skipping proactive (%s): quiet hours", kind)
             return False
+        # Best-effort recency check — DB error logs but doesn't block the
+        # send, since the alternative is missing the briefing entirely
+        # over a transient query failure.
+        try:
+            if self.db.has_recent_user_messages(self._CONVERSATION_DEFER_MINUTES):
+                logger.info(
+                    "Skipping proactive (%s): user active in last %dm",
+                    kind, self._CONVERSATION_DEFER_MINUTES,
+                )
+                return False
+        except Exception as e:
+            logger.warning(
+                "Conversation-recency check failed (%s); proceeding",
+                type(e).__name__,
+            )
         try:
             count = self.db.count_notifications_today()
             limit = self.profile.notification_limit

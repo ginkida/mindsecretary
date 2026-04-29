@@ -882,6 +882,51 @@ class TestBackup:
         assert tmp_db._prune_backups(nonexistent, keep=10) == 0
 
 
+class TestRecentUserMessages:
+    """`has_recent_user_messages` powers the conversation-aware defer in
+    the proactive scheduler. Cutoff is in UTC because interactions.
+    timestamp is UTC-naive (datetime('now'))."""
+
+    def test_returns_false_when_no_messages(self, tmp_db):
+        assert tmp_db.has_recent_user_messages(minutes=5) is False
+
+    def test_returns_true_for_recent_inbound(self, tmp_db):
+        tmp_db.log_interaction("in", "text", "hello")
+        assert tmp_db.has_recent_user_messages(minutes=5) is True
+
+    def test_outbound_messages_ignored(self, tmp_db):
+        """Bot replies must NOT count as user activity — otherwise every
+        proactive send would trigger its own deferral on the next run."""
+        tmp_db.log_interaction("out", "chat", "responding")
+        tmp_db.log_interaction("out", "notification", "morning briefing")
+        assert tmp_db.has_recent_user_messages(minutes=5) is False
+
+    def test_old_messages_below_window_excluded(self, tmp_db):
+        """Backdate a message to 10 minutes ago via direct insert so the
+        UTC cutoff in the helper drops it — the 5-min window must reject
+        anything older."""
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        tmp_db.db.execute(
+            "INSERT INTO interactions (direction, message_type, content, timestamp) "
+            "VALUES ('in', 'text', 'old', ?)",
+            (old,),
+        )
+        tmp_db.db.commit()
+        assert tmp_db.has_recent_user_messages(minutes=5) is False
+        # Same row reachable when the window widens
+        assert tmp_db.has_recent_user_messages(minutes=15) is True
+
+    def test_zero_minutes_short_circuits_to_false(self, tmp_db):
+        """`minutes=0` is treated as "no deferral window" — defensive
+        path so a misconfigured threshold doesn't silently disable
+        scheduled jobs."""
+        tmp_db.log_interaction("in", "text", "now")
+        assert tmp_db.has_recent_user_messages(minutes=0) is False
+
+
 class TestIntegrityCheck:
     """`PRAGMA integrity_check` runs once on startup so ops sees DB
     corruption in the bot's log instead of as a cryptic query failure

@@ -693,6 +693,32 @@ class Database:
     # same-minute SQL timestamp). Always use strftime for SQL params.
     _SQL_TS_FMT = "%Y-%m-%d %H:%M:%S"
 
+    def has_recent_user_messages(self, minutes: int = 5) -> bool:
+        """True if the user sent any message in the last `minutes` minutes.
+
+        Used by the proactive scheduler to defer scheduled jobs (briefing
+        / smart_question / etc.) when the user is mid-conversation —
+        nothing kills flow like getting a morning briefing while you're
+        typing a message to the bot.
+
+        `interactions.timestamp` is UTC-naive (SQLite `datetime('now')`),
+        so the cutoff is computed in UTC to match. Reminders bypass this
+        check entirely — they go through monitor.check_reminders without
+        touching `_send_proactive`, since reminders are explicit user
+        intent, not scheduled noise.
+        """
+        if minutes <= 0:
+            return False
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        ).strftime(self._SQL_TS_FMT)
+        row = self.db.execute(
+            "SELECT 1 FROM interactions "
+            "WHERE direction = 'in' AND timestamp >= ? LIMIT 1",
+            (cutoff,),
+        ).fetchone()
+        return row is not None
+
     def get_interactions(self, since: datetime | None = None,
                          until: datetime | None = None,
                          message_type: str | None = None,
