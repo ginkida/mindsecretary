@@ -1022,6 +1022,66 @@ class TestAnniversaries:
         assert "recent" in items[1]["content"]
 
 
+class TestSnooze:
+    """`set_snooze_until` / `get_snooze_until` / `is_snoozed_now` —
+    persistent proactive-job mute via preferences. Stored UTC-naive so
+    comparisons work directly against `datetime.now(utc)`."""
+
+    def test_no_pref_means_not_snoozed(self, tmp_db):
+        assert tmp_db.is_snoozed_now() is False
+        assert tmp_db.get_snooze_until() is None
+
+    def test_set_then_check_active(self, tmp_db):
+        from datetime import datetime, timezone, timedelta
+        until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=2)
+        tmp_db.set_snooze_until(until)
+        assert tmp_db.is_snoozed_now() is True
+        got = tmp_db.get_snooze_until()
+        assert got is not None
+        # Matches what we set within a second (storage is space-separated SQL fmt)
+        assert abs((got - until).total_seconds()) < 2
+
+    def test_past_deadline_treated_as_not_snoozed(self, tmp_db):
+        """Stale rows from a past snooze auto-clear semantically — no
+        cleanup job needed. Otherwise a forgotten /snooze 1h from
+        yesterday would silently keep blocking briefings."""
+        from datetime import datetime, timezone, timedelta
+        past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+        tmp_db.set_snooze_until(past)
+        assert tmp_db.is_snoozed_now() is False
+        assert tmp_db.get_snooze_until() is None
+
+    def test_set_none_clears_snooze(self, tmp_db):
+        from datetime import datetime, timezone, timedelta
+        tmp_db.set_snooze_until(
+            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=2),
+        )
+        tmp_db.set_snooze_until(None)
+        assert tmp_db.is_snoozed_now() is False
+
+    def test_aware_datetime_normalized_to_utc_naive(self, tmp_db):
+        """Caller may pass a tz-aware datetime — must store as UTC-naive
+        so comparisons stay consistent with the rest of the app."""
+        from datetime import datetime, timezone, timedelta
+        from zoneinfo import ZoneInfo
+        until_aware = datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=2)
+        tmp_db.set_snooze_until(until_aware)
+        got = tmp_db.get_snooze_until()
+        assert got is not None
+        assert got.tzinfo is None  # stored as naive
+        # And the absolute moment in time matches
+        expected_utc_naive = until_aware.astimezone(timezone.utc).replace(tzinfo=None)
+        assert abs((got - expected_utc_naive).total_seconds()) < 2
+
+    def test_corrupted_value_returns_none(self, tmp_db):
+        """Garbage in the preference (manual edit, schema migration glitch)
+        should NOT crash the scheduler — return None and let the bot
+        proceed normally."""
+        tmp_db.set_preference("proactive_snoozed_until", "not-a-date")
+        assert tmp_db.get_snooze_until() is None
+        assert tmp_db.is_snoozed_now() is False
+
+
 class TestRecentUserMessages:
     """`has_recent_user_messages` powers the conversation-aware defer in
     the proactive scheduler. Cutoff is in UTC because interactions.

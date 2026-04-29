@@ -171,6 +171,7 @@ class TelegramBot:
             "/forget — удалить воспоминание\n"
             "/about <имя> — брифинг про человека\n"
             "/learnings — накопленные инсайты из weekly review\n"
+            "/snooze <время> — пауза проактивных уведомлений (напр. 2h)\n"
             "/version — версия и базовые счётчики",
         )
         # Show notification count
@@ -575,6 +576,104 @@ class TelegramBot:
             )
         except Exception:
             await update.message.reply_text("\n".join(lines))
+
+    @staticmethod
+    def _parse_snooze_duration(arg: str) -> int | None:
+        """Parse '30m' / '2h' / '1d' → minutes. Returns None for invalid.
+
+        Cap at 7 days to prevent accidental indefinite snooze ("/snooze 365d"
+        would silently kill all proactive notifications for a year).
+        """
+        import re
+        m = re.match(r"^(\d+)([mhd])$", arg.strip().lower())
+        if not m:
+            return None
+        n = int(m.group(1))
+        unit = m.group(2)
+        minutes = {"m": n, "h": n * 60, "d": n * 60 * 24}.get(unit, 0)
+        # Cap at 7 days
+        return min(minutes, 7 * 24 * 60) if minutes > 0 else None
+
+    async def _handle_snooze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Mute scheduled proactive notifications for a duration.
+
+        Reminders are NOT affected — they go through a separate code path
+        and represent explicit user intent at a chosen time.
+
+        Usage:
+            /snooze 30m       — pause for 30 minutes
+            /snooze 2h        — pause for 2 hours
+            /snooze 1d        — pause for a day (max 7d)
+            /snooze off       — clear snooze
+            /snooze           — show remaining time, or usage if not snoozed
+        """
+        if not self._check_user(update):
+            return
+        from datetime import datetime, timezone, timedelta
+
+        args = " ".join(context.args).strip().lower() if context.args else ""
+
+        if args in ("off", "0", "clear", "stop"):
+            self.brain.db.set_snooze_until(None)
+            await update.message.reply_text("✅ Snooze отключён.")
+            return
+
+        if not args:
+            # Status query — show remaining snooze if any
+            until = self.brain.db.get_snooze_until()
+            if until is None:
+                await update.message.reply_text(
+                    "Сейчас не на паузе.\n\n"
+                    "Использование:\n"
+                    "/snooze 30m — пауза 30 минут\n"
+                    "/snooze 2h — пауза 2 часа\n"
+                    "/snooze 1d — пауза на день (макс 7d)\n"
+                    "/snooze off — снять паузу\n\n"
+                    "Напоминания продолжают работать (это твой явный intent).",
+                )
+                return
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            remaining_min = max(0, int((until - now_utc).total_seconds() // 60))
+            if remaining_min < 60:
+                rem_label = f"{remaining_min} мин"
+            else:
+                hours = remaining_min // 60
+                mins = remaining_min % 60
+                rem_label = f"{hours}ч {mins}м" if mins else f"{hours}ч"
+            await update.message.reply_text(
+                f"⏸ На паузе ещё {rem_label}. /snooze off — снять.",
+            )
+            return
+
+        minutes = self._parse_snooze_duration(args)
+        if minutes is None:
+            await update.message.reply_text(
+                "Неправильный формат.\n"
+                "Примеры: /snooze 30m, /snooze 2h, /snooze 1d, /snooze off",
+            )
+            return
+
+        # Compute UTC deadline — DB stores UTC-naive (matches the rest
+        # of the proactive subsystem's clock convention).
+        until = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            + timedelta(minutes=minutes)
+        )
+        self.brain.db.set_snooze_until(until)
+
+        # Render duration back at the user — confirms what they got.
+        if minutes < 60:
+            label = f"{minutes} мин"
+        elif minutes < 60 * 24:
+            hours = minutes // 60
+            label = f"{hours}ч"
+        else:
+            days = minutes // (60 * 24)
+            label = f"{days}д"
+        await update.message.reply_text(
+            f"⏸ Snooze на {label}. Напоминания продолжают работать. "
+            f"/snooze off — снять.",
+        )
 
     async def _handle_learnings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show accumulated learnings extracted by the weekly review.
@@ -1070,6 +1169,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("version", self._handle_version))
         self.app.add_handler(CommandHandler("about", self._handle_about))
         self.app.add_handler(CommandHandler("learnings", self._handle_learnings))
+        self.app.add_handler(CommandHandler("snooze", self._handle_snooze))
 
         # Confirmation callback for /forget
         self.app.add_handler(CallbackQueryHandler(self._handle_forget_confirm, pattern="^forget_"))

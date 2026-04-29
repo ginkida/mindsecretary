@@ -810,6 +810,61 @@ class Database:
         )
         self.db.commit()
 
+    # --- Snooze (proactive-job suppression with TTL) ---
+
+    _SNOOZE_PREF_KEY = "proactive_snoozed_until"
+
+    def set_snooze_until(self, until_utc: datetime | None) -> None:
+        """Mute scheduled proactive jobs until `until_utc`.
+
+        `None` clears the snooze. Stored as a UTC-naive ISO string in
+        preferences so it survives restarts. Reminders bypass this gate
+        (separate code path, explicit user intent).
+        """
+        if until_utc is None:
+            # Clear snooze by writing the past — simpler than deleting
+            # the row, and idempotent against legacy rows that might
+            # still be hanging around with stale future timestamps.
+            self.set_preference(
+                self._SNOOZE_PREF_KEY, "",
+                confidence=1.0, source="user",
+            )
+            return
+        if until_utc.tzinfo is not None:
+            until_utc = until_utc.astimezone(timezone.utc).replace(tzinfo=None)
+        self.set_preference(
+            self._SNOOZE_PREF_KEY,
+            until_utc.strftime(self._SQL_TS_FMT),
+            confidence=1.0, source="user",
+        )
+
+    def get_snooze_until(self) -> datetime | None:
+        """Return the active snooze deadline (UTC-naive) or None.
+
+        None when:
+        - No preference row exists
+        - The stored value is empty (cleared via /snooze off)
+        - The deadline has already passed (treated as not snoozed)
+        """
+        pref = self.get_preference(self._SNOOZE_PREF_KEY)
+        if not pref:
+            return None
+        val = (pref.get("value") or "").strip()
+        if not val:
+            return None
+        try:
+            until = datetime.strptime(val, self._SQL_TS_FMT)
+        except (ValueError, TypeError):
+            return None
+        # Auto-expire — past deadlines aren't "snoozed"
+        if until <= datetime.now(timezone.utc).replace(tzinfo=None):
+            return None
+        return until
+
+    def is_snoozed_now(self) -> bool:
+        """Convenience for the scheduler — fast path on every proactive."""
+        return self.get_snooze_until() is not None
+
     # --- Habits ---
 
     def log_habit(self, habit_name: str, done: bool,

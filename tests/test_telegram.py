@@ -104,6 +104,105 @@ class TestTelegramHandlers:
         update.message.reply_text.assert_awaited_once_with("Слишком часто, подожди минуту.")
         brain.memory.search.assert_not_awaited()
 
+    def test_parse_snooze_duration_valid(self):
+        from mindsecretary.interfaces.telegram import TelegramBot
+        assert TelegramBot._parse_snooze_duration("30m") == 30
+        assert TelegramBot._parse_snooze_duration("2h") == 120
+        assert TelegramBot._parse_snooze_duration("1d") == 1440
+        assert TelegramBot._parse_snooze_duration("5H") == 300  # case insensitive
+
+    def test_parse_snooze_duration_invalid(self):
+        from mindsecretary.interfaces.telegram import TelegramBot
+        assert TelegramBot._parse_snooze_duration("") is None
+        assert TelegramBot._parse_snooze_duration("garbage") is None
+        assert TelegramBot._parse_snooze_duration("30") is None  # missing unit
+        assert TelegramBot._parse_snooze_duration("0m") is None  # zero rejected
+        assert TelegramBot._parse_snooze_duration("1w") is None  # weeks not supported
+        assert TelegramBot._parse_snooze_duration("-5h") is None
+
+    def test_parse_snooze_duration_capped_at_7d(self):
+        """Cap prevents accidental indefinite snooze ('/snooze 365d' would
+        silently kill all proactive notifications for a year)."""
+        from mindsecretary.interfaces.telegram import TelegramBot
+        assert TelegramBot._parse_snooze_duration("30d") == 7 * 24 * 60
+        assert TelegramBot._parse_snooze_duration("365d") == 7 * 24 * 60
+
+    @pytest.mark.asyncio
+    async def test_snooze_off_clears(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["off"])
+
+        await bot._handle_snooze(update, context)
+
+        brain.db.set_snooze_until.assert_called_once_with(None)
+        text = update.message.reply_text.await_args.args[0]
+        assert "Snooze отключён" in text
+
+    @pytest.mark.asyncio
+    async def test_snooze_no_args_when_inactive_shows_usage(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_snooze_until = MagicMock(return_value=None)
+
+        await bot._handle_snooze(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Сейчас не на паузе" in text
+        assert "/snooze 2h" in text  # usage example included
+
+    @pytest.mark.asyncio
+    async def test_snooze_no_args_when_active_shows_remaining(self):
+        from datetime import datetime, timezone, timedelta
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        # 90 minutes remaining
+        until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=90)
+        brain.db.get_snooze_until = MagicMock(return_value=until)
+
+        await bot._handle_snooze(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "На паузе ещё" in text
+        # Should render as "1ч 30м" since over 60 min
+        assert "ч" in text
+
+    @pytest.mark.asyncio
+    async def test_snooze_2h_sets_until_with_expected_window(self):
+        from datetime import datetime, timezone, timedelta
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["2h"])
+
+        await bot._handle_snooze(update, context)
+
+        # set_snooze_until called with ~now + 2h
+        brain.db.set_snooze_until.assert_called_once()
+        until = brain.db.set_snooze_until.call_args.args[0]
+        delta = until - datetime.now(timezone.utc).replace(tzinfo=None)
+        # Within a few seconds of 2h
+        assert abs(delta - timedelta(hours=2)) < timedelta(seconds=5)
+
+        # Confirmation text mentions reminders bypass
+        text = update.message.reply_text.await_args.args[0]
+        assert "Snooze на 2ч" in text
+        assert "Напоминания" in text
+
+    @pytest.mark.asyncio
+    async def test_snooze_invalid_arg_shows_examples(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["garbage"])
+
+        await bot._handle_snooze(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Неправильный формат" in text
+        # Examples include all three units
+        assert "/snooze 30m" in text and "/snooze 2h" in text
+
     @pytest.mark.asyncio
     async def test_learnings_empty_state(self):
         """Empty learnings state mentions BOTH the auto cron (Sunday 20:00)

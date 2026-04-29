@@ -117,6 +117,7 @@ class TestConversationAwareDefer:
         s = _make_scheduler(["23:00", "07:00"])
         # Pretend the user just typed something
         s.db.has_recent_user_messages = MagicMock(return_value=True)
+        s.db.is_snoozed_now = MagicMock(return_value=False)
         s.send_fn = AsyncMock()
 
         result = await s._send_proactive("☀️ Доброе утро", kind="morning_briefing")
@@ -131,6 +132,7 @@ class TestConversationAwareDefer:
     async def test_proceeds_when_user_quiet(self):
         s = _make_scheduler(["23:00", "07:00"])
         s.db.has_recent_user_messages = MagicMock(return_value=False)
+        s.db.is_snoozed_now = MagicMock(return_value=False)
         s.db.count_notifications_today = MagicMock(return_value=0)
         s.profile.notification_limit = 10
         s.send_fn = AsyncMock()
@@ -149,6 +151,7 @@ class TestConversationAwareDefer:
         s.db.has_recent_user_messages = MagicMock(
             side_effect=RuntimeError("db locked"),
         )
+        s.db.is_snoozed_now = MagicMock(return_value=False)
         s.db.count_notifications_today = MagicMock(return_value=0)
         s.profile.notification_limit = 10
         s.send_fn = AsyncMock()
@@ -156,6 +159,39 @@ class TestConversationAwareDefer:
         result = await s._send_proactive("text", kind="evening_summary")
 
         # Send still happened despite the recency check failing
+        assert result is True
+        s.send_fn.assert_awaited_once()
+
+
+class TestSnoozeGate:
+    """`/snooze 2h` writes to preferences; scheduler reads via
+    is_snoozed_now and gates _send_proactive. Reminders bypass through
+    a separate code path (monitor.check_reminders → send_fn)."""
+
+    @pytest.mark.asyncio
+    async def test_send_proactive_blocked_when_snoozed(self):
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.is_snoozed_now = MagicMock(return_value=True)
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("☀️ Доброе утро", kind="morning_briefing")
+
+        assert result is False
+        s.send_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_snooze_check_failure_doesnt_block_send(self):
+        """A DB error on is_snoozed_now must NOT silently kill briefings —
+        log and proceed. Same defensive policy as the recency check."""
+        s = _make_scheduler(["23:00", "07:00"])
+        s.db.is_snoozed_now = MagicMock(side_effect=RuntimeError("db locked"))
+        s.db.has_recent_user_messages = MagicMock(return_value=False)
+        s.db.count_notifications_today = MagicMock(return_value=0)
+        s.profile.notification_limit = 10
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("text", kind="evening_summary")
+
         assert result is True
         s.send_fn.assert_awaited_once()
 

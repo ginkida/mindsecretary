@@ -106,6 +106,18 @@ class ProactiveScheduler:
         if self._in_quiet_hours():
             logger.info("Skipping proactive (%s): quiet hours", kind)
             return False
+        # User-initiated snooze (/snooze 2h) overrides everything except
+        # reminders, which take a separate code path. Stored in
+        # preferences so it survives restarts.
+        try:
+            if self.db.is_snoozed_now():
+                logger.info("Skipping proactive (%s): user snooze active", kind)
+                return False
+        except Exception as e:
+            logger.warning(
+                "Snooze check failed (%s); proceeding",
+                type(e).__name__,
+            )
         # Best-effort recency check — DB error logs but doesn't block the
         # send, since the alternative is missing the briefing entirely
         # over a transient query failure.
