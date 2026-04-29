@@ -985,6 +985,95 @@ class Database:
         ).fetchall()
         return [{"label": r["label"], "count": r["cnt"]} for r in rows]
 
+    def get_anniversaries(self, limit: int = 5,
+                          min_age_days: int = 30) -> list[dict]:
+        """Items from this calendar date in past months/years.
+
+        Surfaces things the user might want recalled — "год назад ты
+        решил сменить работу", "три месяца назад начал бегать". Two
+        sources:
+        - High-importance memories (importance ≥ 7) — the user's own
+          weighting picks the moments worth remembering.
+        - Resolved decisions — past inflection points with known
+          outcomes; ideal "remember when you decided X?" material.
+
+        Match is profile-local-date (via _local_date_sql so MM-DD lines
+        up with the user's clock, not UTC). min_age_days=30 floor stops
+        today's row from being its own anniversary on the next-month
+        cycle.
+
+        Returns: list of {kind, content, age_days, ...} sorted by age
+        descending (oldest items most likely the most resonant).
+        """
+        now_local = self._now()
+        today_md = now_local.strftime("%m-%d")
+        # Cutoff in profile-local naive — matches the local-date SQL we
+        # build below. If both sides are local strings, lexical compare
+        # gives chronological order with no TZ drift.
+        cutoff_local = (
+            now_local - timedelta(days=min_age_days)
+        ).strftime("%Y-%m-%d")
+        local_date_expr = self._local_date_sql("created_at")
+
+        items: list[dict] = []
+        # Memories: high-importance, this calendar date, old enough.
+        rows = self.db.execute(
+            f"SELECT id, content, category, importance, created_at, "
+            f"{local_date_expr} as local_date "
+            f"FROM memories "
+            f"WHERE status = 'active' AND importance >= 7 "
+            f"AND substr({local_date_expr}, 6, 5) = ? "
+            f"AND {local_date_expr} <= ? "
+            f"ORDER BY created_at DESC LIMIT ?",
+            (today_md, cutoff_local, limit),
+        ).fetchall()
+        for r in rows:
+            items.append({
+                "kind": "memory",
+                "content": r["content"],
+                "category": r["category"],
+                "importance": r["importance"],
+                "created_at": r["created_at"],
+                "local_date": r["local_date"],
+            })
+
+        # Resolved decisions on this calendar date.
+        rows = self.db.execute(
+            f"SELECT id, description, outcome, outcome_sentiment, created_at, "
+            f"{local_date_expr} as local_date "
+            f"FROM decisions "
+            f"WHERE status = 'resolved' "
+            f"AND substr({local_date_expr}, 6, 5) = ? "
+            f"AND {local_date_expr} <= ? "
+            f"ORDER BY created_at DESC LIMIT ?",
+            (today_md, cutoff_local, limit),
+        ).fetchall()
+        for r in rows:
+            items.append({
+                "kind": "decision",
+                "content": r["description"],
+                "outcome": r["outcome"],
+                "sentiment": r["outcome_sentiment"],
+                "created_at": r["created_at"],
+                "local_date": r["local_date"],
+            })
+
+        # Annotate with age in days (rough — months/years floor) for
+        # human-readable framing in the briefing.
+        today_local = now_local.strftime("%Y-%m-%d")
+        for item in items:
+            try:
+                anchor = datetime.strptime(item["local_date"], "%Y-%m-%d")
+                today_dt = datetime.strptime(today_local, "%Y-%m-%d")
+                item["age_days"] = (today_dt - anchor).days
+            except (ValueError, TypeError):
+                item["age_days"] = 0
+
+        # Oldest first — stronger anniversary punch comes from "год назад"
+        # vs "месяц назад".
+        items.sort(key=lambda x: x.get("age_days", 0), reverse=True)
+        return items[:limit]
+
     def get_past_decisions(self, query: str = "", limit: int = 5) -> list[dict]:
         escaped = self._escape_like(query)
         rows = self.db.execute(

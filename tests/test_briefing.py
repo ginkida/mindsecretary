@@ -112,6 +112,83 @@ class TestEveningHabitsSlot:
         assert "🔥 Серии" not in system_prompt  # 1d streak hidden
 
 
+class TestFormatAge:
+    """Russian plural rendering for the anniversary label."""
+
+    def test_year_singular(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(365) == "1 год назад"
+
+    def test_year_few(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(2 * 365) == "2 года назад"
+
+    def test_year_many(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(5 * 365) == "5 лет назад"
+
+    def test_month_singular(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(31) == "1 месяц назад"
+
+    def test_month_few(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(2 * 30) == "2 месяца назад"
+
+    def test_month_many(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(6 * 30) == "6 месяцев назад"
+
+    def test_under_30_days_uses_days(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(15) == "15 дн. назад"
+
+
+class TestMorningAnniversariesSlot:
+    """Morning briefing pulls anniversaries from the DB into the prompt
+    and renders them. Empty case must NOT add a section header."""
+
+    @pytest.mark.asyncio
+    async def test_anniversary_decision_renders_with_outcome(self, tmp_path):
+        from unittest.mock import AsyncMock
+        from datetime import datetime, timezone
+        bg, db, llm = _make_briefing(tmp_path)
+        bg.memory.search = AsyncMock(return_value=[])
+
+        # Same MM-DD a year back — needed for substr match in
+        # get_anniversaries. days=400 lands on different calendar date.
+        now_utc = datetime.now(timezone.utc)
+        past = now_utc.replace(year=now_utc.year - 1)
+        past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+        db.db.execute(
+            "INSERT INTO decisions (id, description, outcome, "
+            "outcome_sentiment, status, created_at) "
+            "VALUES ('d1', 'сменить работу', 'отлично, наконец-то', "
+            "'positive', 'resolved', ?)",
+            (past_ts,),
+        )
+        db.db.commit()
+
+        await bg.generate_morning()
+
+        sys = llm.chat.call_args.kwargs["system"]
+        # Anniversary section appears with both the decision and outcome
+        assert "сменить работу" in sys
+        assert "наконец-то" in sys
+        # Format puts the age label before the content
+        assert "назад" in sys
+
+    @pytest.mark.asyncio
+    async def test_anniversary_empty_renders_placeholder(self, tmp_path):
+        from unittest.mock import AsyncMock
+        bg, db, llm = _make_briefing(tmp_path)
+        bg.memory.search = AsyncMock(return_value=[])
+
+        await bg.generate_morning()
+        sys = llm.chat.call_args.kwargs["system"]
+        assert "Нет совпадений по дате" in sys
+
+
 class TestMorningHabitsSlot:
     """Morning briefing surfaces active streaks for motivation framing
     ('don't break it today'). Mirrors v0.13.6 evening habits but the

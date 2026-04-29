@@ -882,6 +882,146 @@ class TestBackup:
         assert tmp_db._prune_backups(nonexistent, keep=10) == 0
 
 
+class TestAnniversaries:
+    """`get_anniversaries` surfaces past items on this calendar date —
+    powers the "год назад ты решил X" line in morning briefing."""
+
+    def test_empty_db_returns_empty(self, tmp_db):
+        assert tmp_db.get_anniversaries() == []
+
+    def test_high_importance_memory_from_past_year_surfaces(self, tmp_db):
+        """A memory created exactly N years ago today, importance ≥ 7,
+        must appear with the kind/category labels the briefing renders.
+
+        Year-back replace() preserves MM-DD even across leap years
+        (Feb 29 → Feb 28 fallback isn't an issue here)."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        past = now_utc.replace(year=now_utc.year - 1)
+        past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, "
+            "importance, status, created_at) "
+            "VALUES ('a1', 'big move', x'', 'decision', 8, 'active', ?)",
+            (past_ts,),
+        )
+        tmp_db.db.commit()
+
+        items = tmp_db.get_anniversaries()
+        assert len(items) >= 1
+        m = next((x for x in items if x["content"] == "big move"), None)
+        assert m is not None
+        assert m["kind"] == "memory"
+        assert m["category"] == "decision"
+        assert m["age_days"] >= 360  # ~year ago
+
+    def test_low_importance_memory_excluded(self, tmp_db):
+        """Threshold is importance ≥ 7. Low-importance noise shouldn't
+        clutter the briefing — most stuff isn't anniversary-worthy."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        past = now_utc.replace(year=now_utc.year - 1)
+        past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, "
+            "importance, status, created_at) "
+            "VALUES ('low', 'random fact', x'', 'personal', 4, 'active', ?)",
+            (past_ts,),
+        )
+        tmp_db.db.commit()
+
+        items = tmp_db.get_anniversaries()
+        assert all(x["content"] != "random fact" for x in items)
+
+    def test_recent_items_excluded_by_min_age(self, tmp_db):
+        """Items younger than min_age_days don't count — yesterday's
+        decision isn't its own anniversary tomorrow."""
+        from datetime import datetime, timezone, timedelta
+        recent = datetime.now(timezone.utc) - timedelta(days=5)
+        recent_ts = recent.strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.db.execute(
+            "INSERT INTO memories (id, content, embedding, category, "
+            "importance, status, created_at) "
+            "VALUES ('r1', 'this week thing', x'', 'work', 9, 'active', ?)",
+            (recent_ts,),
+        )
+        tmp_db.db.commit()
+
+        items = tmp_db.get_anniversaries(min_age_days=30)
+        assert all(x["content"] != "this week thing" for x in items)
+
+    def test_resolved_decision_anniversary_includes_outcome(self, tmp_db):
+        """Past resolved decisions are the most resonant — surface with
+        outcome + sentiment so the briefing can frame as 'решил X — Y'.
+
+        Anchor on SAME MM-DD a year back (not days=400, which lands on a
+        different calendar date and silently misses the substr match)."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        past = now_utc.replace(year=now_utc.year - 1)
+        past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+        # Insert directly: create_decision uses _now() for created_at,
+        # so we'd need to manually update. Easier to insert raw.
+        tmp_db.db.execute(
+            "INSERT INTO decisions (id, description, outcome, "
+            "outcome_sentiment, status, created_at) "
+            "VALUES ('d1', 'change job', 'great move', 'positive', "
+            "'resolved', ?)",
+            (past_ts,),
+        )
+        tmp_db.db.commit()
+
+        items = tmp_db.get_anniversaries()
+        d = next((x for x in items if x["kind"] == "decision"), None)
+        assert d is not None
+        assert d["content"] == "change job"
+        assert d["outcome"] == "great move"
+        assert d["sentiment"] == "positive"
+
+    def test_pending_decisions_not_surfaced(self, tmp_db):
+        """Only resolved decisions become anniversaries — pending ones
+        are still open loops, not memories."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        past = now_utc.replace(year=now_utc.year - 1)
+        past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.db.execute(
+            "INSERT INTO decisions (id, description, status, created_at) "
+            "VALUES ('open', 'thinking about move', 'pending', ?)",
+            (past_ts,),
+        )
+        tmp_db.db.commit()
+        items = tmp_db.get_anniversaries()
+        assert all(x["content"] != "thinking about move" for x in items)
+
+    def test_results_sorted_by_age_desc(self, tmp_db):
+        """Older items come first — 'год назад' lands stronger than
+        'месяц назад' for the briefing's lead anniversary line.
+
+        Anchor BOTH on same MM-DD as today (year-back / years-back) so
+        the substr match catches both."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        # 1 year ago + 2 years ago, both same MM-DD as today
+        for tag, years in [("recent", 1), ("oldest", 2)]:
+            past = now_utc.replace(year=now_utc.year - years)
+            past_ts = past.strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.db.execute(
+                "INSERT INTO memories (id, content, embedding, category, "
+                "importance, status, created_at) "
+                "VALUES (?, ?, x'', 'work', 8, 'active', ?)",
+                (tag, f"item from {tag}", past_ts),
+            )
+        tmp_db.db.commit()
+
+        items = tmp_db.get_anniversaries()
+        # Both should appear; oldest first (2y > 1y)
+        assert len(items) >= 2
+        assert items[0]["age_days"] > items[1]["age_days"]
+        assert "oldest" in items[0]["content"]
+        assert "recent" in items[1]["content"]
+
+
 class TestRecentUserMessages:
     """`has_recent_user_messages` powers the conversation-aware defer in
     the proactive scheduler. Cutoff is in UTC because interactions.

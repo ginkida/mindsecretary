@@ -26,6 +26,22 @@ class BriefingGenerator:
         self.profile = profile
 
     @staticmethod
+    def _format_age(days: int) -> str:
+        """Render an age-in-days as a coarse anniversary label.
+
+        We bucket so the briefing reads naturally — "год назад", not
+        "365 дней назад". Buckets line up with how people actually talk
+        about anniversaries: years if applicable, otherwise months.
+        """
+        if days >= 365:
+            years = days // 365
+            return f"{years} {('год' if years == 1 else 'года' if years < 5 else 'лет')} назад"
+        if days >= 30:
+            months = days // 30
+            return f"{months} {('месяц' if months == 1 else 'месяца' if months < 5 else 'месяцев')} назад"
+        return f"{days} дн. назад"
+
+    @staticmethod
     def _format_open_loops(snapshot: dict) -> str:
         counts = snapshot.get("counts", {})
         lines = []
@@ -94,6 +110,39 @@ class BriefingGenerator:
         open_loops = self.db.get_open_loops(days_ahead=2, limit_per_section=3)
         open_loops_text = self._format_open_loops(open_loops)
 
+        # Anniversary recall — items from this calendar date in past
+        # months/years. Turns the bot's accumulated memory into living
+        # context ("год назад ты решил сменить работу — получилось") so
+        # the morning briefing isn't just forward-looking. The LLM
+        # decides whether to weave it in; we just surface the data.
+        anniversaries_text = "Нет совпадений по дате."
+        try:
+            anns = self.db.get_anniversaries(limit=5, min_age_days=30)
+            if anns:
+                lines = []
+                for a in anns:
+                    age = a.get("age_days", 0)
+                    label = self._format_age(age)
+                    if a["kind"] == "decision":
+                        # Past decision with known outcome — most resonant
+                        # form: "год назад решил X — получилось Y".
+                        out = s(a.get("outcome") or "", 120)
+                        senti = a.get("sentiment") or ""
+                        senti_tag = f" [{senti}]" if senti else ""
+                        line = (
+                            f"- {label}: решил «{s(a['content'], 120)}» — "
+                            f"{out}{senti_tag}"
+                        )
+                    else:
+                        line = (
+                            f"- {label} [{a.get('category', '?')}]: "
+                            f"{s(a['content'], 200)}"
+                        )
+                    lines.append(line)
+                anniversaries_text = "\n".join(lines)
+        except Exception as e:
+            logger.warning("Anniversaries lookup failed: %s", type(e).__name__)
+
         # Habits: morning gets the motivation framing — "don't break your
         # streak today" works while user is planning the day. Evening
         # (v0.13.6) gets the reflective framing — "you held it, here's
@@ -123,6 +172,7 @@ class BriefingGenerator:
             birthdays=birthdays_text,
             reminders=reminders_text,
             habits=habits_text,
+            anniversaries=anniversaries_text,
             promises=promises_text,
             open_loops=open_loops_text,
             memories=memories_text,
