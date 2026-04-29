@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_path: Path, timezone: str | None = None,
                  migrations_dir: Path | None = None):
+        # Store the db path so create_backup() can derive the default
+        # backup directory next to it. Only used for backup; queries go
+        # through self.db (the Connection) directly.
+        self._db_path = Path(db_path)
         self.db = sqlite3.connect(str(db_path))
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -36,6 +40,81 @@ class Database:
             migrations_dir = _project_root() / "migrations"
         self._apply_migrations(migrations_dir)
         self._verify_integrity()
+
+    def create_backup(self, keep: int = 30) -> dict:
+        """Online SQLite backup + retention prune.
+
+        Mirrors `scripts/backup.sh` so users running both don't get
+        diverging behaviour: writes `mindsecretary_YYYYMMDD_HHMMSS.db`
+        into `<db_path>.parent / 'backups'`, keeps the latest `keep`
+        backups, deletes the rest by mtime.
+
+        SQLite's online backup API copies pages while the DB is in use,
+        so this is safe to run from the scheduler without pausing the
+        bot. Best-effort: any failure logs and returns the failure shape
+        in the result dict — the scheduler's `daily_backup` job ignores
+        the result besides logging, so a one-off disk-full glitch
+        doesn't break later attempts.
+
+        Returns: {"ok": bool, "path": str | None, "pruned": int,
+                  "error": str | None}
+        """
+        backup_dir = self._db_path.parent / "backups"
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning("Cannot create backup dir %s: %s",
+                           backup_dir, type(e).__name__)
+            return {"ok": False, "path": None, "pruned": 0,
+                    "error": type(e).__name__}
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        target = backup_dir / f"mindsecretary_{ts}.db"
+        try:
+            with sqlite3.connect(str(target)) as dest:
+                self.db.backup(dest)
+        except sqlite3.Error as e:
+            logger.warning("DB backup to %s failed: %s",
+                           target, type(e).__name__)
+            # Clean up partial file if any so prune doesn't count it
+            try:
+                if target.exists():
+                    target.unlink()
+            except OSError:
+                pass
+            return {"ok": False, "path": None, "pruned": 0,
+                    "error": type(e).__name__}
+
+        pruned = self._prune_backups(backup_dir, keep=keep)
+        logger.info("DB backup: %s (pruned %d)", target.name, pruned)
+        return {"ok": True, "path": str(target), "pruned": pruned,
+                "error": None}
+
+    @staticmethod
+    def _prune_backups(directory: Path, keep: int = 30) -> int:
+        """Keep the latest `keep` backups by mtime, delete the rest.
+
+        Sort by mtime (filename embeds the timestamp, so mtime ordering
+        matches creation order in practice — but mtime is the truth in
+        case the user manually copied old backups in). Returns count
+        of files deleted.
+        """
+        if not directory.exists() or keep < 0:
+            return 0
+        files = sorted(
+            directory.glob("mindsecretary_*.db"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        pruned = 0
+        for old in files[keep:]:
+            try:
+                old.unlink()
+                pruned += 1
+            except OSError as e:
+                logger.warning("Failed to delete old backup %s: %s",
+                               old, type(e).__name__)
+        return pruned
 
     def _verify_integrity(self) -> bool:
         """Run `PRAGMA integrity_check` once on startup.

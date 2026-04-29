@@ -268,6 +268,17 @@ class ProactiveScheduler:
                 id="weekly_review", replace_existing=True,
             )
 
+        # Daily DB backup at 03:30 — mirrors scripts/backup.sh defaults
+        # (data/backups/mindsecretary_*.db, keep last 30) but runs
+        # automatically without a user-set crontab. 03:30 lands after
+        # the Sunday 03:00 cleanup so weekly snapshots reflect the
+        # post-cleanup state; on other days it's just a quiet pre-dawn
+        # slot far from morning_prompt and reminder_check noise.
+        self.scheduler.add_job(
+            self._daily_backup, "cron", hour=3, minute=30,
+            id="daily_backup", replace_existing=True,
+        )
+
         # Weekly data cleanup — deletes interactions / api_costs / soft-deleted
         # memories older than settings.data_retention_days. Sunday 03:00 to
         # avoid colliding with weekly_review at 20:00 and morning briefing.
@@ -600,6 +611,16 @@ class ProactiveScheduler:
                 logger.info("Weekly review sent.")
         except Exception as e:
             logger.error("Weekly review failed: %s", type(e).__name__)
+
+    async def _daily_backup(self):
+        """Online DB backup via Database.create_backup. Best-effort —
+        failures already log inside create_backup; this wrapper just
+        catches the worst-case (Database method itself raising) so a
+        backup glitch never disturbs the rest of the scheduler."""
+        try:
+            self.db.create_backup(keep=30)
+        except Exception as e:
+            logger.error("Daily backup wrapper failed: %s", type(e).__name__)
 
     async def _cleanup_old_data(self):
         """Weekly hard-delete of old interactions, api_costs, soft-deleted memories."""

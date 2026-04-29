@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -760,6 +761,125 @@ class TestCleanup:
         ids = {r["id"] for r in raw_conn.execute("SELECT id FROM memories").fetchall()}
         assert "a1" not in ids
         assert "a2" in ids
+
+
+class TestBackup:
+    """Built-in DB backup mirrors scripts/backup.sh: writes
+    mindsecretary_TIMESTAMP.db into <db_path>.parent/'backups', keeps
+    the latest N, deletes the rest. Failure is best-effort — never
+    propagates so a glitchy disk doesn't kill the scheduler."""
+
+    def test_create_backup_writes_file_with_data(self, tmp_path, tmp_db):
+        """Online backup includes current data, not just an empty schema.
+        Catches "backup runs but on the wrong connection" regressions."""
+        # Seed a row so we can verify the backup actually has it
+        tmp_db.create_reminder("backup test", "2099-01-01 10:00:00")
+
+        result = tmp_db.create_backup(keep=30)
+
+        assert result["ok"] is True
+        assert result["path"] is not None
+        backup_path = Path(result["path"])
+        assert backup_path.exists()
+        # Open the backup as a fresh connection and verify the row landed
+        import sqlite3 as _sq
+        copy = _sq.connect(str(backup_path))
+        copy.row_factory = _sq.Row
+        rows = copy.execute(
+            "SELECT text FROM reminders WHERE text = 'backup test'"
+        ).fetchall()
+        copy.close()
+        assert len(rows) == 1
+
+    def test_backup_directory_auto_created(self, tmp_path, tmp_db):
+        """First-run case: backups/ doesn't exist yet. create_backup
+        creates it instead of failing on FileNotFoundError."""
+        backup_dir = tmp_db._db_path.parent / "backups"
+        if backup_dir.exists():
+            for f in backup_dir.iterdir():
+                f.unlink()
+            backup_dir.rmdir()
+        assert not backup_dir.exists()
+
+        result = tmp_db.create_backup()
+
+        assert result["ok"] is True
+        assert backup_dir.exists()
+
+    def test_prune_keeps_only_latest_n(self, tmp_path, tmp_db):
+        """Retention prunes oldest by mtime. With 5 backup files and
+        keep=2, expect 2 files left and pruned=3 in the result."""
+        import time
+        backup_dir = tmp_db._db_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        # Create 5 dummy backup files with staggered mtimes so prune
+        # has a deterministic ordering target.
+        files = []
+        for i in range(5):
+            f = backup_dir / f"mindsecretary_2026010{i + 1}_120000.db"
+            f.write_bytes(b"")
+            # Backdate older files so mtime ordering matches the suffix
+            mtime = time.time() - (5 - i) * 60
+            import os
+            os.utime(f, (mtime, mtime))
+            files.append(f)
+
+        # New backup → 6 files → prune keeps last 2 → deletes 4 (the
+        # 5 stale + the new... wait, new is "newest"). Result: keep=2
+        # means {newest backup, second-newest = files[4]}, prunes 4.
+        result = tmp_db.create_backup(keep=2)
+
+        assert result["ok"] is True
+        assert result["pruned"] == 4
+        remaining = sorted(backup_dir.glob("mindsecretary_*.db"))
+        assert len(remaining) == 2
+
+    def test_create_backup_failure_returns_shape_doesnt_raise(self, tmp_db):
+        """If sqlite3.Connection.backup raises (e.g. disk full), we
+        catch + log + return a failure-shape dict. Caller (scheduler)
+        treats the result as advisory only.
+
+        sqlite3.Connection methods are read-only (can't monkey-patch
+        .backup directly), so swap the whole connection for a Mock
+        whose backup() raises."""
+        from unittest.mock import MagicMock
+        import sqlite3 as _sq
+
+        original_conn = tmp_db.db
+        mock_conn = MagicMock()
+        mock_conn.backup.side_effect = _sq.OperationalError("disk full")
+        tmp_db.db = mock_conn
+        try:
+            result = tmp_db.create_backup()
+        finally:
+            tmp_db.db = original_conn
+
+        assert result["ok"] is False
+        assert result["error"] == "OperationalError"
+        assert result["path"] is None
+        # Partial backup file shouldn't linger — verify the dir is empty
+        # of any new files (older fixture-created ones may still exist
+        # from earlier tests, just check there's no fresh failure-stub).
+        backup_dir = tmp_db._db_path.parent / "backups"
+        if backup_dir.exists():
+            new_files = [
+                f for f in backup_dir.iterdir()
+                if f.stat().st_size == 0  # the partial-stub would be empty
+            ]
+            # Empty stubs would mean the backup was attempted but failed
+            # mid-write. We deleted them, so this list should be empty.
+            assert not new_files
+
+    def test_prune_handles_empty_directory(self, tmp_db):
+        """No backups yet → prune returns 0, doesn't crash on empty glob."""
+        backup_dir = tmp_db._db_path.parent / "backups_empty"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        assert tmp_db._prune_backups(backup_dir, keep=10) == 0
+
+    def test_prune_handles_missing_directory(self, tmp_db):
+        """Missing dir returns 0 instead of raising — robust to first-run."""
+        nonexistent = tmp_db._db_path.parent / "nope"
+        assert tmp_db._prune_backups(nonexistent, keep=10) == 0
 
 
 class TestIntegrityCheck:
