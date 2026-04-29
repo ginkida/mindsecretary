@@ -520,6 +520,46 @@ class TestStats:
         assert stats["today_cost"] > 0
         assert stats["today_tokens"] == 1500
 
+    def test_monthly_projection_below_3day_threshold_returns_none(
+        self, tmp_db: Database,
+    ):
+        """A single day of cost data is too noisy to project — projecting
+        $0.30 daily to a month is fine in theory, but real usage rarely
+        looks like the first day. Threshold prevents misleading the user
+        with spiky early-data extrapolations."""
+        tmp_db.log_cost("anthropic", input_tokens=100_000, output_tokens=0)
+        stats = tmp_db.get_stats()
+        assert stats["month_projection"] is None
+
+    def test_monthly_projection_renders_with_3plus_days(self, tmp_db: Database):
+        """At ≥3 days of data, projection becomes meaningful and surfaces.
+        Math: avg(week_trend) * 30. Direct insertion bypasses the 1-row-
+        per-call accumulation of log_cost so we can hit the threshold."""
+        from datetime import datetime, timezone, timedelta
+        # Insert 3 distinct days of cost rows directly into api_costs
+        # (UTC-naive, matching the storage convention).
+        for offset in range(3):
+            day = datetime.now(timezone.utc) - timedelta(days=offset)
+            tmp_db.db.execute(
+                "INSERT INTO api_costs (provider, input_tokens, "
+                "output_tokens, cost_usd, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("anthropic", 0, 0, 0.50,
+                 day.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        tmp_db.db.commit()
+        stats = tmp_db.get_stats()
+        assert stats["month_projection"] is not None
+        # avg = 0.50; projection = 0.50 * 30 = 15.0
+        assert 14.0 < stats["month_projection"] < 16.0
+
+    def test_monthly_projection_none_when_no_costs(self, tmp_db: Database):
+        """Day-1 installs (no cost rows yet) get None instead of $0.00 —
+        the UI hides the line entirely rather than misleading users with
+        a prediction based on a single empty day."""
+        stats = tmp_db.get_stats()
+        assert stats["month_projection"] is None
+
     def test_memory_category_breakdown_sorted_desc(self, tmp_db: Database):
         """Breakdown surfaces what kinds of facts are accumulating —
         sorted by count desc so the dominant categories show first."""

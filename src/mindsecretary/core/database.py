@@ -1235,10 +1235,25 @@ class Database:
         ).fetchall()
         week_trend = [{"date": r["day"], "cost": r["cost"]} for r in trend_rows]
 
+        # Monthly projection — extrapolate from 7-day avg.
+        # We project from the 7-day window (not month-to-date) because
+        # the user's API usage skews early-month-heavy or end-month-heavy
+        # depending on cycle, and a recent average is more representative
+        # of the *current* burn rate. Need at least 3 days of cost data
+        # before showing — projecting from 1 day of usage just amplifies
+        # noise (a single $0.30 day → $9 projection). UI hides the line
+        # below the threshold so users aren't misled by spiky early data.
+        if len(week_trend) >= 3:
+            avg_daily = sum(d["cost"] for d in week_trend) / len(week_trend)
+            month_projection = avg_daily * 30
+        else:
+            month_projection = None
+
         return {
             "today_cost": today_cost,
             "today_tokens": today_tokens,
             "month_cost": month_cost,
+            "month_projection": month_projection,
             "memories": mem_count,
             "memory_categories": [
                 {"category": r["category"], "count": r["cnt"]}

@@ -409,6 +409,48 @@ class TestTelegramHandlers:
         assert "preference" not in text
 
     @pytest.mark.asyncio
+    async def test_stats_handler_renders_monthly_projection(self):
+        """Projection line appears when month_projection is non-None.
+        Format: '🔮 Прогноз/мес: $X.XX (по 7-дн avg)' — the suffix
+        prevents users from confusing it with a hard limit."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_stats = MagicMock(return_value={
+            "today_cost": 0.10, "today_tokens": 1000, "month_cost": 5.0,
+            "month_projection": 12.50,
+            "memories": 50, "contacts": 5, "interactions_today": 20,
+            "providers": {}, "week_trend": [{"date": "2026-04-22", "cost": 0.4}],
+            "memory_categories": [],
+        })
+
+        await bot._handle_stats(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Прогноз/мес: $12.50" in text
+        assert "по 7-дн avg" in text
+
+    @pytest.mark.asyncio
+    async def test_stats_handler_omits_projection_when_none(self):
+        """Day-1 install: no cost rows → month_projection=None → omit line.
+        Users shouldn't see a misleading '$0.00 projected' on first day."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_stats = MagicMock(return_value={
+            "today_cost": 0, "today_tokens": 0, "month_cost": 0,
+            "month_projection": None,
+            "memories": 0, "contacts": 0, "interactions_today": 0,
+            "providers": {}, "week_trend": [],
+            "memory_categories": [],
+        })
+
+        await bot._handle_stats(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Прогноз/мес" not in text
+
+    @pytest.mark.asyncio
     async def test_stats_handler_handles_empty_breakdown(self):
         """/stats shouldn't crash when there are no memories yet — empty
         list is the bot's first-day state."""

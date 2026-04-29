@@ -246,6 +246,13 @@ class TelegramBot:
         if trend:
             trend_str = " ".join(f"${d['cost']:.2f}" for d in trend[-7:])
             lines.append(f"\n📈 7 дней: {trend_str}")
+        # Monthly projection from the 7-day average — gives the user a
+        # visible burn-rate trajectory so a creeping cost surprise
+        # doesn't only become visible when the daily_cost_limit_usd
+        # circuit breaker fires.
+        projection = stats.get("month_projection")
+        if projection is not None:
+            lines.append(f"🔮 Прогноз/мес: ${projection:.2f} (по 7-дн avg)")
         lines.extend([
             f"\n🧠 Воспоминаний: {stats['memories']}",
         ])
