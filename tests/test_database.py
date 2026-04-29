@@ -722,6 +722,77 @@ class TestCleanup:
         assert "a2" in ids
 
 
+class TestIntegrityCheck:
+    """`PRAGMA integrity_check` runs once on startup so ops sees DB
+    corruption in the bot's log instead of as a cryptic query failure
+    later. Healthy fresh DB → 'ok'; damaged → warning with detail."""
+
+    def test_fresh_db_passes_integrity(self, tmp_db: Database, caplog):
+        import logging as _log
+        with caplog.at_level(_log.INFO):
+            assert tmp_db._verify_integrity() is True
+        # Verify the log surfaced — this is the ops signal we wanted
+        assert any(
+            "integrity_check: ok" in r.message for r in caplog.records
+        )
+
+    def test_corrupt_results_logged_and_return_false(self, tmp_db: Database, caplog):
+        """Simulate corruption by swapping the DB connection for a mock
+        whose execute() returns non-ok rows. The handler must log a
+        WARNING with detail (so the user sees it in the daily log) and
+        return False (so future code can decide whether to refuse
+        risky operations)."""
+        from unittest.mock import MagicMock
+        import logging as _log
+
+        fake_rows = [("malformed page on table memories",)]
+        cursor = MagicMock()
+        cursor.fetchall.return_value = fake_rows
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = cursor
+
+        original_conn = tmp_db.db
+        tmp_db.db = mock_conn
+        try:
+            with caplog.at_level(_log.WARNING):
+                assert tmp_db._verify_integrity() is False
+        finally:
+            tmp_db.db = original_conn
+
+        warnings = [
+            r for r in caplog.records if r.levelno == _log.WARNING
+            and "integrity_check" in r.message
+        ]
+        assert warnings, "expected an integrity_check warning in logs"
+        assert "malformed page" in warnings[0].message
+
+    def test_check_failure_returns_false_without_crashing(self, tmp_db: Database, caplog):
+        """If the check itself raises (e.g. DB unreadable), we log + return
+        False — don't crash the whole startup over a diagnostic step."""
+        import sqlite3 as _sq
+        from unittest.mock import MagicMock
+        import logging as _log
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = _sq.DatabaseError(
+            "file is encrypted or not a database",
+        )
+
+        original_conn = tmp_db.db
+        tmp_db.db = mock_conn
+        try:
+            with caplog.at_level(_log.ERROR):
+                assert tmp_db._verify_integrity() is False
+        finally:
+            tmp_db.db = original_conn
+
+        errors = [
+            r for r in caplog.records if r.levelno == _log.ERROR
+            and "integrity_check itself failed" in r.message
+        ]
+        assert errors, "expected an integrity_check error log"
+
+
 class TestMigrations:
     def test_empty_migrations_dir_is_noop(self, tmp_path):
         db = Database(tmp_path / "test.db", migrations_dir=tmp_path / "empty_migrations")

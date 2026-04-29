@@ -35,6 +35,45 @@ class Database:
             from .config import _project_root
             migrations_dir = _project_root() / "migrations"
         self._apply_migrations(migrations_dir)
+        self._verify_integrity()
+
+    def _verify_integrity(self) -> bool:
+        """Run `PRAGMA integrity_check` once on startup.
+
+        SQLite reports corruption on a per-page basis lazily — a damaged
+        DB might pass init and only show cryptic errors on the first
+        query that touches the broken page. Running this once up front
+        gives ops a clear signal in the bot's startup log.
+
+        Doesn't raise — corruption isn't necessarily fatal (most queries
+        may still work) and crashing on startup hides the diagnostic
+        from anyone tailing the log. Returns True if 'ok', False
+        otherwise. The check itself can fail on an unreadable file —
+        also logged + returned as False.
+        """
+        try:
+            rows = self.db.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.DatabaseError as e:
+            logger.error(
+                "DB integrity_check itself failed (%s) — DB may be unusable",
+                type(e).__name__,
+            )
+            return False
+        # SQLite returns a single row with text "ok" on a healthy DB,
+        # otherwise one row per detected problem. Either Row objects or
+        # plain tuples depending on row_factory state.
+        results = [r[0] for r in rows]
+        if results == ["ok"]:
+            logger.info("DB integrity_check: ok")
+            return True
+        # Cap detail logging so a wildly broken DB doesn't dump megabytes.
+        sample = "; ".join(str(r)[:200] for r in results[:5])
+        suffix = f" (+{len(results) - 5} more)" if len(results) > 5 else ""
+        logger.warning(
+            "DB integrity_check found %d issue(s): %s%s",
+            len(results), sample, suffix,
+        )
+        return False
 
     def _apply_migrations(self, migrations_dir: Path):
         """Apply pending SQL migrations from `migrations_dir` in lexical order.
