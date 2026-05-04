@@ -745,6 +745,15 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if cat is not None and cat not in VALID_CATEGORIES:
             clean["category"] = None
 
+    if name == "track_decision":
+        # Schema enforces 1-365 but defensive clamp catches drift. Negative
+        # follow_up_days makes follow_up_at land in the past, so the
+        # decision-followup scheduler at 10:00 the next morning would
+        # prompt the user about a decision they just created — looks like
+        # the bot lost track of when "now" is.
+        if clean.get("follow_up_days") is not None:
+            clean["follow_up_days"] = max(1, min(365, int(clean["follow_up_days"])))
+
     if name == "get_recent_memories":
         clean["limit"] = max(1, min(10, int(clean.get("limit", 5))))
         # Same guard as search_memory: invalid category drops to None

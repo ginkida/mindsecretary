@@ -73,6 +73,28 @@ class TestSanitizeArgs:
             })
             assert args["category"] == cat
 
+    def test_track_decision_clamps_negative_follow_up(self):
+        """Schema says 1-365 but defensive clamp protects against drift —
+        negative follow_up_days makes follow_up_at land in the past, so
+        the next-morning decision-followup tick prompts the user about a
+        decision they just created."""
+        args = _sanitize_args("track_decision", {
+            "description": "x", "follow_up_days": -10,
+        })
+        assert args["follow_up_days"] == 1
+
+    def test_track_decision_clamps_huge_follow_up(self):
+        args = _sanitize_args("track_decision", {
+            "description": "x", "follow_up_days": 99999,
+        })
+        assert args["follow_up_days"] == 365
+
+    def test_track_decision_omitted_follow_up_unchanged(self):
+        """When the LLM doesn't pass follow_up_days, the slot stays absent
+        and the handler signature default (30) applies."""
+        args = _sanitize_args("track_decision", {"description": "x"})
+        assert "follow_up_days" not in args
+
     def test_search_memory_no_category_unchanged(self):
         """When the LLM doesn't pass a category at all, the slot stays
         absent (not coerced to None or any default) so the handler
