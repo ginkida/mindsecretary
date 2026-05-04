@@ -219,13 +219,30 @@ class Brain:
         ) or "Пока ничего не запомнил."
 
     def _section_events(self, now: datetime, s) -> str:
+        """Today's events for the main system prompt. Mirrors briefing's
+        _format_event_line shape so chat and briefing surface the same
+        context — pre-fix only briefing showed location, so chat answers
+        to 'где встреча?' missed cafe/office details that were on the
+        original create_event call.
+        """
         events = self.db.get_events(now.strftime("%Y-%m-%d"))
-        return "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} "
-            f"{s(e['title'], 200)}"
-            + (f" ({s(e['related_person'] or '', 100)})" if e.get("related_person") else "")
-            for e in events
-        ) or "Нет событий."
+        lines = []
+        for e in events:
+            start = e.get("start_at") or ""
+            time_str = start[11:16] if len(start) > 10 else "??:??"
+            title = s(e.get("title") or "", 200)
+            line = f"- {time_str} {title}"
+            extras: list[str] = []
+            person = e.get("related_person")
+            if person:
+                extras.append(f"с {s(person, 100)}")
+            location = e.get("location")
+            if location:
+                extras.append(f"где: {s(location, 100)}")
+            if extras:
+                line += f" ({', '.join(extras)})"
+            lines.append(line)
+        return "\n".join(lines) or "Нет событий."
 
     _NOTIFICATION_LABELS = {
         "morning_briefing": "брифинг",

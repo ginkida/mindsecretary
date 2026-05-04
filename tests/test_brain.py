@@ -510,6 +510,54 @@ class TestSystemPromptToolGuidance:
         )
 
 
+class TestSectionEvents:
+    """Brain's main-prompt today-events block must surface what briefing's
+    _format_event_line surfaces. Pre-fix it dropped location entirely;
+    chat answers to 'где встреча?' lost that info even though create_event
+    captured it."""
+
+    def test_renders_time_and_title(self):
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[
+            {"start_at": "2099-04-15 09:00:00", "title": "стандап",
+             "related_person": None, "location": None},
+        ])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        assert "09:00 стандап" in result
+        assert "(" not in result  # No empty parens
+
+    def test_renders_person_in_parens(self):
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[
+            {"start_at": "2099-04-15 13:00:00", "title": "обед",
+             "related_person": "Олег", "location": None},
+        ])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        assert "обед (с Олег)" in result
+
+    def test_renders_location_too(self):
+        """Pre-fix: only briefing surfaced location. Chat path was blind
+        to it. Now Brain's section_events emits the same line shape."""
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[
+            {"start_at": "2099-04-15 13:00:00", "title": "обед",
+             "related_person": "Олег", "location": "Кафе Пушкин"},
+        ])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        assert "с Олег" in result
+        assert "где: Кафе Пушкин" in result
+
+    def test_empty_events_returns_placeholder(self):
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        assert result == "Нет событий."
+
+
 class TestSectionDecisions:
     """Brain._section_decisions feeds the 'Решения в процессе' slot of
     the main system prompt. Pre-fix it dropped the context field, so
