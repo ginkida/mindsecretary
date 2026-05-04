@@ -747,6 +747,12 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "get_recent_memories":
         clean["limit"] = max(1, min(10, int(clean.get("limit", 5))))
+        # Same guard as search_memory: invalid category drops to None
+        # (no filter) instead of letting bogus value through to the SQL
+        # WHERE clause and producing a misleading empty result.
+        cat = clean.get("category")
+        if cat is not None and cat not in VALID_CATEGORIES:
+            clean["category"] = None
 
     if name == "get_open_loops":
         clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))

@@ -80,6 +80,22 @@ class TestSanitizeArgs:
         args = _sanitize_args("search_memory", {"query": "x"})
         assert "category" not in args
 
+    def test_get_recent_memories_drops_invalid_category(self):
+        """Same guard as search_memory: invalid category becomes None
+        so the user gets recent memories across all categories instead
+        of an empty 'No recent memories' result for a typo."""
+        args = _sanitize_args("get_recent_memories", {
+            "limit": 5, "category": "tasks",  # not a real category
+        })
+        assert args["category"] is None
+
+    def test_get_recent_memories_passes_valid_category(self):
+        for cat in VALID_CATEGORIES:
+            args = _sanitize_args("get_recent_memories", {
+                "limit": 3, "category": cat,
+            })
+            assert args["category"] == cat
+
     def test_save_memory_importance_clamped(self):
         args = _sanitize_args("save_memory", {
             "content": "x", "category": "work", "importance": 99,
