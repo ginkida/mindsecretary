@@ -268,6 +268,66 @@ class TestEveningEventsTimeIncluded:
         assert "кафе Пушкин" in prompt
 
 
+class TestPluralizeRu:
+    """Russian plural helper. The 11-14 teens special case is the most
+    common bug — without it 'год' becomes 'лет' too aggressively."""
+
+    YEARS = ("год", "года", "лет")
+    DAYS = ("день", "дня", "дней")
+
+    def test_singular_one(self):
+        from mindsecretary.core import pluralize_ru
+        assert pluralize_ru(1, self.YEARS) == "год"
+        assert pluralize_ru(1, self.DAYS) == "день"
+
+    def test_few_two_three_four(self):
+        from mindsecretary.core import pluralize_ru
+        assert pluralize_ru(2, self.YEARS) == "года"
+        assert pluralize_ru(3, self.YEARS) == "года"
+        assert pluralize_ru(4, self.YEARS) == "года"
+
+    def test_many_five_to_ten(self):
+        from mindsecretary.core import pluralize_ru
+        for n in range(5, 11):
+            assert pluralize_ru(n, self.YEARS) == "лет", f"failed at {n}"
+
+    def test_teens_use_many_form(self):
+        """11-14 are the special case that breaks naive rules — they end
+        in 1/2/3/4 but use the form_other ('лет', not 'год/года')."""
+        from mindsecretary.core import pluralize_ru
+        for n in range(11, 15):
+            assert pluralize_ru(n, self.YEARS) == "лет", f"failed at {n}"
+
+    def test_twenty_one_back_to_singular(self):
+        """21, 31, 41, 101 — past the teens, last-digit rules resume."""
+        from mindsecretary.core import pluralize_ru
+        for n in (21, 31, 101, 1001):
+            assert pluralize_ru(n, self.YEARS) == "год", f"failed at {n}"
+
+    def test_twenty_two_to_twenty_four_use_few(self):
+        from mindsecretary.core import pluralize_ru
+        assert pluralize_ru(22, self.YEARS) == "года"
+        assert pluralize_ru(23, self.YEARS) == "года"
+        assert pluralize_ru(24, self.YEARS) == "года"
+        # 25-30 → many
+        assert pluralize_ru(25, self.YEARS) == "лет"
+        assert pluralize_ru(30, self.YEARS) == "лет"
+
+    def test_zero_uses_many(self):
+        """0 should pick form_other ('0 лет', not '0 год'). Edge case but
+        it shows up in 'не общались 0 дней' if the comparator allows it."""
+        from mindsecretary.core import pluralize_ru
+        assert pluralize_ru(0, self.YEARS) == "лет"
+
+    def test_negative_n_treated_by_absolute(self):
+        """Defensive: negative inputs use the absolute value's form. We
+        don't expect negatives in production but the helper shouldn't
+        ValueError if they slip through."""
+        from mindsecretary.core import pluralize_ru
+        assert pluralize_ru(-1, self.YEARS) == "год"
+        assert pluralize_ru(-21, self.YEARS) == "год"
+
+
 class TestFormatAge:
     """Russian plural rendering for the anniversary label."""
 
@@ -298,6 +358,23 @@ class TestFormatAge:
     def test_under_30_days_uses_days(self):
         from mindsecretary.proactive.briefing import BriefingGenerator
         assert BriefingGenerator._format_age(15) == "15 дн. назад"
+
+    def test_year_21_takes_singular_form(self):
+        """The previous inline `< 5 → form_2_4 else form_other` rule said
+        '21 лет' instead of '21 год'. Russian rule: 21, 31, 41 (ending in
+        1, except teens 11-14) use the singular form."""
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(21 * 365) == "21 год назад"
+
+    def test_year_22_takes_few_form(self):
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(22 * 365) == "22 года назад"
+
+    def test_year_11_takes_many_form_via_teens_special(self):
+        """11-14 are the teens special case: always use form_other regardless
+        of last digit. So 11 years = '11 лет', not '11 год'."""
+        from mindsecretary.proactive.briefing import BriefingGenerator
+        assert BriefingGenerator._format_age(11 * 365) == "11 лет назад"
 
 
 class TestMorningAnniversariesSlot:

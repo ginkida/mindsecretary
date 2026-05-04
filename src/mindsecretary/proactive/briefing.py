@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from ..core import DAYS_RU, fmt_local_time, tz_now
+from ..core import DAYS_RU, fmt_local_time, pluralize_ru, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -75,13 +75,17 @@ class BriefingGenerator:
         We bucket so the briefing reads naturally — "год назад", not
         "365 дней назад". Buckets line up with how people actually talk
         about anniversaries: years if applicable, otherwise months.
+
+        Russian plural forms via pluralize_ru — handles the 11-14 teens
+        and 20+/30+/etc edge cases that the original inline `< 5` rule
+        got wrong (e.g. "21 лет" → "21 год", "22 лет" → "22 года").
         """
         if days >= 365:
             years = days // 365
-            return f"{years} {('год' if years == 1 else 'года' if years < 5 else 'лет')} назад"
+            return f"{years} {pluralize_ru(years, ('год', 'года', 'лет'))} назад"
         if days >= 30:
             months = days // 30
-            return f"{months} {('месяц' if months == 1 else 'месяца' if months < 5 else 'месяцев')} назад"
+            return f"{months} {pluralize_ru(months, ('месяц', 'месяца', 'месяцев'))} назад"
         return f"{days} дн. назад"
 
     @staticmethod

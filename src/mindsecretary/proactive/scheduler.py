@@ -6,7 +6,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..core import tz_now
+from ..core import pluralize_ru, tz_now
 from ..core.config import Profile, Settings
 from ..core.database import Database
 from ..integrations.weather import WMO_CODES, WeatherClient, _merge_rain_hours
@@ -235,8 +235,10 @@ class ProactiveScheduler:
             ]
             if filtered:
                 first = filtered[0]
+                days = int(first.get("days_since") or 0)
+                plural = pluralize_ru(days, ("день", "дня", "дней"))
                 lines.append(
-                    f"Тихий контакт: {first['name']} — не общались {first['days_since']} дней"
+                    f"Тихий контакт: {first['name']} — не общались {days} {plural}"
                 )
         except Exception as e:
             # Quiet-contact check is best-effort — failure shouldn't block
@@ -458,9 +460,7 @@ class ProactiveScheduler:
             # negative numbers.
             return f"📅 Скоро ДР: {name}{age_str}{relation} — {bday_md}"
 
-        plural = "день" if days_until == 1 else (
-            "дня" if 2 <= days_until <= 4 else "дней"
-        )
+        plural = pluralize_ru(days_until, ("день", "дня", "дней"))
         return (
             f"📅 ДР через {days_until} {plural}: "
             f"{name}{age_str}{relation} — {bday_md}"

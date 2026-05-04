@@ -639,6 +639,16 @@ class TestBirthdayAlertFormat:
         assert "Olga" in result
         assert "04-29" in result
 
+    def test_eleven_days_uses_many_form_via_teens(self):
+        """11-14 are the teens special case in Russian — they end in
+        1/2/3/4 but use 'дней', not 'день/дня'. Pre-fix the inline rule
+        emitted '11 день' which read very wrong."""
+        result = self._format(
+            {"name": "X", "birthday": "1990-05-09"},
+            year=2026, month=4, day=28,
+        )
+        assert "📅 ДР через 11 дней:" in result
+
     def test_year_wrap_picks_next_year(self):
         """Birthday in January, today in December → days-until counts
         forward into next year, age uses next year's value."""
