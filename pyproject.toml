@@ -1,6 +1,6 @@
 [project]
 name = "mindsecretary"
-version = "0.14.28"
+version = "0.14.29"
 description = "Voice-first AI secretary — your external brain"
 requires-python = ">=3.10"
 

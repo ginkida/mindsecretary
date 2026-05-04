@@ -90,6 +90,14 @@ class BriefingGenerator:
 
     @staticmethod
     def _format_open_loops(snapshot: dict) -> str:
+        """Render open-loops snapshot with the most-pressing item per
+        section. Pre-fix this just emitted counts for goals/decisions
+        ('Незакрытые цели: 2'), but those categories don't appear in
+        any other briefing slot — the user couldn't tell WHICH goal
+        was open without invoking another command. Reminders stay
+        as counts because reminders_text already lists them in full.
+        """
+        s = sanitize_for_context
         counts = snapshot.get("counts", {})
         lines = []
         if counts.get("overdue_reminders"):
@@ -97,14 +105,31 @@ class BriefingGenerator:
         if counts.get("due_today_reminders"):
             lines.append(f"- Напоминания до конца дня: {counts['due_today_reminders']}")
         if counts.get("pending_goals"):
-            lines.append(f"- Незакрытые цели на сегодня: {counts['pending_goals']}")
+            count = counts["pending_goals"]
+            goals = snapshot.get("pending_goals") or []
+            line = f"- Незакрытые цели на сегодня: {count}"
+            if goals:
+                # Highest-priority is first (DB query orders by priority).
+                first = goals[0]
+                title = s(first.get("title") or "", 100)
+                priority = first.get("priority") or "medium"
+                line += f" — {title} [{priority}]"
+            lines.append(line)
         if counts.get("due_decisions"):
-            lines.append(f"- Решения с просроченным follow-up: {counts['due_decisions']}")
+            count = counts["due_decisions"]
+            decisions = snapshot.get("due_decisions") or []
+            line = f"- Решения с просроченным follow-up: {count}"
+            if decisions:
+                # Most-overdue is first (DB query orders by follow_up_at ASC).
+                first = decisions[0]
+                desc = s(first.get("description") or "", 120)
+                line += f" — {desc}"
+            lines.append(line)
         if snapshot.get("upcoming_events"):
             first = snapshot["upcoming_events"][0]
             # Event title is user-controlled → sanitize before it lands in the
             # briefing system prompt, matching the pattern used elsewhere.
-            title = sanitize_for_context(first.get("title") or "", 200)
+            title = s(first.get("title") or "", 200)
             lines.append(f"- Ближайшее событие: {first['start_at'][11:16]} {title}")
         return "\n".join(lines) or "Критичных хвостов нет."
 

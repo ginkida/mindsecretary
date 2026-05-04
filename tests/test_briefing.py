@@ -157,6 +157,72 @@ class TestFormatEventLine:
         assert "??:??" in line
 
 
+class TestFormatOpenLoops:
+    """_format_open_loops feeds the briefing's 'Хвосты и риски' slot.
+    Goals + decisions only appear in this section, so the title/desc
+    has to surface — count alone leaves the user blind to WHAT'S
+    overdue."""
+
+    def test_empty_returns_no_loops_placeholder(self):
+        result = BriefingGenerator._format_open_loops({"counts": {}})
+        assert result == "Критичных хвостов нет."
+
+    def test_pending_goals_renders_first_title(self):
+        result = BriefingGenerator._format_open_loops({
+            "counts": {"pending_goals": 2},
+            "pending_goals": [
+                {"title": "починить раковину", "priority": "high"},
+                {"title": "купить продукты", "priority": "medium"},
+            ],
+        })
+        assert "Незакрытые цели на сегодня: 2" in result
+        # Highest-priority goal title surfaces, with priority tag
+        assert "починить раковину" in result
+        assert "[high]" in result
+        # Second goal title NOT in output — keep briefing brief
+        assert "купить продукты" not in result
+
+    def test_due_decisions_renders_first_description(self):
+        result = BriefingGenerator._format_open_loops({
+            "counts": {"due_decisions": 3},
+            "due_decisions": [
+                {"description": "купить велосипед или нет"},
+                {"description": "переехать на дачу"},
+                {"description": "сменить тариф"},
+            ],
+        })
+        assert "Решения с просроченным follow-up: 3" in result
+        # Most-overdue (first in list) description surfaces
+        assert "купить велосипед" in result
+
+    def test_overdue_reminders_count_only(self):
+        """Reminders are listed in full elsewhere (reminders_text), so
+        open_loops summarizes with count to avoid duplication."""
+        result = BriefingGenerator._format_open_loops({
+            "counts": {"overdue_reminders": 3, "due_today_reminders": 2},
+            "overdue_reminders": [
+                {"text": "позвонить маме", "trigger_at": "2026-04-10 10:00:00"},
+            ],
+        })
+        # Both lines render
+        assert "Просроченные напоминания: 3" in result
+        assert "Напоминания до конца дня: 2" in result
+        # But reminder text is NOT inlined — that lives in reminders_text
+        assert "позвонить маме" not in result
+
+    def test_pending_goals_without_list_falls_back_to_count(self):
+        """Defensive: if counts > 0 but list is empty (shouldn't happen
+        normally — DB inconsistency or limit_per_section=0), we still
+        render the count alone instead of breaking."""
+        result = BriefingGenerator._format_open_loops({
+            "counts": {"pending_goals": 5},
+            "pending_goals": [],
+        })
+        assert "Незакрытые цели на сегодня: 5" in result
+        # No "—" trailer when no list to source the title from
+        assert "—" not in result
+
+
 class TestFormatReminderLine:
     """_format_reminder_line surfaces trigger_at so Claude can sequence
     the day correctly. Pre-consolidation the briefing dropped the time,
