@@ -705,6 +705,35 @@ class TestDecisions:
         assert tmp_db.resolve_decision_by_hint("", "outcome") is None
         assert tmp_db.resolve_decision_by_hint("   ", "outcome") is None
 
+    def test_get_past_decisions_cyrillic_case_insensitive(self, tmp_db: Database):
+        """get_past_decisions surfaces 'similar past' on track_decision —
+        used to silently miss case-mismatched Cyrillic keywords because
+        of SQLite's ASCII-only native LIKE."""
+        tmp_db.create_decision("Купить велосипед")
+        tmp_db.resolve_decision_by_hint("Купить", "купил")
+
+        # "купить" lowercased — pre-fix this missed "Купить велосипед"
+        results = tmp_db.get_past_decisions("купить")
+        assert len(results) == 1
+        assert "Купить велосипед" == results[0]["description"]
+
+    def test_get_past_decisions_matches_context_field(self, tmp_db: Database):
+        """Context (not just description) goes through pylower too —
+        match works for either column."""
+        tmp_db.create_decision("test", context="Бюджет 50к")
+        tmp_db.resolve_decision_by_hint("test", "ok")
+
+        results = tmp_db.get_past_decisions("бюджет")
+        assert len(results) == 1
+
+    def test_get_past_decisions_empty_query_returns_recent(self, tmp_db: Database):
+        """Empty query is the documented fallback for "no specific
+        keyword" — must return resolved decisions, not nothing."""
+        tmp_db.create_decision("any decision")
+        tmp_db.resolve_decision_by_hint("any", "ok")
+        results = tmp_db.get_past_decisions("")
+        assert len(results) == 1
+
     def test_get_pending_followups(self, tmp_db: Database):
         # Create decision with follow-up in the past
         tmp_db.create_decision("Old choice", follow_up_days=0)

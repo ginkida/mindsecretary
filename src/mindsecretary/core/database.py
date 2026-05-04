@@ -1366,10 +1366,22 @@ class Database:
         return items[:limit]
 
     def get_past_decisions(self, query: str = "", limit: int = 5) -> list[dict]:
-        escaped = self._escape_like(query)
+        """Find resolved decisions similar to `query`. Empty query returns
+        the N most-recent resolved decisions (fallback used when caller
+        has no specific keyword).
+
+        pylower(description/context) — SQLite native LIKE is case-sensitive
+        for non-ASCII, so a "купить" hint missed "Купить велосипед" pre-
+        fix. Used by track_decision's "Similar past decisions" output —
+        the surface where Claude tells the user "ты решал похожее
+        раньше — получилось X". Wrong-case misses there read as bot
+        memory loss.
+        """
+        escaped = self._escape_like(query.lower())
         rows = self.db.execute(
             "SELECT * FROM decisions WHERE status = 'resolved' "
-            "AND (description LIKE ? ESCAPE '\\' OR context LIKE ? ESCAPE '\\') "
+            "AND (pylower(description) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(context, '')) LIKE ? ESCAPE '\\') "
             "ORDER BY created_at DESC LIMIT ?",
             (f"%{escaped}%", f"%{escaped}%", limit),
         ).fetchall()
