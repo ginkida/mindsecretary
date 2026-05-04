@@ -274,6 +274,49 @@ class TestMorningRemindersIncludeTime:
         assert "позвонить маме" in prompt
 
 
+class TestDiaryPeopleDeclensions:
+    """Diary's people_today set used a plain lowercase substring match
+    that missed every Russian declension. Fix: stem-based heuristic
+    catches Маша/Маше/Машей/Машу. Test exercises the actual
+    generate_diary path (not the helper directly) to lock in the
+    integration."""
+
+    @pytest.mark.asyncio
+    async def test_declined_form_now_detected(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        bg.memory.search = AsyncMock(return_value=[])
+        # Contact in nominative
+        db.upsert_contact("Маша", relation="друг")
+        # User mentions her in instrumental case (with X = Машей)
+        db.log_interaction("in", "text", "сегодня встретился с Машей в кафе")
+        db.log_interaction("in", "text", "обсудили проект")
+        db.log_interaction("in", "text", "ушёл к 18")
+
+        await bg.generate_diary()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        # The diary prompt's "people" slot must now include Маша even
+        # though the message used "Машей". Pre-fix the slot read "Никого".
+        assert "Маша" in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_mention_means_no_addition(self, tmp_path):
+        """Sanity: contacts that aren't mentioned anywhere shouldn't
+        leak into people_today via accidental stem collision."""
+        bg, db, llm = _make_briefing(tmp_path)
+        bg.memory.search = AsyncMock(return_value=[])
+        db.upsert_contact("Олег", relation="коллега")
+        # Three messages, none about Олег
+        db.log_interaction("in", "text", "купил хлеб")
+        db.log_interaction("in", "text", "погулял с собакой")
+        db.log_interaction("in", "text", "посмотрел кино")
+
+        await bg.generate_diary()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        assert "Олег" not in prompt
+
+
 class TestDiaryInboundGuard:
     """generate_diary used to fire whenever total interactions >= 3, but
     proactive notifications (reminders, briefings, weather alerts) inflate

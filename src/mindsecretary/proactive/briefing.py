@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from ..core import DAYS_RU, fmt_local_time, pluralize_ru, tz_now
+from ..core import DAYS_RU, fmt_local_time, is_person_in_title, pluralize_ru, tz_now
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -401,13 +401,20 @@ class BriefingGenerator:
         # Mood analysis
         mood = analyze_mood(interactions)
 
-        # People mentioned today
+        # People mentioned today. Plain substring match on lower-cased
+        # text used to fail every Russian declension — "Маша" not in
+        # "встреча с Машей" because the nominative -а and the instrumental
+        # -ей diverge at the 4th char. Most casual mentions are declined,
+        # so the diary undercounted dramatically. is_person_in_title's
+        # 3-char-stem heuristic catches "Маш"-prefixed forms (Маше /
+        # Машей / Машу / Маши) at the cost of rare false positives on
+        # unrelated short stems — net win for diary fidelity.
         contacts = self.db.get_contacts("")
         people_today = set()
         for i in interactions:
-            content = (i.get("content") or "").lower()
+            content = i.get("content") or ""
             for c in contacts:
-                if c["name"].lower() in content:
+                if is_person_in_title(c["name"], content):
                     people_today.add(c["name"])
 
         # Events
