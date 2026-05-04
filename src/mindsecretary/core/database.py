@@ -1619,6 +1619,13 @@ class Database:
         counts["memories"] = cur.rowcount
 
         self.db.commit()
+        # After large DELETEs the query planner's row-count stats are
+        # stale. PRAGMA optimize re-runs ANALYZE for tables that crossed
+        # the staleness threshold. Cheap; idempotent; non-fatal.
+        try:
+            self.db.execute("PRAGMA optimize")
+        except sqlite3.Error as e:
+            logger.warning("PRAGMA optimize after cleanup failed: %s", type(e).__name__)
         return counts
 
     def get_stats(self) -> dict:
@@ -1784,4 +1791,14 @@ class Database:
         return cur.rowcount
 
     def close(self):
+        # PRAGMA optimize is the official SQLite recommendation pre-close:
+        # it applies any deferred ANALYZE work for tables that have changed
+        # significantly since the last optimize, refreshing the query
+        # planner's stats. Cheap (often a no-op), idempotent, and avoids
+        # silent slow-down over time as the DB grows. Try/except so a
+        # transient pragma failure can't block shutdown.
+        try:
+            self.db.execute("PRAGMA optimize")
+        except sqlite3.Error as e:
+            logger.warning("PRAGMA optimize on close failed: %s", type(e).__name__)
         self.db.close()

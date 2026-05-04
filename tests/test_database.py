@@ -924,6 +924,38 @@ class TestOpenLoops:
         assert loops["counts"]["due_decisions"] >= 1
 
 
+class TestPragmaOptimize:
+    """PRAGMA optimize is the SQLite-recommended pre-close incantation
+    that refreshes query-planner stats. It's a no-op or a tiny ANALYZE
+    depending on table churn — we don't assert behavior beyond non-
+    crashing, but we DO want to ensure it's called both on close and
+    after cleanup, as that's the maintenance contract."""
+
+    def test_close_runs_optimize(self, tmp_path):
+        # set_trace_callback hooks every SQL the connection executes, so
+        # we can observe close()'s internal PRAGMA without monkey-patching
+        # sqlite3.Connection.execute (which is read-only).
+        db = Database(tmp_path / "opt.db")
+        traced: list[str] = []
+        db.db.set_trace_callback(lambda sql: traced.append(sql))
+
+        db.close()
+
+        assert any("PRAGMA optimize" in s for s in traced)
+
+    def test_cleanup_runs_optimize(self, tmp_db: Database):
+        traced: list[str] = []
+        tmp_db.db.set_trace_callback(lambda sql: traced.append(sql))
+
+        tmp_db.cleanup_old_data(days=90)
+
+        # Detach the trace callback before the test fixture tears down,
+        # otherwise teardown rows would also accumulate.
+        tmp_db.db.set_trace_callback(None)
+
+        assert any("PRAGMA optimize" in s for s in traced)
+
+
 class TestCleanup:
     def test_cleanup_removes_old_rows(self, tmp_db: Database, raw_conn):
         old_ts = "2025-01-01 00:00:00"
