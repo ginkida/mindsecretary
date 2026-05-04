@@ -156,6 +156,39 @@ class TestFormatEventLine:
         })
         assert "??:??" in line
 
+    def test_renders_same_day_end_at_as_range(self):
+        """Mirror tools._handle_get_events: same-day end_at shown as
+        'HH:MM-HH:MM' so Claude can reason about duration during the
+        briefing."""
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 14:00:00",
+            "end_at": "2026-04-15 16:00:00",
+            "title": "встреча",
+        })
+        assert "14:00-16:00 встреча" in line
+
+    def test_omits_cross_day_end_at(self):
+        """Cross-day end skipped — the dash would hide the day boundary
+        and read wrong ('22:00-06:00' looks 8h within one day, not an
+        overnight span)."""
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 22:00:00",
+            "end_at": "2026-04-16 06:00:00",
+            "title": "ночная смена",
+        })
+        # No range
+        assert "-06:00" not in line
+        assert "22:00 ночная смена" in line
+
+    def test_end_at_missing_renders_start_only(self):
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 09:00:00",
+            "end_at": None,
+            "title": "стандап",
+        })
+        assert "09:00 стандап" in line
+        assert "-" not in line.replace("- 09", "X")  # the dash from list bullet only
+
 
 class TestFormatOpenLoops:
     """_format_open_loops feeds the briefing's 'Хвосты и риски' slot.

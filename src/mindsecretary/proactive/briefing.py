@@ -44,19 +44,30 @@ class BriefingGenerator:
 
     @staticmethod
     def _format_event_line(event: dict) -> str:
-        """Render one event for briefing prompts: 'HH:MM Title (с Person, где: Loc)'.
+        """Render one event for briefing prompts: 'HH:MM-HH:MM Title (с Person, где: Loc)'.
 
         Consolidates three previously inconsistent inline formats (morning
         vs evening's today-events vs evening's tomorrow-events). Evening
         used to drop time entirely. Each user-origin field passes through
         sanitize_for_context — events end up in system prompts and an
         event title is the same channel a malicious forward could reach.
+
+        End time renders as "HH:MM-HH:MM" only when end_at is on the
+        same day as start_at; cross-day end is dropped to avoid the
+        dash hiding a day boundary. Mirrors tools._handle_get_events
+        for consistency between LLM tool output and briefing context.
         """
         s = sanitize_for_context
         start = event.get("start_at") or ""
         time_str = start[11:16] if len(start) >= 16 else "??:??"
+        end_at = event.get("end_at") or ""
+        end_part = ""
+        # Same-day end → render as range. Cross-day or missing → start only.
+        if (end_at and len(end_at) >= 16 and len(start) >= 10
+                and end_at[:10] == start[:10]):
+            end_part = f"-{end_at[11:16]}"
         title = s(event.get("title") or "", 200)
-        line = f"- {time_str} {title}"
+        line = f"- {time_str}{end_part} {title}"
         extras: list[str] = []
         person = event.get("related_person")
         if person:
