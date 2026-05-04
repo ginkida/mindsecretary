@@ -745,6 +745,73 @@ class TestRescheduleReminderHandler:
         assert "new_trigger_at" in result
 
 
+class TestSearchEventsHandler:
+    """ToolExecutor handler for search_events. Lets Claude answer 'когда
+    встреча с Машей?' without first guessing a date range for get_events."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("search_events", {"query": "nothing"})
+        assert "Не нашёл" in result and "nothing" in result
+
+    @pytest.mark.asyncio
+    async def test_finds_match_with_full_datetime(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("ужин с Машей", future, location="кафе Пушкин")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("search_events", {"query": "Маш"})
+
+        assert "ужин с Машей" in result
+        # Full date+time prefix (vs HH:MM-only in get_events) — search
+        # results may be days out, hiding the day would be confusing.
+        assert future[:16] in result
+        # Location surfaces
+        assert "кафе Пушкин" in result
+
+    @pytest.mark.asyncio
+    async def test_orders_results_by_soonest_first(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        for offset in (10, 1, 5):
+            ts = (now + timedelta(days=offset)).strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.create_event(f"встреча {offset}", ts)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("search_events", {"query": "встреча"})
+        lines = result.split("\n")
+        # Soonest match (offset=1) on first line, latest (offset=10) last
+        assert "встреча 1" in lines[0]
+        assert "встреча 10" in lines[-1]
+
+    @pytest.mark.asyncio
+    async def test_limit_clamped(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        for i in range(8):
+            ts = (now + timedelta(days=i + 1)).strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.create_event(f"yoga {i}", ts)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("search_events", {"query": "yoga", "limit": 3})
+        assert result.count("\n") == 2  # 3 lines = 2 newlines
+
+
 class TestGetDecisionsHandler:
     """ToolExecutor handler for get_decisions. The LLM had track_decision
     + resolve_decision but the active list was only visible via

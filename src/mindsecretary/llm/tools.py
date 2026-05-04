@@ -176,6 +176,37 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "search_events",
+        "description": (
+            "Найти будущие события по подстроке — title / description / "
+            "location / related_person, case-insensitive, Cyrillic-aware. "
+            "Вызывай когда {name} спрашивает «когда у меня встреча с "
+            "Машей?», «есть ли что в зале на этой неделе?», «куда мы "
+            "идём с Олегом?». Работает БЕЗ необходимости угадывать "
+            "диапазон дат — get_events нужен когда уже известны даты, "
+            "search_events когда известно ключевое слово."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Подстрока для поиска."},
+                "days_ahead": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Окно вперёд в днях (по умолчанию 30).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Сколько матчей (по умолчанию 10).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "cancel_event",
         "description": (
             "Удалить будущее событие из календаря. Вызывай когда "
@@ -670,6 +701,13 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "get_decisions":
         clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
 
+    if name == "search_events":
+        if clean.get("days_ahead") is not None:
+            clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
+        else:
+            clean["days_ahead"] = 30
+        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+
     if name == "set_ephemeral_state":
         key = clean.get("key", "")
         if key not in VALID_EPHEMERAL_KEYS:
@@ -924,6 +962,30 @@ class ToolExecutor:
         for e in events:
             time_str = e["start_at"][11:16] if len(e["start_at"]) > 10 else ""
             lines.append(f"- {time_str} {e['title']}")
+        return "\n".join(lines)
+
+    def _handle_search_events(self, query: str, days_ahead: int = 30,
+                              limit: int = 10) -> str:
+        rows = self.db.search_events(query, days_ahead=days_ahead, limit=limit)
+        if not rows:
+            return f"Не нашёл будущих событий по '{query}' в ближайшие {days_ahead} дн."
+        lines = []
+        for e in rows:
+            # Show full date+time; user often asks about events farther out
+            # than today so HH:MM alone (as in get_events) hides the day.
+            start = (e.get("start_at") or "?")[:16]
+            title = (e.get("title") or "")[:120]
+            line = f"- {start} {title}"
+            extras = []
+            loc = (e.get("location") or "").strip()
+            if loc:
+                extras.append(f"📍 {loc[:80]}")
+            person = (e.get("related_person") or "").strip()
+            if person and person.lower()[:3] not in title.lower():
+                extras.append(f"👤 {person[:80]}")
+            if extras:
+                line += " | " + " ".join(extras)
+            lines.append(line)
         return "\n".join(lines)
 
     def _handle_cancel_event(self, text_hint: str) -> str:

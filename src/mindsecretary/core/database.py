@@ -468,6 +468,41 @@ class Database:
         self.db.commit()
         return row
 
+    def search_events(self, query: str, days_ahead: int = 30,
+                      limit: int = 10) -> list[dict]:
+        """LIKE-based text search over upcoming events. Matches title,
+        description, location, and related_person (case-insensitive,
+        Cyrillic-aware via pylower). Future events only — past events
+        are noise for the typical 'когда у меня встреча с Машей?'
+        question, and a confirmed past meeting wouldn't help anyway.
+
+        Returns rows ordered by start_at ASC so soonest matches surface
+        first. Empty query returns []. The 30-day default covers the
+        usual planning horizon without dredging up year-old recurring
+        slots that happen to share a keyword.
+        """
+        if not query or not query.strip():
+            return []
+        if days_ahead <= 0 or limit <= 0:
+            return []
+        escaped = self._escape_like(query.strip().lower())
+        like = f"%{escaped}%"
+        now_local = self.local_now_naive()
+        threshold = now_local + timedelta(days=days_ahead)
+        rows = self.db.execute(
+            "SELECT * FROM events "
+            "WHERE start_at > ? AND start_at <= ? "
+            "AND (pylower(title) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(location, '')) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(related_person, '')) LIKE ? ESCAPE '\\') "
+            "ORDER BY start_at LIMIT ?",
+            (now_local.strftime(self._SQL_TS_FMT),
+             threshold.strftime(self._SQL_TS_FMT),
+             like, like, like, like, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_events_to_alert(self, lead_minutes: int) -> list[dict]:
         """Future events starting within `lead_minutes` that haven't been
         alerted yet. Used by the scheduler's event_alert job so the user

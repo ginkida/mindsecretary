@@ -164,6 +164,69 @@ class TestEvents:
         assert tmp_db.reschedule_event_by_hint("встреча", "") is None
         assert tmp_db.reschedule_event_by_hint("встреча", "   ") is None
 
+    def test_search_events_finds_future_match(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        soon = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("ужин с Машей", soon, location="кафе Пушкин")
+        rows = tmp_db.search_events("кафе")
+        assert len(rows) == 1
+        assert rows[0]["title"] == "ужин с Машей"
+
+    def test_search_events_excludes_past(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        past = (now - timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("прошлый Маша", past)
+        # Past event matches the substring but must not surface — same
+        # rationale as cancel/reschedule, asking 'когда встреча с Машей?'
+        # for an event already past is meaningless.
+        assert tmp_db.search_events("Маш") == []
+
+    def test_search_events_orders_by_start_at(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        for offset in (10, 1, 5):
+            ts = (now + timedelta(days=offset)).strftime(SQL_TS_FMT)
+            tmp_db.create_event(f"встреча {offset}", ts)
+        rows = tmp_db.search_events("встреча")
+        # ASC: 1, 5, 10
+        assert [r["title"] for r in rows] == ["встреча 1", "встреча 5", "встреча 10"]
+
+    def test_search_events_empty_query_returns_empty(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("anything", future)
+        assert tmp_db.search_events("") == []
+        assert tmp_db.search_events("   ") == []
+
+    def test_search_events_matches_related_person(self, tmp_db: Database):
+        """Searcher must look at related_person too — common case is
+        'когда встреча с Олегом?' where the title might just be 'обед'
+        and Олег is in related_person."""
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("обед", future, related_person="Олег")
+        rows = tmp_db.search_events("Олег")
+        assert len(rows) == 1
+        assert rows[0]["title"] == "обед"
+
+    def test_search_events_respects_days_ahead(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        in_5 = (now + timedelta(days=5)).strftime(SQL_TS_FMT)
+        in_60 = (now + timedelta(days=60)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("ближний Маш", in_5)
+        tmp_db.create_event("дальний Маш", in_60)
+        rows = tmp_db.search_events("Маш", days_ahead=30)
+        # Only the within-30-days match surfaces
+        assert len(rows) == 1
+        assert rows[0]["title"] == "ближний Маш"
+
+    def test_search_events_respects_limit(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        for i in range(5):
+            ts = (now + timedelta(days=i + 1)).strftime(SQL_TS_FMT)
+            tmp_db.create_event(f"yoga {i}", ts)
+        rows = tmp_db.search_events("yoga", limit=3)
+        assert len(rows) == 3
+
     def test_cancel_event_cyrillic_case_insensitive(self, tmp_db: Database):
         """SQLite's native LOWER() is ASCII-only — must use pylower for
         case-insensitive Cyrillic matching, same as the reminder by-hint."""
