@@ -76,6 +76,37 @@ class TestHabitStats:
         assert stats[0]["week_done"] == 4
         assert stats[0]["week_rate"] == 57  # 4/7 * 100 rounded
 
+    def test_last_done_date_returns_most_recent_done(self, tmp_db: Database):
+        today = tmp_db._now()
+        today_str = today.strftime("%Y-%m-%d")
+        yesterday_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        tmp_db.log_habit("running", done=True, date=yesterday_str)
+        tmp_db.log_habit("running", done=False, date=today_str)
+        stats = tmp_db.get_habit_stats()
+        # Most recent done=True is yesterday — today's "skipped" must not count
+        assert stats[0]["last_done_date"] == yesterday_str
+
+    def test_last_done_date_none_when_never_done(self, tmp_db: Database):
+        today_str = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.log_habit("flossing", done=False, date=today_str)
+        stats = tmp_db.get_habit_stats()
+        assert stats[0]["last_done_date"] is None
+
+    def test_last_done_date_finds_old_log_past_60_day_window(self, tmp_db: Database):
+        """The streak walk LIMITs habit_log to 60 entries — last_done_date
+        uses a separate query so a habit revisited after a long gap still
+        surfaces the prior done date instead of None."""
+        today = tmp_db._now()
+        long_ago = (today - timedelta(days=200)).strftime("%Y-%m-%d")
+        tmp_db.log_habit("piano", done=True, date=long_ago)
+        # Pad a few skips so the walk window doesn't accidentally include
+        # the long_ago entry.
+        for i in range(1, 5):
+            d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            tmp_db.log_habit("piano", done=False, date=d)
+        stats = tmp_db.get_habit_stats()
+        assert stats[0]["last_done_date"] == long_ago
+
 
 class TestRecurringReminders:
     def test_non_recurring_stays_sent(self, tmp_db: Database):

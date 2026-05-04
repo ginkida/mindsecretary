@@ -743,3 +743,56 @@ class TestRescheduleReminderHandler:
             "text_hint": "x", "new_trigger_at": "",
         })
         assert "new_trigger_at" in result
+
+
+class TestGetHabitsHandler:
+    """ToolExecutor handler for get_habits. The LLM had log_habit but no
+    way to read habits back — user asking 'сколько уже бегаю?' got
+    hallucinations. Now the LLM can answer from real data."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_habits", {})
+        assert result == "Привычек пока нет."
+
+    @pytest.mark.asyncio
+    async def test_lists_habits_with_streak_and_last_done(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        today = tmp_db._now()
+        for i in range(3):
+            d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            tmp_db.log_habit("бег", done=True, date=d)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_habits", {})
+
+        assert "бег" in result
+        # streak surfaced — user-facing wording
+        assert "streak 3" in result
+        # last_done_date rendered
+        assert today.strftime("%Y-%m-%d") in result
+        # 7-day completion ratio rendered
+        assert "3/7" in result
+
+    @pytest.mark.asyncio
+    async def test_renders_never_for_skip_only_habit(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        today_str = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.log_habit("медитация", done=False, date=today_str)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_habits", {})
+
+        assert "медитация" in result
+        # When there's never been a done=True, the placeholder is "никогда"
+        # so the LLM doesn't hallucinate a date.
+        assert "последний раз: никогда" in result

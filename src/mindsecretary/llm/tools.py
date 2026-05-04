@@ -343,6 +343,20 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_habits",
+        "description": (
+            "Показать привычки {name} с текущим streak, выполнением за "
+            "последние 7 дней и датой последнего выполнения. Вызывай когда "
+            "пользователь спрашивает про свои привычки: «сколько уже "
+            "бегаю?», «когда последний раз качался?», «какие у меня "
+            "привычки?». Без аргументов возвращает все."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "track_decision",
         "description": (
             "Track a decision the user is making or considering. "
@@ -1028,6 +1042,21 @@ class ToolExecutor:
         result = self.db.log_habit(habit_name, done, date)
         status = "done" if done else "skipped"
         return f"Habit '{habit_name}' {status} for {result['date']}"
+
+    def _handle_get_habits(self) -> str:
+        stats = self.db.get_habit_stats()
+        if not stats:
+            return "Привычек пока нет."
+        lines = []
+        for s in stats:
+            today_mark = "✓ сегодня" if s["logged_today"] else "ещё не сегодня"
+            last = s.get("last_done_date") or "никогда"
+            lines.append(
+                f"- {s['name']}: streak {s['streak']} дн., "
+                f"за 7 дней {s['week_done']}/7 ({s['week_rate']}%), "
+                f"последний раз: {last}, {today_mark}"
+            )
+        return "\n".join(lines)
 
     def _handle_track_decision(self, description: str,
                                context: str | None = None,

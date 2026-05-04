@@ -934,12 +934,24 @@ class Database:
                 (h["id"], week_start),
             ).fetchone()
             week_done = week_logs["cnt"]
+            # Most recent date with done=1 — answers "когда последний раз?"
+            # without the LLM having to query habit_log directly. Separate
+            # query (vs. scanning the 60-entry slice above) so a habit that
+            # was active years ago and revisited still surfaces the right
+            # date instead of None.
+            last = self.db.execute(
+                "SELECT date FROM habit_log WHERE habit_id = ? AND done = 1 "
+                "ORDER BY date DESC LIMIT 1",
+                (h["id"],),
+            ).fetchone()
+            last_done_date = last["date"] if last else None
             results.append({
                 "name": h["name"],
                 "streak": streak,
                 "week_done": week_done,
                 "week_rate": round(week_done / 7 * 100),
                 "logged_today": today_str in done_by_date,
+                "last_done_date": last_done_date,
             })
         return results
 
