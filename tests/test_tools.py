@@ -1699,6 +1699,21 @@ class TestEmptyInputValidation:
         assert "non-empty description" in result
         assert tmp_db.get_pending_decisions() == []
 
+    @pytest.mark.asyncio
+    async def test_save_memory_rejects_empty_content(self, tmp_db):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        memory = MagicMock()
+        memory.save = AsyncMock()
+        te = ToolExecutor(db=tmp_db, memory=memory)
+        result = await te.execute("save_memory", {
+            "content": "  ", "category": "personal", "importance": 5,
+        })
+        assert "non-empty content" in result
+        # Voyage embed never called — no wasted API round trip
+        memory.save.assert_not_awaited()
+
 
 class TestCreateValidation:
     """Defensive empty-validation on create_event / create_reminder so

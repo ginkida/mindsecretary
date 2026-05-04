@@ -950,6 +950,13 @@ class ToolExecutor:
                                   related_person: str | None = None,
                                   related_date: str | None = None,
                                   request_context: dict[str, Any] | None = None) -> str:
+        # Empty content → Voyage embed of "" produces a near-zero vector,
+        # the memory row stores nothing useful, and search would return
+        # the empty row whenever cosine drops to chance. Reject up front
+        # like every other create handler now does.
+        if not content or not content.strip():
+            return "save_memory requires a non-empty content"
+        content = content.strip()
         source_type = (request_context or {}).get("source_type")
         source_ref = (request_context or {}).get("source_ref")
         mid = await self.memory.save(content, category, importance,
