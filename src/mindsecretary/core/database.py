@@ -1223,11 +1223,21 @@ class Database:
 
     def resolve_decision_by_hint(self, description_hint: str, outcome: str,
                                  sentiment: str = "neutral") -> dict | None:
-        """Find the most recent pending decision matching the hint and resolve it."""
-        escaped = self._escape_like(description_hint)
+        """Find the most recent pending decision matching the hint and resolve it.
+
+        pylower(description) — SQLite's native LIKE is case-insensitive for
+        ASCII but CASE-SENSITIVE for non-ASCII. So a decision "Купить
+        велосипед" + LLM hint "купить" silently missed pre-fix, and Claude
+        told the user "no match" when the row was right there. Mirror of
+        the same fix already in upsert_contact / log_habit / cancel_reminder
+        / cancel_event etc.
+        """
+        if not description_hint or not description_hint.strip():
+            return None
+        escaped = self._escape_like(description_hint.strip().lower())
         row = self.db.execute(
             "SELECT id, description FROM decisions WHERE status = 'pending' "
-            "AND description LIKE ? ESCAPE '\\' "
+            "AND pylower(description) LIKE ? ESCAPE '\\' "
             "ORDER BY created_at DESC LIMIT 1",
             (f"%{escaped}%",),
         ).fetchone()

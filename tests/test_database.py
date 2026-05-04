@@ -690,6 +690,21 @@ class TestDecisions:
     def test_resolve_nonexistent_returns_none(self, tmp_db: Database):
         assert tmp_db.resolve_decision_by_hint("nonexistent", "nope") is None
 
+    def test_resolve_decision_cyrillic_case_insensitive(self, tmp_db: Database):
+        """Regression: native LIKE is case-sensitive for non-ASCII so
+        "Купить велосипед" + hint "купить" silently missed. pylower
+        on the column side mirrors the fix already in cancel_reminder /
+        cancel_event / upsert_contact / log_habit."""
+        tmp_db.create_decision("Купить велосипед")
+        resolved = tmp_db.resolve_decision_by_hint("купить", "купил")
+        assert resolved is not None
+        assert "Купить велосипед" == resolved["description"]
+
+    def test_resolve_decision_empty_hint_returns_none(self, tmp_db: Database):
+        tmp_db.create_decision("any decision")
+        assert tmp_db.resolve_decision_by_hint("", "outcome") is None
+        assert tmp_db.resolve_decision_by_hint("   ", "outcome") is None
+
     def test_get_pending_followups(self, tmp_db: Database):
         # Create decision with follow-up in the past
         tmp_db.create_decision("Old choice", follow_up_days=0)
