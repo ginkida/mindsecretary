@@ -1376,6 +1376,16 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_diary_entry_by_date(self, date: str) -> dict | None:
+        """Single diary entry for an exact YYYY-MM-DD. Returns None when
+        the user didn't generate a diary that day (no inbound traffic,
+        or the day predates the bot)."""
+        row = self.db.execute(
+            "SELECT * FROM diary_entries WHERE date = ?",
+            (date,),
+        ).fetchone()
+        return dict(row) if row else None
+
     # --- Daily Goals ---
 
     def create_daily_goal(self, title: str, description: str | None = None,

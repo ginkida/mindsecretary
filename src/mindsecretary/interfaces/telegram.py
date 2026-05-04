@@ -274,14 +274,51 @@ class TelegramBot:
         except Exception:
             await update.message.reply_text(text)
 
+    _DIARY_MAX_ENTRIES = 30
+
     async def _handle_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
-        entries = self.brain.db.get_diary_entries(days=7)
+        # Parse optional arg:
+        #   /diary               → last 3 from 7-day window (legacy default)
+        #   /diary <N>           → last N entries (capped at _DIARY_MAX_ENTRIES)
+        #   /diary YYYY-MM-DD    → entry for exactly that date
+        arg = (context.args[0] if context.args else "").strip()
+        entries: list[dict] = []
+        limit = 3
+
+        if arg:
+            if len(arg) == 10 and arg.count("-") == 2:
+                # Looks like a date — try to fetch a single entry
+                entry = self.brain.db.get_diary_entry_by_date(arg)
+                if not entry:
+                    await update.message.reply_text(
+                        f"Нет записи за {arg}.",
+                    )
+                    return
+                entries = [entry]
+                limit = 1
+            else:
+                try:
+                    n = int(arg)
+                except ValueError:
+                    await update.message.reply_text(
+                        "Использование:\n"
+                        "  /diary — последние 3\n"
+                        "  /diary 7 — последние 7 записей\n"
+                        "  /diary 2026-04-15 — запись за дату",
+                    )
+                    return
+                limit = max(1, min(self._DIARY_MAX_ENTRIES, n))
+                # Pull a wider window to make sure we have enough rows.
+                entries = self.brain.db.get_diary_entries(days=limit * 3)
+        else:
+            entries = self.brain.db.get_diary_entries(days=7)
+
         if not entries:
             await update.message.reply_text("Записей в дневнике пока нет.")
             return
-        for e in entries[:3]:
+        for e in entries[:limit]:
             mood = f" | {e['mood']}" if e.get("mood") else ""
             people = f"\n👤 {e['people']}" if e.get("people") else ""
             text = f"📖 *{e['date']}*{mood}{people}\n\n{e['content']}"

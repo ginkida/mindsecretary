@@ -93,6 +93,99 @@ class TestTelegramHandlers:
         brain.memory.search.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_diary_no_args_shows_last_3(self):
+        """Default behavior preserved: /diary with no args shows up to 3
+        from the 7-day window."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.get_diary_entries = MagicMock(return_value=[
+            {"date": "2026-04-15", "content": "day 1", "mood": None, "people": None},
+            {"date": "2026-04-14", "content": "day 2", "mood": None, "people": None},
+            {"date": "2026-04-13", "content": "day 3", "mood": None, "people": None},
+            {"date": "2026-04-12", "content": "day 4", "mood": None, "people": None},
+        ])
+
+        await bot._handle_diary(update, context)
+
+        # Wide window query
+        brain.db.get_diary_entries.assert_called_once_with(days=7)
+        # Only 3 entries posted
+        assert update.message.reply_text.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_diary_numeric_arg_shows_n_entries(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["5"])
+        brain.db.get_diary_entries = MagicMock(return_value=[
+            {"date": f"2026-04-{15-i:02d}", "content": f"day {i}",
+             "mood": None, "people": None}
+            for i in range(7)
+        ])
+
+        await bot._handle_diary(update, context)
+
+        # Limit=5 → 5 messages posted
+        assert update.message.reply_text.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_diary_numeric_arg_capped(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["999"])
+        brain.db.get_diary_entries = MagicMock(return_value=[])
+
+        await bot._handle_diary(update, context)
+
+        # 999 capped at _DIARY_MAX_ENTRIES (30) — but no entries → friendly msg
+        update.message.reply_text.assert_awaited_once_with("Записей в дневнике пока нет.")
+
+    @pytest.mark.asyncio
+    async def test_diary_date_arg_renders_specific_entry(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["2026-04-15"])
+        brain.db.get_diary_entry_by_date = MagicMock(return_value={
+            "date": "2026-04-15", "content": "specific day",
+            "mood": "positive", "people": "Маша",
+        })
+
+        await bot._handle_diary(update, context)
+
+        # Single specific entry — one reply
+        assert update.message.reply_text.call_count == 1
+        # Date-getter routed (not the range query)
+        brain.db.get_diary_entry_by_date.assert_called_once_with("2026-04-15")
+
+    @pytest.mark.asyncio
+    async def test_diary_date_arg_missing_entry(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["2024-01-01"])
+        brain.db.get_diary_entry_by_date = MagicMock(return_value=None)
+
+        await bot._handle_diary(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        body = update.message.reply_text.await_args.args[0]
+        assert "Нет записи за 2024-01-01" in body
+
+    @pytest.mark.asyncio
+    async def test_diary_invalid_arg_shows_usage(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["garbage"])
+
+        await bot._handle_diary(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        body = update.message.reply_text.await_args.args[0]
+        assert "Использование" in body
+        assert "/diary 7" in body
+        assert "/diary 2026-" in body
+
+    @pytest.mark.asyncio
     async def test_memory_is_rate_limited(self):
         bot, brain = _make_bot()
         update = _make_update()
