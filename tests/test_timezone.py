@@ -259,3 +259,29 @@ def test_smoke_regressions(tmp_path: Path):
     # (non-UTC dev box). Either form is valid.
     sql = db._local_date_sql("timestamp")
     assert sql == "date(timestamp)" or sql.startswith("date(timestamp, '")
+
+
+class TestProfileTimezoneValidation:
+    """Profile.load fails fast on an invalid timezone string. Pre-fix the
+    bot would start with garbage TZ, then every tz_now() call at runtime
+    would raise ZoneInfoNotFoundError — briefings flipped to fallbacks,
+    schedule cron offset went haywire, and there was no clear pointer
+    to the misconfigured profile field."""
+
+    def test_valid_timezone_loads(self, tmp_path: Path, monkeypatch):
+        from mindsecretary.core.config import Profile
+        monkeypatch.setenv("PROFILE_NAME", "Test")
+        monkeypatch.setenv("PROFILE_TIMEZONE", "Asia/Almaty")
+        profile = Profile.load(tmp_path)
+        assert profile.timezone == "Asia/Almaty"
+
+    def test_invalid_timezone_raises_clear_error(self, tmp_path: Path, monkeypatch):
+        from mindsecretary.core.config import Profile
+        monkeypatch.setenv("PROFILE_NAME", "Test")
+        monkeypatch.setenv("PROFILE_TIMEZONE", "Bogus/Invalid")
+        with pytest.raises(ValueError) as exc:
+            Profile.load(tmp_path)
+        msg = str(exc.value)
+        assert "Bogus/Invalid" in msg
+        # Pointer to the IANA list so the user knows what to fix
+        assert "IANA" in msg

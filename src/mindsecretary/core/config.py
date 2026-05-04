@@ -140,16 +140,34 @@ class Profile:
 
     @classmethod
     def load(cls, root: Path) -> Profile:
-        """Load profile: env vars take priority, then YAML fallback."""
-        profile = cls.from_env()
-        if profile:
-            return profile
-        yaml_path = root / "config" / "profile.yaml"
-        if yaml_path.exists():
-            return cls.from_yaml(yaml_path)
-        raise FileNotFoundError(
-            "Set PROFILE_NAME env var or create config/profile.yaml"
+        """Load profile: env vars take priority, then YAML fallback.
+
+        Validates profile.timezone via ZoneInfo before returning — pre-fix
+        an invalid value (typo, removed-from-tzdata) silently let the bot
+        start, then every tz_now() call raised at runtime, briefings
+        flipped to fallbacks, and the user got a vaguely broken bot with
+        no clear cause. Fail fast with a pointer to the IANA list.
+        """
+        profile = cls.from_env() or (
+            cls.from_yaml(root / "config" / "profile.yaml")
+            if (root / "config" / "profile.yaml").exists()
+            else None
         )
+        if profile is None:
+            raise FileNotFoundError(
+                "Set PROFILE_NAME env var or create config/profile.yaml"
+            )
+        try:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            ZoneInfo(profile.timezone)
+        except ZoneInfoNotFoundError as e:
+            raise ValueError(
+                f"Invalid profile.timezone: {profile.timezone!r}. "
+                f"Use an IANA timezone name like 'Europe/Moscow' or "
+                f"'Asia/Almaty' (see "
+                f"https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
+            ) from e
+        return profile
 
     def to_yaml_str(self) -> str:
         lines = [
