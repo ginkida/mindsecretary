@@ -196,6 +196,52 @@ class TestSnoozeGate:
         s.send_fn.assert_awaited_once()
 
 
+class TestActionNudgeReminderPlural:
+    """The 'Просрочено N напоминаний' line is the most-prominent count
+    in the action nudge — it reaches the user directly. Pre-fix the
+    hardcoded plural form read wrong for any count != 5+ ("Просрочено 1
+    напоминаний", "Просрочено 2 напоминаний"). Pluralize so the form
+    matches the count."""
+
+    def test_singular_form_for_one(self):
+        s = _make_scheduler([])
+        s.db.get_open_loops = MagicMock(return_value={
+            "counts": {"overdue_reminders": 1},
+            "overdue_reminders": [{"text": "позвонить", "trigger_at": "2099-01-01 10:00:00"}],
+        })
+        # Stub other contributors so the test focuses on the target line
+        s.db.get_pending_decision_followups = MagicMock(return_value=[])
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency",
+                   return_value=[]):
+            nudge = s._build_action_nudge()
+        assert "Просрочено 1 напоминание" in nudge
+        assert "Просрочено 1 напоминаний" not in nudge
+
+    def test_few_form_for_two(self):
+        s = _make_scheduler([])
+        s.db.get_open_loops = MagicMock(return_value={
+            "counts": {"overdue_reminders": 2},
+            "overdue_reminders": [{"text": "позвонить", "trigger_at": "2099-01-01 10:00:00"}],
+        })
+        s.db.get_pending_decision_followups = MagicMock(return_value=[])
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency",
+                   return_value=[]):
+            nudge = s._build_action_nudge()
+        assert "Просрочено 2 напоминания" in nudge
+
+    def test_many_form_for_five(self):
+        s = _make_scheduler([])
+        s.db.get_open_loops = MagicMock(return_value={
+            "counts": {"overdue_reminders": 5},
+            "overdue_reminders": [{"text": "позвонить", "trigger_at": "2099-01-01 10:00:00"}],
+        })
+        s.db.get_pending_decision_followups = MagicMock(return_value=[])
+        with patch("mindsecretary.proactive.scheduler.check_contact_frequency",
+                   return_value=[]):
+            nudge = s._build_action_nudge()
+        assert "Просрочено 5 напоминаний" in nudge
+
+
 class TestActionNudge:
     def test_builds_nudge_from_open_loops(self):
         s = _make_scheduler(["23:00", "07:00"])

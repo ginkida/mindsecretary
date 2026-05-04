@@ -181,8 +181,10 @@ class ProactiveScheduler:
 
         if counts.get("overdue_reminders"):
             first = loops["overdue_reminders"][0]
+            n = counts["overdue_reminders"]
+            word = pluralize_ru(n, ("напоминание", "напоминания", "напоминаний"))
             lines.append(
-                f"Просрочено {counts['overdue_reminders']} напоминаний. "
+                f"Просрочено {n} {word}. "
                 f"Ближайшее: {first['text'][:80]}"
             )
 
