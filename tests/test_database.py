@@ -227,6 +227,91 @@ class TestEvents:
         rows = tmp_db.search_events("yoga", limit=3)
         assert len(rows) == 3
 
+    def test_update_event_changes_title(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("обед", future, related_person="Маша")
+
+        updated = tmp_db.update_event_by_hint("обед", title="ужин")
+        assert updated is not None
+        assert updated["title"] == "ужин"
+        # related_person preserved (not in updates)
+        row = tmp_db.db.execute(
+            "SELECT title, related_person, start_at FROM events"
+        ).fetchone()
+        assert row["title"] == "ужин"
+        assert row["related_person"] == "Маша"
+        # start_at untouched — that's reschedule_event's job
+        assert row["start_at"] == future
+
+    def test_update_event_clears_field_with_empty_string(self, tmp_db: Database):
+        """Empty string is the explicit clear sentinel — distinguishes
+        'don't change' (None) from 'remove this field' (empty)."""
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", future, location="кафе Пушкин")
+
+        updated = tmp_db.update_event_by_hint("встреча", location="")
+        assert updated is not None
+        row = tmp_db.db.execute(
+            "SELECT location FROM events"
+        ).fetchone()
+        # Cleared to NULL (not empty string) so subsequent reads see "no
+        # location" instead of an empty render artifact
+        assert row["location"] is None
+
+    def test_update_event_preserves_alerted_at(self, tmp_db: Database):
+        """Editing title/location must NOT clear alerted_at — that flag is
+        tied to the event's TIME, and we're not touching the time. Pre-fix
+        you'd have re-alerted on every rename. Reschedule clears it
+        because the time IS what changes there."""
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        e = tmp_db.create_event("встреча", future)
+        tmp_db.mark_event_alerted(e["id"])
+
+        tmp_db.update_event_by_hint("встреча", title="новое название")
+        row = tmp_db.db.execute(
+            "SELECT alerted_at FROM events WHERE id = ?", (e["id"],)
+        ).fetchone()
+        assert row["alerted_at"] is not None  # preserved
+
+    def test_update_event_picks_soonest_future(self, tmp_db: Database):
+        """Symmetric with cancel/reschedule — past events are excluded,
+        and among future matches the soonest wins."""
+        now = tmp_db.local_now_naive()
+        soon = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        later = (now + timedelta(days=10)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("ужин в кафе", soon)
+        tmp_db.create_event("ужин с командой", later)
+
+        tmp_db.update_event_by_hint("ужин", location="новое место")
+        rows = tmp_db.db.execute(
+            "SELECT title, location FROM events ORDER BY start_at"
+        ).fetchall()
+        assert rows[0]["location"] == "новое место"  # soonest got it
+        assert rows[1]["location"] is None  # later untouched
+
+    def test_update_event_rejects_empty_title(self, tmp_db: Database):
+        """events.title is NOT NULL — empty title would violate the
+        schema. Reject explicitly with None instead of letting SQLite
+        raise an IntegrityError that's harder to handle upstream."""
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", future)
+        result = tmp_db.update_event_by_hint("встреча", title="   ")
+        assert result is None
+        # Original title preserved
+        row = tmp_db.db.execute("SELECT title FROM events").fetchone()
+        assert row["title"] == "встреча"
+
+    def test_update_event_no_fields_returns_none(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", future)
+        # No fields = nothing to do
+        assert tmp_db.update_event_by_hint("встреча") is None
+
     def test_cancel_event_cyrillic_case_insensitive(self, tmp_db: Database):
         """SQLite's native LOWER() is ASCII-only — must use pylower for
         case-insensitive Cyrillic matching, same as the reminder by-hint."""

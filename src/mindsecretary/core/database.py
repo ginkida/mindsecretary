@@ -452,6 +452,48 @@ class Database:
         ).fetchone()
         return int(row[0])
 
+    def update_event_by_hint(self, hint: str, *,
+                             title: str | None = None,
+                             description: str | None = None,
+                             location: str | None = None,
+                             related_person: str | None = None) -> dict | None:
+        """Edit non-time fields of the most-imminent future event matching
+        `hint`. Pass `None` for fields you don't want to change; passing
+        `""` explicitly clears the field. Returns the updated row dict or
+        None if nothing matched. start_at / end_at are NOT touched here —
+        those go through reschedule_event_by_hint, which also resets
+        alerted_at (correct since the alert is tied to the time, not the
+        title)."""
+        # Empty-string sentinel for explicit clear. None = leave alone.
+        updates: list[tuple[str, str | None]] = []
+        if title is not None:
+            stripped = title.strip()
+            if not stripped:
+                return None  # title can't be empty — schema NOT NULL
+            updates.append(("title", stripped))
+        if description is not None:
+            updates.append(("description", description.strip() or None))
+        if location is not None:
+            updates.append(("location", location.strip() or None))
+        if related_person is not None:
+            updates.append(("related_person", related_person.strip() or None))
+        if not updates:
+            return None  # nothing to do
+        row = self._find_future_event_by_hint(hint)
+        if not row:
+            return None
+        set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+        params = [val for _, val in updates] + [row["id"]]
+        self.db.execute(
+            f"UPDATE events SET {set_clause} WHERE id = ?",
+            tuple(params),
+        )
+        self.db.commit()
+        updated = dict(row)
+        for col, val in updates:
+            updated[col] = val
+        return updated
+
     def cancel_event_by_hint(self, hint: str) -> dict | None:
         """Hard-delete the most-imminent future event matching `hint`.
 

@@ -1158,6 +1158,113 @@ class TestGetDecisionsHandler:
         assert result.count("\n") == 1  # 2 lines = 1 newline
 
 
+class TestUpdateEventHandler:
+    """ToolExecutor handler for update_event. Closes the event-CRUD loop
+    — non-time fields (title, description, location, related_person)
+    have no other path. Symmetric with reschedule_event for time fields."""
+
+    @pytest.mark.asyncio
+    async def test_updates_title(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("обед", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "обед", "title": "ужин с Сашей",
+        })
+
+        assert "Обновлено" in result
+        assert "title" in result
+        assert "ужин с Сашей" in result
+        # DB reflects the change
+        row = tmp_db.db.execute("SELECT title FROM events").fetchone()
+        assert row["title"] == "ужин с Сашей"
+
+    @pytest.mark.asyncio
+    async def test_updates_multiple_fields(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("встреча", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "встреча",
+            "location": "кафе Пушкин",
+            "related_person": "Олег",
+        })
+
+        assert "location" in result and "related_person" in result
+        row = tmp_db.db.execute(
+            "SELECT location, related_person FROM events"
+        ).fetchone()
+        assert row["location"] == "кафе Пушкин"
+        assert row["related_person"] == "Олег"
+
+    @pytest.mark.asyncio
+    async def test_no_fields_returns_error(self, tmp_db):
+        """Calling with only text_hint is a no-op masquerading as a fix
+        — reject explicitly so the LLM doesn't think it succeeded."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("встреча", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {"text_hint": "встреча"})
+        assert "at least one of" in result
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "nothing", "location": "x",
+        })
+        assert "Не нашёл" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_hint_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "  ", "title": "x",
+        })
+        assert "non-empty" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_disclosure(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        for i in range(3):
+            ts = (now + timedelta(days=i + 1)).strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.create_event(f"встреча {i}", ts)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "встреча", "location": "новое место",
+        })
+        assert "Похожих ещё 2" in result
+
+
 class TestCancelEventHandler:
     """ToolExecutor handler for cancel_event. Mirror of cancel_reminder —
     closes the missing CRUD on events. User says 'отмени встречу с Машей'

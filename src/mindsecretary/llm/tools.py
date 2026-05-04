@@ -228,6 +228,28 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "update_event",
+        "description": (
+            "Изменить НЕ-временные поля будущего события "
+            "(title/description/location/related_person). Для переноса "
+            "времени используй reschedule_event. Вызывай когда {name} "
+            "говорит «переименуй встречу», «добавь локацию», «добавь "
+            "Сашу как участника». Поля, которые не передал, не меняются. "
+            "Передай пустую строку чтобы очистить поле."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {"type": "string", "description": "Подстрока из title/description."},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "location": {"type": "string"},
+                "related_person": {"type": "string"},
+            },
+            "required": ["text_hint"],
+        },
+    },
+    {
         "name": "reschedule_event",
         "description": (
             "Перенести будущее событие на новое время. Вызывай когда "
@@ -735,6 +757,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         hint = clean.get("text_hint") or ""
         clean["text_hint"] = str(hint)[:200]
 
+    if name == "update_event":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+
     if name == "get_reminders":
         if clean.get("days_ahead") is not None:
             clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
@@ -1076,6 +1102,45 @@ class ToolExecutor:
                 line += " | " + " ".join(extras)
             lines.append(line)
         return "\n".join(lines)
+
+    def _handle_update_event(self, text_hint: str,
+                             title: str | None = None,
+                             description: str | None = None,
+                             location: str | None = None,
+                             related_person: str | None = None) -> str:
+        if not text_hint or not text_hint.strip():
+            return "update_event requires a non-empty text_hint"
+        # At least one field must be specified — otherwise the call is
+        # a no-op masquerading as a fix.
+        if all(v is None for v in (title, description, location, related_person)):
+            return (
+                "update_event requires at least one of: "
+                "title, description, location, related_person"
+            )
+        total = self.db.count_future_events_matching(text_hint)
+        updated = self.db.update_event_by_hint(
+            text_hint, title=title, description=description,
+            location=location, related_person=related_person,
+        )
+        if not updated:
+            return f"Не нашёл будущих событий по '{text_hint[:80]}'"
+        new_title = (updated.get("title") or "")[:120]
+        start = (updated.get("start_at") or "?")[:16]
+        # Brief diff summary so the LLM can echo what changed
+        changed = []
+        if title is not None:
+            changed.append("title")
+        if description is not None:
+            changed.append("description")
+        if location is not None:
+            changed.append("location")
+        if related_person is not None:
+            changed.append("related_person")
+        msg = f"Обновлено [{', '.join(changed)}]: {new_title} ({start})"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно изменить и их."
+        return msg
 
     def _handle_cancel_event(self, text_hint: str) -> str:
         if not text_hint or not text_hint.strip():
