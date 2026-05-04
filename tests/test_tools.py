@@ -1226,6 +1226,56 @@ class TestCompleteDailyGoalAmbiguity:
         assert "No pending goal found" in result
 
 
+class TestTrackDecisionResilience:
+    """track_decision must save the user's intent even if the secondary
+    past-decisions lookup fails. Pre-fix the order was reversed and a
+    DB hiccup on the search would propagate up as 'Error executing
+    track_decision' while the row was never written."""
+
+    @pytest.mark.asyncio
+    async def test_create_runs_even_when_past_search_throws(self, tmp_db, monkeypatch):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Sabotage get_past_decisions
+        original_search = tmp_db.get_past_decisions
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated db hiccup")
+        monkeypatch.setattr(tmp_db, "get_past_decisions", boom)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("track_decision", {
+            "description": "купить велосипед",
+        })
+
+        # Result reflects success, not error
+        assert "Decision tracked" in result
+        assert "купить велосипед" in result
+        # And critically the row IS in the DB
+        rows = tmp_db.db.execute(
+            "SELECT description FROM decisions WHERE status = 'pending'"
+        ).fetchall()
+        assert any(r["description"] == "купить велосипед" for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_past_decisions_appended_when_lookup_succeeds(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Resolve a similar past decision so it surfaces in the lookup
+        tmp_db.create_decision("купить старый велосипед")
+        tmp_db.resolve_decision_by_hint("старый", "купил")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("track_decision", {
+            "description": "купить новый велосипед",
+        })
+
+        assert "Decision tracked" in result
+        assert "Similar past decisions" in result
+        assert "купить старый велосипед" in result
+
+
 class TestResolveDecisionAmbiguity:
     """resolve_decision picks the most-recent match silently when hint
     is ambiguous. Mirror cancel_reminder/cancel_event ambiguity disclosure

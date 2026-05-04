@@ -1509,17 +1509,36 @@ class ToolExecutor:
     def _handle_track_decision(self, description: str,
                                context: str | None = None,
                                follow_up_days: int = 30) -> str:
-        # Check for similar past decisions
-        words = description.split() if description and description.strip() else []
-        past = self.db.get_past_decisions(words[0] if words else "", limit=3)
+        # Save first, search second. Pre-fix the order was reversed and
+        # any failure in get_past_decisions (DB hiccup, weird LIKE input)
+        # would propagate up the execute() wrapper as "Error executing
+        # track_decision" — and the user's intent never made it into the
+        # decisions table. The "similar past decisions" hint is nice but
+        # strictly secondary; capturing what the user said is the
+        # commitment we can't lose.
         decision = self.db.create_decision(description, context, follow_up_days)
 
         result = f"Decision tracked: {description}. Follow-up in {follow_up_days} days."
-        if past:
-            result += "\n\nSimilar past decisions:"
-            for p in past:
-                sentiment = p.get('outcome_sentiment', '?')
-                result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
+
+        # Best-effort similar-decisions lookup. A failure here is logged
+        # and swallowed so the create above still surfaces to the LLM
+        # cleanly. Empty/whitespace description → skip the search since
+        # there's no useful keyword to extract.
+        words = description.split() if description and description.strip() else []
+        if words:
+            try:
+                past = self.db.get_past_decisions(words[0], limit=3)
+            except Exception as e:
+                logger.warning(
+                    "track_decision: past lookup failed (%s) — decision still saved",
+                    type(e).__name__,
+                )
+                past = []
+            if past:
+                result += "\n\nSimilar past decisions:"
+                for p in past:
+                    sentiment = p.get('outcome_sentiment', '?')
+                    result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
         return result
 
     def _handle_get_daily_goals(self, date: str | None = None) -> str:
