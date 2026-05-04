@@ -616,13 +616,16 @@ class ProactiveScheduler:
         try:
             due = self.db.get_pending_decision_followups()
             for d in due:
+                # "Ты решил" misled — these rows are status='pending', the
+                # user explicitly hasn't decided yet. Use "Обдумывал" so
+                # the reflective framing matches the actual state.
                 text = (
                     f"📋 Follow-up по решению:\n"
-                    f"Ты решил: {d['description']}\n"
+                    f"Обдумывал: {d['description']}\n"
                 )
                 if d.get("context"):
                     text += f"Контекст: {d['context'][:200]}\n"
-                text += "\nКак в итоге? Что получилось?"
+                text += "\nК чему пришёл?"
 
                 if await self._send_proactive(text, kind="decision_followup"):
                     self.db.push_decision_followup(d["id"], days=14)

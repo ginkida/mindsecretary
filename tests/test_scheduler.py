@@ -737,3 +737,37 @@ class TestBirthdayAlertFormat:
         assert self._format({"name": "X", "birthday": "2026-02-32"}) == ""
         # Missing dash separator
         assert self._format({"name": "X", "birthday": "20260415"}) == ""
+
+
+class TestDecisionFollowupWording:
+    """Followup proactive used 'Ты решил' for pending decisions — misleading,
+    since by definition these decisions haven't been made yet (status=pending,
+    follow_up_at past). 'Обдумывал' frames the reflection accurately."""
+
+    @pytest.mark.asyncio
+    async def test_followup_text_uses_pending_framing(self):
+        from unittest.mock import AsyncMock, MagicMock
+        s = _make_scheduler([])
+        s.db.get_pending_decision_followups = MagicMock(return_value=[
+            {"id": "abc", "description": "купить велосипед",
+             "context": "бюджет 50к"},
+        ])
+        # Capture the proactive text that would be sent
+        sent: list[str] = []
+        async def fake_send(text, kind=None):
+            sent.append(text)
+            return True
+        s._send_proactive = fake_send
+        s.db.push_decision_followup = MagicMock()
+
+        await s._check_decision_followups()
+
+        assert len(sent) == 1
+        body = sent[0]
+        # New framing
+        assert "Обдумывал" in body
+        # Old misleading framing must NOT appear
+        assert "Ты решил" not in body
+        # Decision content + context surface
+        assert "купить велосипед" in body
+        assert "бюджет 50к" in body
