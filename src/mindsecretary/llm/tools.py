@@ -1322,7 +1322,12 @@ class ToolExecutor:
     def _handle_update_contact(self, name: str, relation: str | None = None,
                                birthday: str | None = None,
                                notes: str | None = None) -> str:
-        contact = self.db.upsert_contact(name, relation, birthday, notes)
+        # Empty name → upsert_contact would create a row with name=""
+        # invisible in /people, /about, and get_contacts (LIKE '%%' matches
+        # but the rendered output is '— (relation)'). Defend at the boundary.
+        if not name or not name.strip():
+            return "update_contact requires a non-empty name"
+        contact = self.db.upsert_contact(name.strip(), relation, birthday, notes)
         return f"Contact updated: {name}"
 
     def _handle_get_contacts(self, query: str) -> str:
@@ -1496,7 +1501,12 @@ class ToolExecutor:
 
     def _handle_log_habit(self, habit_name: str, done: bool,
                           date: str | None = None) -> str:
-        result = self.db.log_habit(habit_name, done, date)
+        # Empty habit_name would store a row in habits with name="" — invisible
+        # in /habits stats and impossible to log against again (the dedup
+        # lookup matches against name). Defend at the boundary.
+        if not habit_name or not habit_name.strip():
+            return "log_habit requires a non-empty habit_name"
+        result = self.db.log_habit(habit_name.strip(), done, date)
         status = "done" if done else "skipped"
         return f"Habit '{habit_name}' {status} for {result['date']}"
 
@@ -1536,6 +1546,12 @@ class ToolExecutor:
     def _handle_track_decision(self, description: str,
                                context: str | None = None,
                                follow_up_days: int = 30) -> str:
+        # Empty description → row in decisions with description="" —
+        # invisible to get_decisions (rendered as "[date]  — context"),
+        # and /loops "due_decisions" shows blank entries. Reject up front.
+        if not description or not description.strip():
+            return "track_decision requires a non-empty description"
+        description = description.strip()
         # Save first, search second. Pre-fix the order was reversed and
         # any failure in get_past_decisions (DB hiccup, weird LIKE input)
         # would propagate up the execute() wrapper as "Error executing
@@ -1597,7 +1613,12 @@ class ToolExecutor:
 
     def _handle_set_daily_goal(self, title: str, description: str | None = None,
                                priority: str = "medium") -> str:
-        goal = self.db.create_daily_goal(title, description, priority)
+        # Empty title → daily_goals row with title="" — /goals output reads
+        # "⬜ (приоритет: medium)" with no actionable label, and
+        # complete_daily_goal_by_hint can't match it back.
+        if not title or not title.strip():
+            return "set_daily_goal requires a non-empty title"
+        goal = self.db.create_daily_goal(title.strip(), description, priority)
         prio_ru = {"high": "высокий", "medium": "средний", "low": "низкий"}.get(priority, priority)
         return f"Goal set: {title} (приоритет: {prio_ru})"
 

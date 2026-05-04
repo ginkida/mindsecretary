@@ -1651,6 +1651,55 @@ class TestUpdateEventHandler:
         assert "Похожих ещё 2" in result
 
 
+class TestEmptyInputValidation:
+    """Defensive empty-input rejection across the remaining create-style
+    handlers. Empty fields would persist broken rows that are hard to
+    recover from later via the by-hint mutators."""
+
+    @pytest.mark.asyncio
+    async def test_update_contact_rejects_empty_name(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_contact", {"name": "  "})
+        assert "non-empty name" in result
+        assert tmp_db.get_contacts("") == []
+
+    @pytest.mark.asyncio
+    async def test_log_habit_rejects_empty_name(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("log_habit", {
+            "habit_name": "   ", "done": True,
+        })
+        assert "non-empty habit_name" in result
+        # No row created
+        assert tmp_db.get_habit_stats() == []
+
+    @pytest.mark.asyncio
+    async def test_set_daily_goal_rejects_empty_title(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("set_daily_goal", {"title": "  "})
+        assert "non-empty title" in result
+        assert tmp_db.get_daily_goals() == []
+
+    @pytest.mark.asyncio
+    async def test_track_decision_rejects_empty_description(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("track_decision", {"description": "   "})
+        assert "non-empty description" in result
+        assert tmp_db.get_pending_decisions() == []
+
+
 class TestCreateValidation:
     """Defensive empty-validation on create_event / create_reminder so
     a stray empty arg from the LLM doesn't store a row that's invisible
