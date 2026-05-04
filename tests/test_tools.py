@@ -1876,6 +1876,55 @@ class TestCreateValidation:
         })
         assert "non-empty trigger_at" in result
 
+    @pytest.mark.asyncio
+    async def test_create_reminder_rejects_unparseable_trigger_at(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_reminder", {
+            "text": "позвонить", "trigger_at": "tomorrow 10am",
+        })
+        assert "invalid trigger_at" in result
+        assert "YYYY-MM-DDTHH:MM" in result
+        # No row created
+        assert tmp_db.get_pending_reminders() == []
+
+    @pytest.mark.asyncio
+    async def test_reschedule_event_rejects_unparseable_new_start(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("встреча", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "встреча", "new_start_at": "next monday",
+        })
+        assert "invalid new_start_at" in result
+        # Original event time unchanged
+        row = tmp_db.db.execute("SELECT start_at FROM events").fetchone()
+        assert row["start_at"] == future
+
+    @pytest.mark.asyncio
+    async def test_reschedule_reminder_rejects_unparseable_trigger(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_reminder("позвонить", "2099-01-15 10:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_reminder", {
+            "text_hint": "позвонить", "new_trigger_at": "ASAP",
+        })
+        assert "invalid new_trigger_at" in result
+        # Reminder unchanged
+        pending = tmp_db.get_pending_reminders()
+        assert pending[0]["trigger_at"] == "2099-01-15 10:00:00"
+
 
 class TestCancelEventHandler:
     """ToolExecutor handler for cancel_event. Mirror of cancel_reminder —

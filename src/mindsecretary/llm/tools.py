@@ -1080,6 +1080,24 @@ class ToolExecutor:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _check_iso_datetime(value: str, tool: str, field: str) -> str | None:
+        """Return an LLM-facing error string if `value` doesn't parse as
+        ISO datetime, else None. Sanitizer attempts the same parse and
+        normalizes on success but silently leaves bad input as-is — this
+        is the boundary check that surfaces the failure to the caller
+        with a format hint, so the row never lands in the DB with
+        garbage that date()/datetime() queries silently skip.
+        """
+        try:
+            datetime.fromisoformat(value.replace(" ", "T"))
+        except (ValueError, TypeError):
+            return (
+                f"{tool}: invalid {field} {value!r} — "
+                f"use YYYY-MM-DDTHH:MM (e.g. 2026-04-15T14:00)"
+            )
+        return None
+
     def _handle_create_event(self, title: str, start_at: str,
                              end_at: str | None = None,
                              location: str | None = None,
@@ -1093,27 +1111,10 @@ class ToolExecutor:
             return "create_event requires a non-empty title"
         if not start_at or not start_at.strip():
             return "create_event requires a non-empty start_at (YYYY-MM-DDTHH:MM)"
-        # Verify start_at parses as ISO datetime. The sanitizer attempts
-        # this and normalizes on success but silently leaves bad input
-        # as-is on failure — pre-fix that meant a row stored with
-        # "tomorrow 14:00" and date(start_at) queries (get_events,
-        # search_events, alerts) all skipping it. Surface the format
-        # error to the LLM so it can retry with a real timestamp.
-        try:
-            datetime.fromisoformat(start_at.replace(" ", "T"))
-        except (ValueError, TypeError):
-            return (
-                f"create_event: invalid start_at {start_at!r} — "
-                f"use YYYY-MM-DDTHH:MM (e.g. 2026-04-15T14:00)"
-            )
-        if end_at:
-            try:
-                datetime.fromisoformat(end_at.replace(" ", "T"))
-            except (ValueError, TypeError):
-                return (
-                    f"create_event: invalid end_at {end_at!r} — "
-                    f"use YYYY-MM-DDTHH:MM (e.g. 2026-04-15T15:00) or omit"
-                )
+        if (err := self._check_iso_datetime(start_at, "create_event", "start_at")):
+            return err
+        if end_at and (err := self._check_iso_datetime(end_at, "create_event", "end_at")):
+            return err
         event = self.db.create_event(title.strip(), start_at, end_at, location,
                                      description, related_person)
         return f"Event created: {title} at {start_at}"
@@ -1262,6 +1263,10 @@ class ToolExecutor:
             return "reschedule_event requires a non-empty text_hint"
         if not new_start_at or not new_start_at.strip():
             return "reschedule_event requires new_start_at"
+        if (err := self._check_iso_datetime(new_start_at, "reschedule_event", "new_start_at")):
+            return err
+        if new_end_at and (err := self._check_iso_datetime(new_end_at, "reschedule_event", "new_end_at")):
+            return err
         total = self.db.count_future_events_matching(text_hint)
         updated = self.db.reschedule_event_by_hint(text_hint, new_start_at, new_end_at)
         if not updated:
@@ -1284,6 +1289,8 @@ class ToolExecutor:
             return "create_reminder requires a non-empty text"
         if not trigger_at or not trigger_at.strip():
             return "create_reminder requires a non-empty trigger_at"
+        if (err := self._check_iso_datetime(trigger_at, "create_reminder", "trigger_at")):
+            return err
         if recurrence and recurrence not in ("daily", "weekly", "monthly"):
             recurrence = None
         self.db.create_reminder(text.strip(), trigger_at, priority, recurrence)
@@ -1296,6 +1303,8 @@ class ToolExecutor:
             return "reschedule_reminder requires a non-empty text_hint"
         if not new_trigger_at or not new_trigger_at.strip():
             return "reschedule_reminder requires new_trigger_at"
+        if (err := self._check_iso_datetime(new_trigger_at, "reschedule_reminder", "new_trigger_at")):
+            return err
         # Count first so we can disclose ambiguity in the response.
         total = self.db.count_pending_reminders_matching(text_hint)
         updated = self.db.reschedule_reminder_by_hint(text_hint, new_trigger_at)
