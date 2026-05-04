@@ -1093,6 +1093,27 @@ class ToolExecutor:
             return "create_event requires a non-empty title"
         if not start_at or not start_at.strip():
             return "create_event requires a non-empty start_at (YYYY-MM-DDTHH:MM)"
+        # Verify start_at parses as ISO datetime. The sanitizer attempts
+        # this and normalizes on success but silently leaves bad input
+        # as-is on failure — pre-fix that meant a row stored with
+        # "tomorrow 14:00" and date(start_at) queries (get_events,
+        # search_events, alerts) all skipping it. Surface the format
+        # error to the LLM so it can retry with a real timestamp.
+        try:
+            datetime.fromisoformat(start_at.replace(" ", "T"))
+        except (ValueError, TypeError):
+            return (
+                f"create_event: invalid start_at {start_at!r} — "
+                f"use YYYY-MM-DDTHH:MM (e.g. 2026-04-15T14:00)"
+            )
+        if end_at:
+            try:
+                datetime.fromisoformat(end_at.replace(" ", "T"))
+            except (ValueError, TypeError):
+                return (
+                    f"create_event: invalid end_at {end_at!r} — "
+                    f"use YYYY-MM-DDTHH:MM (e.g. 2026-04-15T15:00) or omit"
+                )
         event = self.db.create_event(title.strip(), start_at, end_at, location,
                                      description, related_person)
         return f"Event created: {title} at {start_at}"

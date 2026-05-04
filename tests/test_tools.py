@@ -1806,6 +1806,54 @@ class TestCreateValidation:
         assert "non-empty start_at" in result
 
     @pytest.mark.asyncio
+    async def test_create_event_rejects_unparseable_start_at(self, tmp_db):
+        """LLM may emit a relative timestamp ("tomorrow 14:00") instead
+        of ISO. Sanitizer leaves it as-is on parse failure, so without
+        this guard the row stores garbage and date(start_at) queries
+        miss it forever."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча", "start_at": "tomorrow 14:00",
+        })
+        assert "invalid start_at" in result
+        # Format hint included so the LLM knows what to retry with
+        assert "YYYY-MM-DDTHH:MM" in result
+        # No row created
+        rows = tmp_db.db.execute("SELECT * FROM events").fetchall()
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_create_event_rejects_unparseable_end_at(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "end_at": "tomorrow 16:00",  # garbage
+        })
+        assert "invalid end_at" in result
+        rows = tmp_db.db.execute("SELECT * FROM events").fetchall()
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_create_event_accepts_iso_with_seconds(self, tmp_db):
+        """Sanity: full ISO with seconds is accepted by fromisoformat."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00:00",
+        })
+        assert "Event created" in result
+
+    @pytest.mark.asyncio
     async def test_create_reminder_rejects_empty_text(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
