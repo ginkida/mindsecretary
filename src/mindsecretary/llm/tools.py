@@ -723,6 +723,16 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         imp = clean.get("importance", 5)
         clean["importance"] = max(1, min(10, int(imp)))
 
+    if name == "search_memory":
+        # Drop invalid categories instead of letting them through to the SQL
+        # filter — pre-fix, a typo'd or hallucinated category like 'tasks'
+        # would silently restrict the search to zero rows and the LLM would
+        # tell the user "ничего не нашёл" even when the fact existed in the
+        # right category. None falls back to "search across all categories".
+        cat = clean.get("category")
+        if cat is not None and cat not in VALID_CATEGORIES:
+            clean["category"] = None
+
     if name == "get_recent_memories":
         clean["limit"] = max(1, min(10, int(clean.get("limit", 5))))
 

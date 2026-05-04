@@ -55,6 +55,31 @@ class TestSanitizeArgs:
             })
             assert args["category"] == cat
 
+    def test_search_memory_drops_invalid_category(self):
+        """Asymmetric with save_memory: search uses None to mean 'all
+        categories', so invalid input falls back to that instead of
+        defaulting to 'personal' (which would restrict to one category
+        when the LLM clearly wanted broader)."""
+        args = _sanitize_args("search_memory", {
+            "query": "что я знаю",
+            "category": "tasks",  # not a real category
+        })
+        assert args["category"] is None
+
+    def test_search_memory_passes_valid_category(self):
+        for cat in VALID_CATEGORIES:
+            args = _sanitize_args("search_memory", {
+                "query": "x", "category": cat,
+            })
+            assert args["category"] == cat
+
+    def test_search_memory_no_category_unchanged(self):
+        """When the LLM doesn't pass a category at all, the slot stays
+        absent (not coerced to None or any default) so the handler
+        signature default applies."""
+        args = _sanitize_args("search_memory", {"query": "x"})
+        assert "category" not in args
+
     def test_save_memory_importance_clamped(self):
         args = _sanitize_args("save_memory", {
             "content": "x", "category": "work", "importance": 99,
