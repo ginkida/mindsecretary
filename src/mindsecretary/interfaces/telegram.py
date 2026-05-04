@@ -1154,7 +1154,11 @@ class TelegramBot:
         if not await self._require_rate_limit(update):
             return
         text = update.message.text
-        if not text:
+        # Reject empty AND whitespace-only — voice/forward already do this,
+        # but plain text used to slip through. A "   " send would log a
+        # nearly-empty interaction and pay for an LLM round on a message
+        # the user clearly didn't intend.
+        if not text or not text.strip():
             return
         if len(text) > MAX_TEXT_LENGTH:
             text = text[:MAX_TEXT_LENGTH]

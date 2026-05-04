@@ -35,6 +35,31 @@ class TestFixMarkdown:
         assert _fix_markdown(text) == text
 
 
+class TestTextHandlerWhitespaceGuard:
+    """_handle_text used to forward whitespace-only messages to Brain.
+    Voice/forward already strip and skip; text was the inconsistent one.
+    User typing "   " by accident shouldn't trigger an LLM round."""
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_text_skips_brain(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "   \n\t  "
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        # Make brain.process unambiguously NOT called
+        brain.process = AsyncMock()
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_text(update, context)
+
+        brain.process.assert_not_awaited()
+        # No reply either — silent skip matches the "not text" branch
+        update.message.reply_text.assert_not_awaited()
+
+
 class TestPhotoPostDownloadSizeGuard:
     """Pre-fix only photo.file_size was checked, which Telegram doesn't
     always populate. A missing file_size header would skip the guard
