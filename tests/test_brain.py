@@ -557,6 +557,35 @@ class TestSectionEvents:
         result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
         assert result == "Нет событий."
 
+    def test_renders_same_day_end_at_as_range(self):
+        """Mirror iter 52 briefing fix: chat-path system prompt must also
+        show duration when same-day end_at is present, so chat answers
+        match briefing context ("ты с 14 до 16 в кафе")."""
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[
+            {"start_at": "2099-04-15 14:00:00",
+             "end_at": "2099-04-15 16:00:00",
+             "title": "встреча",
+             "related_person": None, "location": None},
+        ])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        assert "14:00-16:00 встреча" in result
+
+    def test_omits_cross_day_end_at(self):
+        brain = _make_brain("UTC")
+        from datetime import datetime
+        brain.db.get_events = MagicMock(return_value=[
+            {"start_at": "2099-04-15 22:00:00",
+             "end_at": "2099-04-16 06:00:00",
+             "title": "ночная смена",
+             "related_person": None, "location": None},
+        ])
+        result = brain._section_events(datetime(2099, 4, 15), sanitize_for_context)
+        # Range NOT rendered for cross-day
+        assert "-06:00" not in result
+        assert "22:00 ночная смена" in result
+
 
 class TestSectionDecisions:
     """Brain._section_decisions feeds the 'Решения в процессе' slot of

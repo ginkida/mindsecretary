@@ -224,14 +224,23 @@ class Brain:
         context — pre-fix only briefing showed location, so chat answers
         to 'где встреча?' missed cafe/office details that were on the
         original create_event call.
+
+        Same-day end_at renders as 'HH:MM-HH:MM' (matches v0.14.60); the
+        cross-day case keeps just the start time so the dash doesn't
+        misread as a same-day span.
         """
         events = self.db.get_events(now.strftime("%Y-%m-%d"))
         lines = []
         for e in events:
             start = e.get("start_at") or ""
             time_str = start[11:16] if len(start) > 10 else "??:??"
+            end_at = e.get("end_at") or ""
+            end_part = ""
+            if (end_at and len(end_at) >= 16 and len(start) >= 10
+                    and end_at[:10] == start[:10]):
+                end_part = f"-{end_at[11:16]}"
             title = s(e.get("title") or "", 200)
-            line = f"- {time_str} {title}"
+            line = f"- {time_str}{end_part} {title}"
             extras: list[str] = []
             person = e.get("related_person")
             if person:
