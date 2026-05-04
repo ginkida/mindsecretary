@@ -1854,6 +1854,40 @@ class TestCreateValidation:
         assert "Event created" in result
 
     @pytest.mark.asyncio
+    async def test_create_event_rejects_end_before_start(self, tmp_db):
+        """Transposed end_at < start_at would render in /events as a
+        nonsense range '14:00-13:00'. Reject up front."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "end_at": "2099-04-15T13:00",
+        })
+        assert "must be after" in result
+        # No row created
+        rows = tmp_db.db.execute("SELECT * FROM events").fetchall()
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_create_event_rejects_end_equal_to_start(self, tmp_db):
+        """Zero-duration events also rejected — same render artifact
+        ('14:00-14:00') and probably an LLM mistake (forgot to advance
+        the end time)."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "end_at": "2099-04-15T14:00",
+        })
+        assert "must be after" in result
+
+    @pytest.mark.asyncio
     async def test_create_reminder_rejects_empty_text(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor

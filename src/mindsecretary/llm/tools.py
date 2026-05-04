@@ -1115,6 +1115,20 @@ class ToolExecutor:
             return err
         if end_at and (err := self._check_iso_datetime(end_at, "create_event", "end_at")):
             return err
+        # If both provided, end_at must be after start_at. Pre-fix a
+        # transposed pair ("с 14:00 до 13:00") was stored as-is and
+        # rendered as a nonsense range in get_events output.
+        if end_at:
+            try:
+                start_dt = datetime.fromisoformat(start_at.replace(" ", "T"))
+                end_dt = datetime.fromisoformat(end_at.replace(" ", "T"))
+                if end_dt <= start_dt:
+                    return (
+                        f"create_event: end_at ({end_at[:16]}) must be after "
+                        f"start_at ({start_at[:16]})"
+                    )
+            except (ValueError, TypeError):
+                pass  # parse failures already caught above
         event = self.db.create_event(title.strip(), start_at, end_at, location,
                                      description, related_person)
         return f"Event created: {title} at {start_at}"
