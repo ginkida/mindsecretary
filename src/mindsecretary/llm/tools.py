@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 _tz_utc = _dt_timezone.utc
 
-from ..core import is_person_in_title, pluralize_ru
+from ..core import is_person_in_title, pluralize_ru, tz_now
 from ..core.database import Database
 from ..core.enums import Priority, Sentiment, Status
 from ..core.memory import Memory
@@ -1497,7 +1497,6 @@ class ToolExecutor:
 
         target_date: str | None = None
         if date:
-            from ..core import tz_now
             try:
                 target = datetime.strptime(date, "%Y-%m-%d").date()
             except (ValueError, TypeError):

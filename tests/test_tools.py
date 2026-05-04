@@ -1498,11 +1498,15 @@ class TestGetWeatherHandler:
         from datetime import datetime
         from mindsecretary.llm.tools import ToolExecutor
 
-        # Pin "today" in the weather TZ via tz_now patch
+        # Pin "today" in the weather TZ via tz_now patch. After v0.14.50
+        # tz_now is imported at the tools module top, so patch the local
+        # binding `mindsecretary.llm.tools.tz_now` rather than the source
+        # `mindsecretary.core.tz_now` — `from X import Y` binds at import,
+        # patching X.Y later won't affect the already-bound local Y.
         with patch(
             "mindsecretary.llm.tools.datetime",
         ) as mock_dt, patch(
-            "mindsecretary.core.tz_now",
+            "mindsecretary.llm.tools.tz_now",
         ) as mock_tz_now:
             mock_dt.strptime = datetime.strptime
             mock_tz_now.return_value = datetime(2026, 4, 15)
@@ -1529,7 +1533,7 @@ class TestGetWeatherHandler:
         from datetime import datetime
         from mindsecretary.llm.tools import ToolExecutor
 
-        with patch("mindsecretary.core.tz_now") as mock_tz_now:
+        with patch("mindsecretary.llm.tools.tz_now") as mock_tz_now:
             mock_tz_now.return_value = datetime(2026, 4, 15)
             weather = self._make_weather_mock()
             te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
@@ -1547,7 +1551,7 @@ class TestGetWeatherHandler:
         from datetime import datetime
         from mindsecretary.llm.tools import ToolExecutor
 
-        with patch("mindsecretary.core.tz_now") as mock_tz_now:
+        with patch("mindsecretary.llm.tools.tz_now") as mock_tz_now:
             mock_tz_now.return_value = datetime(2026, 4, 15)
             weather = self._make_weather_mock()
             te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
