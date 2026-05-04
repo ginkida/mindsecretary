@@ -1036,6 +1036,16 @@ class TelegramBot:
             await update.message.reply_text("Не удалось скачать голосовое.")
             return
 
+        # Post-download size check — same rationale as the photo handler:
+        # voice.file_size can be None on the Telegram side, so the pre-
+        # download guard skips silently. Whisper rejects >25MB anyway, but
+        # a 50MB voice would chew memory before the API call and make the
+        # error message less informative ("STT failed" vs "too big").
+        if len(audio_bytes) > MAX_VOICE_SIZE:
+            del audio_bytes
+            await update.message.reply_text("Слишком большой файл (макс 25 МБ).")
+            return
+
         try:
             transcript = await self.stt.transcribe(audio_bytes)
         except Exception as e:
@@ -1105,6 +1115,16 @@ class TelegramBot:
         except Exception as e:
             logger.error("Photo download failed: %s", type(e).__name__)
             await msg.reply_text("Не удалось скачать фото.")
+            return
+
+        # Post-download size check: pre-fix only photo.file_size was checked,
+        # which Telegram doesn't always populate (`if photo.file_size and …`
+        # silently skips when None). A missing header could let an oversized
+        # photo through, base64-encode at 4/3 the size, and ship it to Claude
+        # — paying for tokens we set the limit to avoid.
+        if len(photo_bytes) > MAX_PHOTO_SIZE:
+            del photo_bytes
+            await msg.reply_text("Фото слишком большое (макс 10 МБ).")
             return
 
         image_b64 = base64.b64encode(photo_bytes).decode("utf-8")

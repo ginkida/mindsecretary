@@ -35,6 +35,46 @@ class TestFixMarkdown:
         assert _fix_markdown(text) == text
 
 
+class TestPhotoPostDownloadSizeGuard:
+    """Pre-fix only photo.file_size was checked, which Telegram doesn't
+    always populate. A missing file_size header would skip the guard
+    and let any size of bytes through to base64+brain. Post-download
+    cap closes that hole."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_post_download_rejected(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.interfaces.telegram import MAX_PHOTO_SIZE
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        # PhotoSize with NO file_size header (Telegram edge case)
+        photo_size = MagicMock()
+        photo_size.file_size = None
+        photo_size.file_id = "abc"
+        update.message.photo = [photo_size]
+        update.message.caption = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+
+        # Simulate Telegram serving a 30MB photo
+        oversized = b"x" * (MAX_PHOTO_SIZE + 100)
+        fake_file = MagicMock()
+        fake_file.download_as_bytearray = AsyncMock(return_value=bytearray(oversized))
+
+        context = SimpleNamespace(
+            args=[],
+            bot=MagicMock(get_file=AsyncMock(return_value=fake_file)),
+        )
+
+        await bot._handle_photo(update, context)
+
+        # User sees the size error
+        update.message.reply_text.assert_any_await("Фото слишком большое (макс 10 МБ).")
+        # Brain NOT called — would have wasted Claude image tokens
+        brain.process.assert_not_called()
+
+
 class TestReplyEmpty:
     """_reply must silently skip empty/whitespace text instead of forwarding
     it to Telegram (which 400s on empty body and triggers the outer
