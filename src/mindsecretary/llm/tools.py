@@ -821,6 +821,14 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         clean["days"] = max(1, min(90, int(clean.get("days", 7))))
         clean["limit"] = max(1, min(30, int(clean.get("limit", 5))))
 
+    if name == "get_weather":
+        # Schema declares max 7 but no min; sanitizer is the safety net.
+        # Open-Meteo rejects forecast_days <= 0 and silently caps high
+        # values, so the cap below 7 is mostly cosmetic. The min=1 floor
+        # is the one that actually prevents an API error.
+        if clean.get("days") is not None:
+            clean["days"] = max(1, min(7, int(clean["days"])))
+
     if name == "set_ephemeral_state":
         key = clean.get("key", "")
         if key not in VALID_EPHEMERAL_KEYS:

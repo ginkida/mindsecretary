@@ -112,6 +112,23 @@ class TestSanitizeArgs:
             })
             assert args["priority"] == prio
 
+    def test_get_weather_days_clamp_low(self):
+        """0 or negative days reaches Open-Meteo as invalid forecast_days
+        and triggers an API error. Floor at 1."""
+        args = _sanitize_args("get_weather", {"days": 0})
+        assert args["days"] == 1
+        args = _sanitize_args("get_weather", {"days": -5})
+        assert args["days"] == 1
+
+    def test_get_weather_days_clamp_high(self):
+        args = _sanitize_args("get_weather", {"days": 99})
+        assert args["days"] == 7
+
+    def test_get_weather_days_omitted_unchanged(self):
+        """Days not passed → handler default applies via signature."""
+        args = _sanitize_args("get_weather", {"date": "2026-04-15"})
+        assert "days" not in args
+
     def test_search_memory_no_category_unchanged(self):
         """When the LLM doesn't pass a category at all, the slot stays
         absent (not coerced to None or any default) so the handler
