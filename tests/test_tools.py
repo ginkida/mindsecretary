@@ -860,6 +860,88 @@ class TestGetEventsHandler:
         assert "ещё" in result and "сузь" in result
 
 
+class TestGetDailyGoalsHandler:
+    """ToolExecutor handler for get_daily_goals. Closes the last write-only
+    pair (set_daily_goal + complete_daily_goal had no read tool). User
+    asking 'что я хотел сегодня?' previously needed get_open_loops which
+    is broader — direct tool surfaces today's goals with statuses."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_daily_goals", {})
+        assert "Целей на сегодня нет" in result
+
+    @pytest.mark.asyncio
+    async def test_lists_goals_with_status_and_priority(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("починить раковину", priority="high")
+        tmp_db.create_daily_goal("позвонить маме", priority="low")
+        # Mark one as completed so the response shows mixed statuses
+        tmp_db.complete_daily_goal_by_hint("раковину", status="completed")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_daily_goals", {})
+
+        assert "починить раковину" in result
+        assert "позвонить маме" in result
+        # Russian status labels rendered
+        assert "выполнена" in result
+        assert "не отмечена" in result
+        # Priority labels rendered
+        assert "высокий" in result
+        assert "низкий" in result
+
+    @pytest.mark.asyncio
+    async def test_specific_date_argument(self, tmp_db):
+        """User asks 'что я не успел вчера?' → LLM passes date for past
+        day. Tool must respect the date arg, not silently default to today."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Insert a goal for a specific past date by direct DB write —
+        # create_daily_goal stamps date=today, but we want a fixed date
+        # for this test.
+        tmp_db.db.execute(
+            "INSERT INTO daily_goals (date, title, priority, status) "
+            "VALUES (?, ?, ?, ?)",
+            ("2026-04-10", "ужин с Машей", "medium", "skipped"),
+        )
+        tmp_db.db.commit()
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        # Today should be empty
+        empty = await te.execute("get_daily_goals", {})
+        assert "ужин" not in empty
+
+        # The 2026-04-10 query surfaces the past goal with skipped status
+        past = await te.execute("get_daily_goals", {"date": "2026-04-10"})
+        assert "ужин с Машей" in past
+        assert "пропущена" in past
+
+    @pytest.mark.asyncio
+    async def test_renders_reflection(self, tmp_db):
+        """If complete_daily_goal stored a reflection, it must surface in
+        get_daily_goals so the user sees their own end-of-day notes."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("книга", priority="medium")
+        tmp_db.complete_daily_goal_by_hint(
+            "книга", status="partial",
+            reflection="прочитал только главу 3",
+        )
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_daily_goals", {})
+        assert "прочитал только главу 3" in result
+
+
 class TestSearchEventsHandler:
     """ToolExecutor handler for search_events. Lets Claude answer 'когда
     встреча с Машей?' without first guessing a date range for get_events."""

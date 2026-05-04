@@ -488,6 +488,25 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_daily_goals",
+        "description": (
+            "Получить цели на конкретный день со статусами "
+            "(completed/pending/skipped/partial). Без даты — сегодня. "
+            "Вызывай когда {name} спрашивает «что я хотел сделать "
+            "сегодня?», «какие цели?», «что я не успел вчера?» "
+            "(передай date='YYYY-MM-DD' для прошлых дат)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD. Без аргумента — сегодня.",
+                },
+            },
+        },
+    },
+    {
         "name": "complete_daily_goal",
         "description": (
             "Отметить цель дня как выполненную, пропущенную или частично "
@@ -1301,6 +1320,33 @@ class ToolExecutor:
                 sentiment = p.get('outcome_sentiment', '?')
                 result += f"\n- {p['description'][:80]} → {(p.get('outcome') or 'no outcome')[:80]} ({sentiment})"
         return result
+
+    def _handle_get_daily_goals(self, date: str | None = None) -> str:
+        rows = self.db.get_daily_goals(date)
+        when = date or "сегодня"
+        if not rows:
+            return f"Целей на {when} нет."
+        # Status labels in Russian so the LLM (and user-facing rendering)
+        # stays consistent — same vocabulary the complete_daily_goal handler
+        # uses on resolution.
+        status_ru = {
+            "pending": "не отмечена",
+            "completed": "выполнена",
+            "skipped": "пропущена",
+            "partial": "частично",
+        }
+        prio_ru = {"high": "высокий", "medium": "средний", "low": "низкий"}
+        lines = []
+        for g in rows:
+            title = (g.get("title") or "")[:200]
+            status = status_ru.get(g.get("status") or "pending", g.get("status") or "?")
+            prio = prio_ru.get(g.get("priority") or "medium", g.get("priority") or "?")
+            line = f"- [{status}] {title} (приоритет: {prio})"
+            reflection = (g.get("reflection") or "").strip()
+            if reflection:
+                line += f" — {reflection[:150]}"
+            lines.append(line)
+        return "\n".join(lines)
 
     def _handle_set_daily_goal(self, title: str, description: str | None = None,
                                priority: str = "medium") -> str:
