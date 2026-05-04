@@ -9,6 +9,33 @@ DAYS_RU = {
 }
 
 
+def is_person_in_title(person: str | None, title: str | None) -> bool:
+    """Heuristic: does `person`'s name stem already appear in `title`?
+
+    Russian declensions defeat a plain substring match — title="ужин с
+    Машей" doesn't contain "Маша" literally. We normalize both sides to
+    lower-case and compare the first 3 characters of the person against
+    the title. That's the longest invariant prefix across common
+    declensions (Маша/Маше/Машей all share "Маш"; Олег/Олега/Олегом
+    share "Оле").
+
+    Used by event renderers to suppress a redundant "👤 Маша" line when
+    the title already names the person — without it the alert reads
+    "встреча с Машей / 👤 Маша" which looks like a render bug.
+
+    Returns False on missing inputs (defensive — caller skips the
+    suppression). Falls back to True only when the stem actually
+    matches; ambiguous cases lean toward keeping the line, since
+    rendering an extra hint is cheaper than hiding a real one.
+    """
+    if not person or not title:
+        return False
+    stem = person.lower()[:3]
+    if not stem:
+        return False
+    return stem in title.lower()
+
+
 def pluralize_ru(n: int, forms: tuple[str, str, str]) -> str:
     """Russian plural form for `n` given (form_1, form_2_4, form_other).
 

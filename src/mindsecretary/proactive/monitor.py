@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from ..core import is_person_in_title
 from ..core.database import Database
 
 logger = logging.getLogger(__name__)
@@ -65,13 +66,7 @@ def _format_event_alert(event: dict, now_local: datetime) -> str:
     if location:
         parts.append(f"📍 {location}")
     person = (event.get("related_person") or "").strip()
-    # Redundancy check: skip the person line if a 3-char stem of the name
-    # already appears in the title. Russian declensions ("Маша" → "Машей"
-    # in instrumental case) defeat a literal substring match, but a short
-    # stem catches the common "встреча с Машей" + related_person="Маша"
-    # case without false-positives on unrelated short stems.
-    person_stem = person.lower()[:3]
-    if person and (not person_stem or person_stem not in title.lower()):
+    if person and not is_person_in_title(person, title):
         parts.append(f"👤 {person}")
     return "\n".join(parts)
 

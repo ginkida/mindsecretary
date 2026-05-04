@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 _tz_utc = _dt_timezone.utc
 
-from ..core import pluralize_ru
+from ..core import is_person_in_title, pluralize_ru
 from ..core.database import Database
 from ..core.enums import Priority, Sentiment
 from ..core.memory import Memory
@@ -1088,10 +1088,7 @@ class ToolExecutor:
             if loc:
                 extras.append(f"📍 {loc[:80]}")
             person = (e.get("related_person") or "").strip()
-            title_lower = (e.get("title") or "").lower()
-            # Avoid duplicating the person when they're already in the title
-            # — see _format_event_alert in monitor.py for the same heuristic.
-            if person and person.lower()[:3] not in title_lower:
+            if person and not is_person_in_title(person, e.get("title") or ""):
                 extras.append(f"👤 {person[:80]}")
             if extras:
                 line += " | " + " ".join(extras)
@@ -1120,7 +1117,7 @@ class ToolExecutor:
             if loc:
                 extras.append(f"📍 {loc[:80]}")
             person = (e.get("related_person") or "").strip()
-            if person and person.lower()[:3] not in title.lower():
+            if person and not is_person_in_title(person, title):
                 extras.append(f"👤 {person[:80]}")
             if extras:
                 line += " | " + " ".join(extras)

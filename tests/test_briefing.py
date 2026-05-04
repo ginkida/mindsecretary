@@ -268,6 +268,61 @@ class TestEveningEventsTimeIncluded:
         assert "кафе Пушкин" in prompt
 
 
+class TestIsPersonInTitle:
+    """3-char-stem heuristic for suppressing redundant '👤 person' lines
+    when the title already names them. The naive substring approach
+    fails on Russian declensions (Маша not in Машей), so we compare
+    on the first 3 chars (the longest invariant prefix across cases).
+    """
+
+    def test_full_match(self):
+        from mindsecretary.core import is_person_in_title
+        assert is_person_in_title("Маша", "встреча с Машей") is True
+
+    def test_declension_via_stem(self):
+        """The point of the helper — Маша not literally in Машей, but
+        Маш is in машей. Plain `in` would say False here."""
+        from mindsecretary.core import is_person_in_title
+        # Plain substring would fail
+        assert "маша" not in "встреча с машей"
+        # Helper succeeds
+        assert is_person_in_title("Маша", "встреча с Машей") is True
+
+    def test_unrelated(self):
+        from mindsecretary.core import is_person_in_title
+        assert is_person_in_title("Маша", "встреча с командой") is False
+
+    def test_case_insensitive_both_sides(self):
+        from mindsecretary.core import is_person_in_title
+        assert is_person_in_title("МАША", "встреча с машей") is True
+        assert is_person_in_title("маша", "ВСТРЕЧА С МАШЕЙ") is True
+
+    def test_empty_returns_false(self):
+        from mindsecretary.core import is_person_in_title
+        assert is_person_in_title("", "title") is False
+        assert is_person_in_title(None, "title") is False
+        assert is_person_in_title("Маша", "") is False
+        assert is_person_in_title("Маша", None) is False
+
+    def test_short_name_misses_declension(self):
+        """Documented limitation: 3-char names like 'Аня' / 'Оля' don't
+        share a 3-char stem with their declensions ('Аней' / 'Оле'),
+        so the helper returns False and the renderer keeps the redundant
+        '👤 line. Visual repetition is the lesser evil vs lowering the
+        stem to 2 chars and matching unrelated words ('ан' in 'анализ')."""
+        from mindsecretary.core import is_person_in_title
+        # Plain Маша/Машей still works (4 chars → stem "Маш" matches)
+        assert is_person_in_title("Маша", "встреча с Машей") is True
+        # But 3-char Аня/Аней can't share 3 chars
+        assert is_person_in_title("Аня", "встреча с Аней") is False
+
+    def test_olek_stem_matches_declensions(self):
+        """Олег / Олега / Олегом — all share 'оле' (3-char stem)."""
+        from mindsecretary.core import is_person_in_title
+        for declined in ("встреча с Олегом", "обед с Олегом", "звонок Олегу"):
+            assert is_person_in_title("Олег", declined) is True
+
+
 class TestPluralizeRu:
     """Russian plural helper. The 11-14 teens special case is the most
     common bug — without it 'год' becomes 'лет' too aggressively."""
