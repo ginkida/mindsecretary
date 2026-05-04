@@ -568,6 +568,33 @@ TOOL_DEFINITIONS = [
         "max_uses": 3,
     },
     {
+        "name": "get_diary_entries",
+        "description": (
+            "Получить недавние записи дневника {name}. Дневник создаётся "
+            "автоматически каждый вечер — содержит резюме дня, настроение и "
+            "людей. Вызывай когда {name} спрашивает «что я писал на прошлой "
+            "неделе?», «какое было настроение в среду?», «что я отметил "
+            "вчера?». days=7 по умолчанию."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 90,
+                    "description": "Сколько дней назад смотреть (по умолчанию 7).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Максимум записей в выводе (по умолчанию 5).",
+                },
+            },
+        },
+    },
+    {
         "name": "search_conversations",
         "description": (
             "Поиск по старым сообщениям диалога (и твоим, и пользователя) "
@@ -726,6 +753,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         else:
             clean["days_ahead"] = 30
         clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+
+    if name == "get_diary_entries":
+        clean["days"] = max(1, min(90, int(clean.get("days", 7))))
+        clean["limit"] = max(1, min(30, int(clean.get("limit", 5))))
 
     if name == "set_ephemeral_state":
         key = clean.get("key", "")
@@ -1221,6 +1252,36 @@ class ToolExecutor:
             return local.strftime("%Y-%m-%d %H:%M")
         except (ValueError, TypeError, KeyError):
             return ts[:16]
+
+    _DIARY_CONTENT_CHAR_CAP = 600
+
+    def _handle_get_diary_entries(self, days: int = 7, limit: int = 5) -> str:
+        rows = self.db.get_diary_entries(days=days)
+        if not rows:
+            return f"Записей в дневнике за последние {days} дн. нет."
+        # Cap content per entry to keep the LLM round bounded — a 30-day
+        # dump of full diary text would dominate the token budget. Recent
+        # entries are usually most informative for "what did I do?" queries
+        # so we keep DB ordering (newest first) and just truncate count.
+        truncated = rows[:limit]
+        lines = []
+        for entry in truncated:
+            date = entry.get("date") or "?"
+            mood = entry.get("mood")
+            people = (entry.get("people") or "").strip()
+            content = (entry.get("content") or "")[: self._DIARY_CONTENT_CHAR_CAP]
+            header_parts = [f"📖 {date}"]
+            if mood:
+                header_parts.append(f"настроение: {mood}")
+            if people:
+                header_parts.append(f"люди: {people[:120]}")
+            line = " | ".join(header_parts) + f"\n{content}"
+            if len(entry.get("content") or "") > self._DIARY_CONTENT_CHAR_CAP:
+                line += "…"
+            lines.append(line)
+        if len(rows) > limit:
+            lines.append(f"... и ещё {len(rows) - limit} записей")
+        return "\n\n".join(lines)
 
     def _handle_search_conversations(self, query: str, days: int = 30,
                                      limit: int = 10) -> str:

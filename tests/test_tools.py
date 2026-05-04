@@ -860,6 +860,86 @@ class TestGetEventsHandler:
         assert "ещё" in result and "сузь" in result
 
 
+class TestGetDiaryEntriesHandler:
+    """ToolExecutor handler for get_diary_entries. Diary is auto-generated
+    every evening with mood + summary + people, but the LLM had no way to
+    read it. Closes that gap so 'что я писал на прошлой неделе?' becomes
+    answerable."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_diary_entries", {})
+        assert "Записей в дневнике" in result and "7" in result
+
+    @pytest.mark.asyncio
+    async def test_renders_date_mood_people_and_content(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        today = tmp_db._now().strftime("%Y-%m-%d")
+        tmp_db.save_diary_entry(
+            date=today,
+            content="долгий день, был в офисе и встречался с командой",
+            mood="нейтральное",
+            people="Маша, Олег",
+        )
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_diary_entries", {})
+
+        assert today in result
+        assert "нейтральное" in result
+        assert "Маша" in result and "Олег" in result
+        assert "долгий день" in result
+
+    @pytest.mark.asyncio
+    async def test_truncates_long_content_per_entry(self, tmp_db):
+        """A 30-day dump of full content would dominate the token budget;
+        cap is 600 chars per entry with a trailing ellipsis so the LLM
+        knows the entry is partial."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        today = tmp_db._now().strftime("%Y-%m-%d")
+        long_content = "x" * 2000  # well past the 600-char cap
+        tmp_db.save_diary_entry(date=today, content=long_content, mood=None, people=None)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_diary_entries", {})
+
+        # Cap honored, ellipsis appended so LLM knows it's partial
+        assert "…" in result
+        # No 2000-x string in output
+        assert "x" * 2000 not in result
+
+    @pytest.mark.asyncio
+    async def test_limit_caps_count_with_overflow_hint(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Insert 4 entries on different dates
+        base = tmp_db._now()
+        for i in range(4):
+            d = (base - timedelta(days=i)).strftime("%Y-%m-%d")
+            tmp_db.save_diary_entry(date=d, content=f"day {i}", mood=None, people=None)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_diary_entries", {"limit": 2})
+
+        # 2 entries shown + overflow hint
+        assert "ещё 2 записей" in result
+        # Newest first (DB ORDER BY date DESC)
+        # The first day shown is base (i=0), second is base-1
+        first_day = base.strftime("%Y-%m-%d")
+        assert first_day in result.split("\n\n")[0]
+
+
 class TestGetDailyGoalsHandler:
     """ToolExecutor handler for get_daily_goals. Closes the last write-only
     pair (set_daily_goal + complete_daily_goal had no read tool). User
