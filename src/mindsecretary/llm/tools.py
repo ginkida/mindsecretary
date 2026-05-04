@@ -419,6 +419,27 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_decisions",
+        "description": (
+            "Показать активные (pending) решения {name}: что обдумывает, "
+            "что в процессе. Вызывай когда пользователь спрашивает «что я "
+            "там обдумываю?», «какие у меня открытые вопросы?», «что "
+            "решал?». Возвращает описание + контекст + дата создания. "
+            "Решения, которые уже resolved, не показываются."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Сколько последних показать (по умолчанию 10).",
+                },
+            },
+        },
+    },
+    {
         "name": "set_daily_goal",
         "description": (
             "Записать цель на сегодня. Вызывай когда пользователь ставит себе "
@@ -644,6 +665,9 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "search_conversations":
         clean["days"] = max(1, min(365, int(clean.get("days", 30))))
+        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+
+    if name == "get_decisions":
         clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
 
     if name == "set_ephemeral_state":
@@ -1141,6 +1165,24 @@ class ToolExecutor:
                 f"за 7 дней {s['week_done']}/7 ({s['week_rate']}%), "
                 f"последний раз: {last}, {today_mark}"
             )
+        return "\n".join(lines)
+
+    def _handle_get_decisions(self, limit: int = 10) -> str:
+        rows = self.db.get_pending_decisions(limit=limit)
+        if not rows:
+            return "Нет активных решений в процессе."
+        # Format: created_at[:10] is the YYYY-MM-DD prefix; works for both
+        # SQLite-written UTC (datetime('now')) and any future local-write
+        # since we only show the date, not the clock.
+        lines = []
+        for r in rows:
+            created = (r.get("created_at") or "?")[:10]
+            desc = (r.get("description") or "")[:200]
+            ctx = (r.get("context") or "").strip()
+            line = f"- [{created}] {desc}"
+            if ctx:
+                line += f" — {ctx[:200]}"
+            lines.append(line)
         return "\n".join(lines)
 
     def _handle_track_decision(self, description: str,

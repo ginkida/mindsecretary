@@ -745,6 +745,75 @@ class TestRescheduleReminderHandler:
         assert "new_trigger_at" in result
 
 
+class TestGetDecisionsHandler:
+    """ToolExecutor handler for get_decisions. The LLM had track_decision
+    + resolve_decision but the active list was only visible via
+    get_open_loops, which filters to follow-ups DUE — actively-considered
+    decisions in their initial window were invisible. Fills that gap."""
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_decisions", {})
+        assert result == "Нет активных решений в процессе."
+
+    @pytest.mark.asyncio
+    async def test_lists_pending_with_context_and_date(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_decision(
+            "купить велосипед", context="бюджет 50к, ездить на работу",
+        )
+        tmp_db.create_decision("сменить тариф телефона")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_decisions", {})
+
+        # Both descriptions present
+        assert "купить велосипед" in result
+        assert "сменить тариф" in result
+        # Context surfaces (em-dash separator) — only when present
+        assert "бюджет 50к" in result
+        # Date stamp shows up (YYYY-MM-DD prefix from created_at)
+        from datetime import datetime
+        today_prefix = datetime.utcnow().strftime("%Y-%m-%d")
+        assert today_prefix in result
+
+    @pytest.mark.asyncio
+    async def test_excludes_resolved_decisions(self, tmp_db):
+        """Resolved decisions belong to past_decisions, not pending —
+        otherwise the user would see closed items as 'still in process'."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_decision("купить велосипед")
+        tmp_db.resolve_decision_by_hint("велосипед", "купил")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_decisions", {})
+
+        # No active rows left after the resolve
+        assert result == "Нет активных решений в процессе."
+
+    @pytest.mark.asyncio
+    async def test_limit_clamped(self, tmp_db):
+        """Limit param goes through _sanitize_args clamp [1, 30]."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        for i in range(5):
+            tmp_db.create_decision(f"решение {i}")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        # limit=2 → only 2 lines
+        result = await te.execute("get_decisions", {"limit": 2})
+        assert result.count("\n") == 1  # 2 lines = 1 newline
+
+
 class TestCancelEventHandler:
     """ToolExecutor handler for cancel_event. Mirror of cancel_reminder —
     closes the missing CRUD on events. User says 'отмени встречу с Машей'
