@@ -336,9 +336,19 @@ class Brain:
 
     def _section_decisions(self, s) -> str:
         decisions = self.db.get_pending_decisions(limit=5)
-        return "\n".join(
-            f"- {s(d['description'], 200)}" for d in decisions
-        ) or "Нет решений в процессе."
+        if not decisions:
+            return "Нет решений в процессе."
+        lines = []
+        for d in decisions:
+            line = f"- {s(d['description'], 200)}"
+            ctx = (d.get("context") or "").strip()
+            if ctx:
+                # 120-char cap keeps the system prompt bounded — context can
+                # be long ("decided between A and B because of X, Y, Z").
+                # The full text is still reachable via get_decisions tool.
+                line += f" ({s(ctx, 120)})"
+            lines.append(line)
+        return "\n".join(lines)
 
     _EPHEMERAL_LABELS = {
         "location": "Локация",

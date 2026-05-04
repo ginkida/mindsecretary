@@ -510,6 +510,55 @@ class TestSystemPromptToolGuidance:
         )
 
 
+class TestSectionDecisions:
+    """Brain._section_decisions feeds the 'Решения в процессе' slot of
+    the main system prompt. Pre-fix it dropped the context field, so
+    Claude saw 'купить велосипед' without the budget/use-case Claude
+    itself originally captured via track_decision."""
+
+    def test_empty_returns_placeholder(self):
+        brain = _make_brain("UTC")
+        brain.db.get_pending_decisions = MagicMock(return_value=[])
+        assert brain._section_decisions(sanitize_for_context) == "Нет решений в процессе."
+
+    def test_renders_description_and_context(self):
+        brain = _make_brain("UTC")
+        brain.db.get_pending_decisions = MagicMock(return_value=[
+            {"description": "купить велосипед",
+             "context": "бюджет 50к, для дороги до работы"},
+        ])
+        result = brain._section_decisions(sanitize_for_context)
+        assert "купить велосипед" in result
+        assert "бюджет 50к" in result
+        assert "для дороги" in result
+
+    def test_omits_empty_context(self):
+        """If context is empty/None, render just the description (no
+        dangling parens)."""
+        brain = _make_brain("UTC")
+        brain.db.get_pending_decisions = MagicMock(return_value=[
+            {"description": "сменить тариф", "context": None},
+            {"description": "переехать", "context": ""},
+        ])
+        result = brain._section_decisions(sanitize_for_context)
+        assert "сменить тариф" in result
+        assert "переехать" in result
+        # No empty parens
+        assert "()" not in result
+
+    def test_caps_long_context(self):
+        """Context can be paragraphs long — bound the system prompt size."""
+        brain = _make_brain("UTC")
+        long_ctx = "x" * 500
+        brain.db.get_pending_decisions = MagicMock(return_value=[
+            {"description": "decision", "context": long_ctx},
+        ])
+        result = brain._section_decisions(sanitize_for_context)
+        # 120-char cap on context — total line stays bounded
+        assert "x" * 500 not in result
+        assert "x" * 120 in result
+
+
 class TestMoodTodaySection:
     """`_section_mood_today` reads today's user messages and feeds a
     real-time sentiment signal into the main prompt. This covers the
