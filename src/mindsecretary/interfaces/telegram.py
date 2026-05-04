@@ -129,8 +129,19 @@ class TelegramBot:
         await update.message.reply_text("Слишком часто, подожди минуту.")
         return False
 
-    async def _reply(self, update: Update, text: str):
-        """Send reply with message splitting (no feedback UI — too noisy)."""
+    async def _reply(self, update: Update, text: str | None):
+        """Send reply with message splitting (no feedback UI — too noisy).
+
+        Empty/whitespace text → silent return. The Brain can produce empty
+        text legitimately (e.g. tool-only round where the user message
+        triggered save_memory and Claude chose to say nothing). Pre-fix
+        this hit Telegram's "message text empty" error, which the outer
+        handler caught and surfaced as 'Произошла ошибка' — wrong message
+        for a successful no-reply case.
+        """
+        if not text or not text.strip():
+            logger.info("Empty reply suppressed (brain produced no text)")
+            return
         for part in _split_message(text):
             try:
                 await update.message.reply_text(

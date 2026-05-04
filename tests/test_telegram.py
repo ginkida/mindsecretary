@@ -35,6 +35,47 @@ class TestFixMarkdown:
         assert _fix_markdown(text) == text
 
 
+class TestReplyEmpty:
+    """_reply must silently skip empty/whitespace text instead of forwarding
+    it to Telegram (which 400s on empty body and triggers the outer
+    catch-all 'Произошла ошибка' message — misleading for a brain call
+    that succeeded but had nothing to say)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_string_suppressed(self):
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        bot, _ = _make_bot()
+        await bot._reply(update, "")
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_suppressed(self):
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        bot, _ = _make_bot()
+        await bot._reply(update, "   \n\t  ")
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_none_suppressed(self):
+        """Brain.process returns BrainResponse(text=None) on early-exit
+        paths — _reply must accept None gracefully too."""
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        bot, _ = _make_bot()
+        await bot._reply(update, None)
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_empty_still_sent(self):
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        bot, _ = _make_bot()
+        await bot._reply(update, "hello")
+        update.message.reply_text.assert_awaited()
+
+
 class TestSplitMessage:
     def test_short_message_single_part(self):
         assert _split_message("hello") == ["hello"]
