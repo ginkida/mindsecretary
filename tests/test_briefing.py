@@ -157,6 +157,57 @@ class TestFormatEventLine:
         assert "??:??" in line
 
 
+class TestFormatReminderLine:
+    """_format_reminder_line surfaces trigger_at so Claude can sequence
+    the day correctly. Pre-consolidation the briefing dropped the time,
+    rendering 'позвонить маме' with no clue when."""
+
+    def test_includes_trigger_time(self):
+        line = BriefingGenerator._format_reminder_line({
+            "trigger_at": "2026-04-15 18:00:00",
+            "text": "позвонить маме",
+        })
+        assert "2026-04-15 18:00" in line
+        assert "позвонить маме" in line
+
+    def test_renders_recurrence_marker(self):
+        """Recurring reminders should be visually distinct from one-offs
+        — Claude treats 'каждый понедельник X' differently from 'X на
+        15-е число'."""
+        line = BriefingGenerator._format_reminder_line({
+            "trigger_at": "2026-04-15 09:00:00",
+            "text": "стандап",
+            "recurrence": "weekly",
+        })
+        assert "(weekly)" in line
+
+    def test_missing_trigger_falls_back_to_question_marks(self):
+        line = BriefingGenerator._format_reminder_line({
+            "trigger_at": None,
+            "text": "broken row",
+        })
+        assert "??" in line
+
+
+class TestMorningRemindersIncludeTime:
+    @pytest.mark.asyncio
+    async def test_morning_reminders_show_trigger_time(self, tmp_path):
+        """User-visible quality: pre-fix Claude saw 'позвонить маме'
+        without time, so morning briefings often suggested doing it
+        'позже' instead of pointing at 18:00. Real annoying."""
+        bg, db, llm = _make_briefing(tmp_path)
+        # Morning briefing calls memory.search twice (context + promises)
+        # — replace with AsyncMock so the awaitable contract is honored.
+        bg.memory.search = AsyncMock(return_value=[])
+        db.create_reminder("позвонить маме", "2099-04-15 18:00:00", "high")
+
+        await bg.generate_morning()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        assert "18:00" in prompt
+        assert "позвонить маме" in prompt
+
+
 class TestEveningEventsTimeIncluded:
     @pytest.mark.asyncio
     async def test_today_events_show_time_and_location(self, tmp_path):

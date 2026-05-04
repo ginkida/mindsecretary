@@ -317,6 +317,12 @@ class Memory:
     async def search(self, query: str, top_k: int = 8,
                      category: str | None = None,
                      min_importance: int = 0) -> list[dict]:
+        # Empty/whitespace query → no Voyage call. Pre-guard skips an API
+        # round-trip that would either fail or return a near-zero embedding
+        # producing meaningless cosine scores. Callers that want recency
+        # should use list_recent() instead.
+        if not query or not query.strip():
+            return []
         try:
             query_emb = await self._embed_query(query)
         except Exception as e:

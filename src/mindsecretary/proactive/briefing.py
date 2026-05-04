@@ -26,6 +26,23 @@ class BriefingGenerator:
         self.profile = profile
 
     @staticmethod
+    def _format_reminder_line(reminder: dict) -> str:
+        """Render one pending reminder for briefing prompts. Shows trigger
+        time so Claude can sequence the day correctly — pre-fix the
+        morning briefing emitted reminders without their times, leading
+        to outputs like 'позвонить маме' with no hint when. trigger_at
+        is profile-local naive, so the [:16] slice gives 'YYYY-MM-DD
+        HH:MM' as the user actually scheduled it."""
+        s = sanitize_for_context
+        trigger = (reminder.get("trigger_at") or "")[:16] or "??"
+        text = s(reminder.get("text") or "", 200)
+        line = f"- {trigger} {text}"
+        recurrence = reminder.get("recurrence")
+        if recurrence:
+            line += f" ({recurrence})"
+        return line
+
+    @staticmethod
     def _format_event_line(event: dict) -> str:
         """Render one event for briefing prompts: 'HH:MM Title (с Person, где: Loc)'.
 
@@ -110,7 +127,7 @@ class BriefingGenerator:
 
         reminders = self.db.get_pending_reminders()
         reminders_text = "\n".join(
-            f"- {s(r['text'], 200)}" for r in reminders[:5]
+            self._format_reminder_line(r) for r in reminders[:5]
         ) or "Нет напоминаний."
 
         birthdays = self.db.get_upcoming_birthdays(days=7)

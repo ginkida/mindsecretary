@@ -129,6 +129,29 @@ class TestEmbedRetry:
         assert voyage.embed.call_count == 2
 
 
+class TestMemorySearchEmptyQueryGuard:
+    """Memory.search must short-circuit on empty/whitespace queries —
+    pre-fix it called Voyage with an empty string, wasting an API
+    round-trip and getting back a near-zero embedding that produced
+    meaningless cosine ranking. Real cost on a paid endpoint that
+    triggers on every accidental empty arg from the LLM or Telegram."""
+
+    @pytest.mark.asyncio
+    async def test_empty_query_returns_empty_no_voyage_call(self):
+        memory, voyage = _make_memory()
+        result = await memory.search("")
+        assert result == []
+        # Critical: Voyage NOT called for empty query
+        assert voyage.embed.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_whitespace_query_returns_empty_no_voyage_call(self):
+        memory, voyage = _make_memory()
+        result = await memory.search("   \n\t  ")
+        assert result == []
+        assert voyage.embed.call_count == 0
+
+
 class TestMemoryUpdateByHint:
     """update_by_hint replaces a memory's content + re-embeds, with strict
     safety on ambiguous matches — memories are too sensitive to overwrite
