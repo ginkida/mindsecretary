@@ -26,6 +26,32 @@ class BriefingGenerator:
         self.profile = profile
 
     @staticmethod
+    def _format_event_line(event: dict) -> str:
+        """Render one event for briefing prompts: 'HH:MM Title (с Person, где: Loc)'.
+
+        Consolidates three previously inconsistent inline formats (morning
+        vs evening's today-events vs evening's tomorrow-events). Evening
+        used to drop time entirely. Each user-origin field passes through
+        sanitize_for_context — events end up in system prompts and an
+        event title is the same channel a malicious forward could reach.
+        """
+        s = sanitize_for_context
+        start = event.get("start_at") or ""
+        time_str = start[11:16] if len(start) >= 16 else "??:??"
+        title = s(event.get("title") or "", 200)
+        line = f"- {time_str} {title}"
+        extras: list[str] = []
+        person = event.get("related_person")
+        if person:
+            extras.append(f"с {s(person, 100)}")
+        location = event.get("location")
+        if location:
+            extras.append(f"где: {s(location, 100)}")
+        if extras:
+            line += f" ({', '.join(extras)})"
+        return line
+
+    @staticmethod
     def _format_age(days: int) -> str:
         """Render an age-in-days as a coarse anniversary label.
 
@@ -79,9 +105,7 @@ class BriefingGenerator:
 
         events = self.db.get_events(today)
         events_text = "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else '??:??'} {s(e['title'], 200)}"
-            + (f" (с {s(e['related_person'], 100)})" if e.get("related_person") else "")
-            for e in events
+            self._format_event_line(e) for e in events
         ) or "Нет событий."
 
         reminders = self.db.get_pending_reminders()
@@ -220,13 +244,12 @@ class BriefingGenerator:
 
         events = self.db.get_events(today)
         events_text = "\n".join(
-            f"- {s(e['title'], 200)}" for e in events
+            self._format_event_line(e) for e in events
         ) or "Нет событий."
 
         events_tomorrow = self.db.get_events(tomorrow)
         events_tomorrow_text = "\n".join(
-            f"- {e['start_at'][11:16] if len(e['start_at']) > 10 else ''} {s(e['title'], 200)}"
-            for e in events_tomorrow
+            self._format_event_line(e) for e in events_tomorrow
         ) or "Нет событий."
 
         weather_tomorrow = "Недоступна."
@@ -348,7 +371,9 @@ class BriefingGenerator:
             for i in interactions[:40]
         )
 
-        events_text = "\n".join(f"- {s(e['title'], 200)}" for e in events) or "Нет"
+        events_text = "\n".join(
+            self._format_event_line(e) for e in events
+        ) or "Нет"
         people_text = ", ".join(s(p, 80) for p in people_today) or "Никого"
         mood_text = f"Score: {mood['score']}, label: {mood['label']}, signals: {mood['signals']}"
 

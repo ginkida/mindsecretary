@@ -112,6 +112,74 @@ class TestEveningHabitsSlot:
         assert "🔥 Серии" not in system_prompt  # 1d streak hidden
 
 
+class TestFormatEventLine:
+    """_format_event_line is the single source of truth for how events
+    render into briefing prompts. Pre-consolidation, three different
+    sites had three different formats — evening dropped time entirely."""
+
+    def test_basic_time_plus_title(self):
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 09:00:00",
+            "title": "стандап",
+        })
+        assert line == "- 09:00 стандап"
+
+    def test_renders_person_and_location(self):
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 13:00:00",
+            "title": "обед",
+            "related_person": "Олег",
+            "location": "Кафе Пушкин",
+        })
+        # Both extras inside the parens, comma-separated
+        assert "обед" in line
+        assert "с Олег" in line
+        assert "где: Кафе Пушкин" in line
+        assert line.startswith("- 13:00 ")
+
+    def test_empty_extras_omits_parens(self):
+        """No related_person, no location — line ends with the title, no
+        empty parens dangling."""
+        line = BriefingGenerator._format_event_line({
+            "start_at": "2026-04-15 10:00:00",
+            "title": "созвон",
+        })
+        assert "(" not in line
+        assert "созвон" in line
+
+    def test_missing_start_at_falls_back_to_question_marks(self):
+        """Bad data shouldn't break the briefing — render '??:??' so the
+        reader sees something is up rather than an empty time slot."""
+        line = BriefingGenerator._format_event_line({
+            "start_at": "",
+            "title": "broken",
+        })
+        assert "??:??" in line
+
+
+class TestEveningEventsTimeIncluded:
+    @pytest.mark.asyncio
+    async def test_today_events_show_time_and_location(self, tmp_path):
+        """Pre-fix the evening summary's events_text only emitted titles —
+        Claude saw 'today: ужин' with no clue when or where, and the
+        wrap-up section read like a checklist of nouns. Post-fix, the
+        helper emits time + title + extras consistently."""
+        bg, db, llm = _make_briefing(tmp_path)
+        # Anchor on the DB clock so 'today' matches what generate_evening
+        # picks via tz_now(profile.timezone).
+        today = db._now().strftime("%Y-%m-%d")
+        db.create_event("ужин с Машей", f"{today} 19:00:00",
+                        location="кафе Пушкин")
+
+        await bg.generate_evening()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        # Time visible
+        assert "19:00 ужин с Машей" in prompt
+        # Location visible
+        assert "кафе Пушкин" in prompt
+
+
 class TestFormatAge:
     """Russian plural rendering for the anniversary label."""
 
