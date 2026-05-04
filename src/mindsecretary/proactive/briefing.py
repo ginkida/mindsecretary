@@ -361,6 +361,13 @@ class BriefingGenerator:
         interactions = self.db.get_interactions(since=today_start, limit=100)
         if len(interactions) < 3:
             return None
+        # At least one inbound message — proactive notifications and bot
+        # replies don't count. Without this guard, a day with 5 reminders
+        # / briefings and 0 user messages would generate a "diary" purely
+        # from the bot's own outputs (nonsense + wasted LLM call).
+        if not any(i.get("direction") == "in" for i in interactions):
+            logger.info("Diary skipped: no inbound messages today")
+            return None
 
         # Mood analysis
         mood = analyze_mood(interactions)

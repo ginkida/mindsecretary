@@ -208,6 +208,43 @@ class TestMorningRemindersIncludeTime:
         assert "позвонить маме" in prompt
 
 
+class TestDiaryInboundGuard:
+    """generate_diary used to fire whenever total interactions >= 3, but
+    proactive notifications (reminders, briefings, weather alerts) inflate
+    the count. On a day with 0 user messages, the bot would write a
+    "diary" from its own outputs — nonsense + wasted LLM call."""
+
+    @pytest.mark.asyncio
+    async def test_skips_when_only_outbound(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        # Five proactive notifications, zero user messages
+        for i in range(5):
+            db.log_interaction(
+                direction="out", message_type="notification",
+                content=f"reminder {i}",
+            )
+
+        result = await bg.generate_diary()
+        assert result is None
+        # Critical: LLM not called — money saved on bot-only days
+        llm.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generates_when_inbound_present(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        db.log_interaction(direction="in", content="был тяжёлый день",
+                           message_type="text")
+        db.log_interaction(direction="out", content="понимаю",
+                           message_type="chat")
+        db.log_interaction(direction="in", content="устал",
+                           message_type="text")
+
+        result = await bg.generate_diary()
+        # Diary generated; mock LLM returns "итог" which gets saved
+        assert result is not None
+        llm.chat.assert_called_once()
+
+
 class TestEveningEventsTimeIncluded:
     @pytest.mark.asyncio
     async def test_today_events_show_time_and_location(self, tmp_path):
