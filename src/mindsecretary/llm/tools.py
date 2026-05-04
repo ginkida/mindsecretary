@@ -1553,11 +1553,19 @@ class ToolExecutor:
                                     reflection: str | None = None) -> str:
         if not goal_hint or not goal_hint.strip():
             return "complete_daily_goal requires a non-empty goal_hint"
+        # Count first so we can disclose ambiguity ("matched 2, marked
+        # the soonest"). Single-threaded SQLite, no race with the mark
+        # below.
+        total = self.db.count_pending_goals_matching(goal_hint)
         result = self.db.complete_daily_goal_by_hint(goal_hint.strip(), status, reflection)
         if not result:
             return f"No pending goal found matching '{goal_hint}' for today"
         status_ru = {"completed": "выполнена", "skipped": "пропущена", "partial": "частично"}.get(status, status)
-        return f"Goal '{result['title']}' marked as {status_ru}"
+        msg = f"Goal '{result['title']}' marked as {status_ru}"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно отметить и их."
+        return msg
 
     def _handle_resolve_decision(self, description_hint: str, outcome: str,
                                  sentiment: str = "neutral") -> str:

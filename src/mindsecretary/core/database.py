@@ -1459,6 +1459,22 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def count_pending_goals_matching(self, hint: str) -> int:
+        """How many of today's pending goals match `hint` — used by the
+        complete handler for ambiguity disclosure. Same shape as
+        count_pending_reminders_matching / count_pending_decisions_matching."""
+        if not hint or not hint.strip():
+            return 0
+        today = self._now().strftime("%Y-%m-%d")
+        escaped = self._escape_like(hint.strip().lower())
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM daily_goals "
+            "WHERE date = ? AND status = 'pending' "
+            "AND pylower(title) LIKE ? ESCAPE '\\'",
+            (today, f"%{escaped}%"),
+        ).fetchone()
+        return int(row[0])
+
     def complete_daily_goal_by_hint(self, hint: str, status: str = "completed",
                                     reflection: str | None = None) -> dict | None:
         """Find today's pending goal by keyword and mark it.

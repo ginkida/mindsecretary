@@ -1120,6 +1120,53 @@ class TestSearchEventsHandler:
         assert result.count("\n") == 2  # 3 lines = 2 newlines
 
 
+class TestCompleteDailyGoalAmbiguity:
+    """complete_daily_goal_by_hint silently marks the oldest match
+    when hint is ambiguous. Same UX gap that resolve_decision and
+    cancel_event/cancel_reminder used to have."""
+
+    @pytest.mark.asyncio
+    async def test_unique_match_no_ambiguity_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("учить английский")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("complete_daily_goal", {
+            "goal_hint": "английский", "status": "completed",
+        })
+        assert "marked as выполнена" in result
+        # Single match — no "Похожих ещё" trailer
+        assert "Похожих ещё" not in result
+
+    @pytest.mark.asyncio
+    async def test_multiple_matches_disclosed(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("учить английский")
+        tmp_db.create_daily_goal("пойти на английский")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("complete_daily_goal", {
+            "goal_hint": "английский", "status": "completed",
+        })
+        assert "marked as выполнена" in result
+        assert "Похожих ещё 1" in result
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("complete_daily_goal", {
+            "goal_hint": "ничего", "status": "completed",
+        })
+        assert "No pending goal found" in result
+
+
 class TestResolveDecisionAmbiguity:
     """resolve_decision picks the most-recent match silently when hint
     is ambiguous. Mirror cancel_reminder/cancel_event ambiguity disclosure
