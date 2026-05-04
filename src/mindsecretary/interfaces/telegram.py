@@ -1201,9 +1201,15 @@ class TelegramBot:
                 pass
 
         text = (msg.text or msg.caption or "")[:MAX_TEXT_LENGTH]
-        full_text = f"{forward_from}{text}"
-        if not full_text.strip():
+        # Pre-fix the empty-check used full_text, which always has the
+        # "[Переслано]:" prefix and was therefore never empty. So a
+        # forwarded photo without a caption (or a sticker forward) became
+        # "[Переслано]: " and shipped to Brain.process — paying for an
+        # LLM round on what's effectively nothing. Check the content
+        # portion explicitly.
+        if not text.strip():
             return
+        full_text = f"{forward_from}{text}"
 
         await self._typing(update)
 

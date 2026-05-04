@@ -35,6 +35,76 @@ class TestFixMarkdown:
         assert _fix_markdown(text) == text
 
 
+class TestForwardEmptyContentGuard:
+    """_handle_forward used to short-circuit on full_text being empty,
+    but full_text always has the "[Переслано]:" prefix — so the guard
+    never fired. Forwarded photos without captions, stickers, etc.,
+    became "[Переслано]: " and got shipped to Brain, paying for LLM
+    rounds on no content."""
+
+    @pytest.mark.asyncio
+    async def test_no_text_no_caption_skips_brain(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = None
+        update.message.caption = None
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock()
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_forward(update, context)
+
+        brain.process.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_text_only_whitespace_skips_brain(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "   \n  "
+        update.message.caption = None
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock()
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_forward(update, context)
+
+        brain.process.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_content_still_routes_to_brain(self):
+        """Sanity: actual forwarded text still goes through, prefix added."""
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "interesting article from somewhere"
+        update.message.caption = None
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="ok", tool_calls_made=0, total_tokens=10,
+        ))
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_forward(update, context)
+
+        brain.process.assert_awaited_once()
+        kwargs = brain.process.await_args.kwargs
+        # Prefix preserved on real content
+        assert kwargs["user_message"].startswith("[Переслано]:")
+        assert "interesting article" in kwargs["user_message"]
+
+
 class TestTextHandlerWhitespaceGuard:
     """_handle_text used to forward whitespace-only messages to Brain.
     Voice/forward already strip and skip; text was the inconsistent one.
