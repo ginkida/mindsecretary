@@ -33,6 +33,149 @@ class TestEvents:
         events = tmp_db.get_events("2026-04-15", "2026-04-16")
         assert len(events) == 2
 
+    def test_cancel_event_by_hint_picks_soonest_future(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        # Two future events matching hint, one past — cancel must pick the
+        # soonest future one. Past events are excluded entirely.
+        soon = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        later = (now + timedelta(days=10)).strftime(SQL_TS_FMT)
+        past = (now - timedelta(days=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("ужин с Машей", soon)
+        tmp_db.create_event("ужин с Машей в кафе", later)
+        tmp_db.create_event("прошлый ужин с Машей", past)
+
+        # Hint "Маш" matches all declensions ("Машей", "Маше", "Машу")
+        # without forcing the test to know specific noun cases.
+        cancelled = tmp_db.cancel_event_by_hint("Маш")
+        assert cancelled is not None
+        assert cancelled["start_at"] == soon
+        # The cancelled one is hard-deleted, the later future one remains
+        # plus the past one (untouched).
+        rows = tmp_db.db.execute("SELECT title FROM events ORDER BY start_at").fetchall()
+        titles = [r["title"] for r in rows]
+        assert "ужин с Машей" not in titles  # hard-deleted
+        assert "ужин с Машей в кафе" in titles
+        assert "прошлый ужин с Машей" in titles  # past untouched
+
+    def test_cancel_event_no_match_returns_none(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("дантист", future)
+        assert tmp_db.cancel_event_by_hint("парикмахер") is None
+
+    def test_cancel_event_matches_description(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        # Title doesn't match, but description does — searcher must look at both.
+        tmp_db.create_event(
+            "встреча", future, description="обсудить контракт с Сбером",
+        )
+        cancelled = tmp_db.cancel_event_by_hint("Сбер")
+        assert cancelled is not None
+        assert cancelled["title"] == "встреча"
+
+    def test_count_future_events_matching_excludes_past(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        past = (now - timedelta(days=1)).strftime(SQL_TS_FMT)
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("прошлый Маша", past)
+        tmp_db.create_event("будущий Маша 1", future)
+        tmp_db.create_event("будущий Маша 2",
+                            (now + timedelta(days=2)).strftime(SQL_TS_FMT))
+        # Past row matches the hint but isn't counted — symmetric with the
+        # cancel/reschedule SELECTs.
+        assert tmp_db.count_future_events_matching("Маш") == 2
+
+    def test_count_future_events_empty_hint_zero(self, tmp_db: Database):
+        assert tmp_db.count_future_events_matching("") == 0
+        assert tmp_db.count_future_events_matching("   ") == 0
+
+    def test_reschedule_event_picks_soonest_future(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        soon = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        later = (now + timedelta(days=10)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("ужин", soon)
+        tmp_db.create_event("ужин с командой", later)
+
+        new_time = (now + timedelta(days=5)).strftime(SQL_TS_FMT)
+        updated = tmp_db.reschedule_event_by_hint("ужин", new_time)
+        assert updated is not None
+        # The soonest one moved; the other is untouched.
+        assert updated["start_at"] == new_time
+        # Verify in DB: the formerly-soonest now has new time, other still later
+        rows = tmp_db.db.execute(
+            "SELECT title, start_at FROM events ORDER BY start_at"
+        ).fetchall()
+        # Originally: soon (day+2) and later (day+10). After: new_time (day+5)
+        # and later (day+10). Order by start_at: ужин at day+5, ужин с командой at day+10.
+        assert rows[0]["title"] == "ужин"
+        assert rows[0]["start_at"] == new_time
+        assert rows[1]["title"] == "ужин с командой"
+        assert rows[1]["start_at"] == later
+
+    def test_reschedule_event_preserves_end_at_when_omitted(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        start = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        end = (now + timedelta(days=1, hours=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", start, end_at=end)
+
+        new_start = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        # No new_end_at — the existing end_at must survive (common case:
+        # "перенеси на завтра" without re-specifying duration).
+        updated = tmp_db.reschedule_event_by_hint("встреча", new_start)
+        assert updated["start_at"] == new_start
+        row = tmp_db.db.execute(
+            "SELECT end_at FROM events WHERE id = ?", (updated["id"],)
+        ).fetchone()
+        assert row["end_at"] == end
+
+    def test_reschedule_event_updates_end_at_when_provided(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        start = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        end = (now + timedelta(days=1, hours=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", start, end_at=end)
+
+        new_start = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
+        new_end = (now + timedelta(days=2, hours=3)).strftime(SQL_TS_FMT)
+        updated = tmp_db.reschedule_event_by_hint(
+            "встреча", new_start, new_end_at=new_end,
+        )
+        row = tmp_db.db.execute(
+            "SELECT start_at, end_at FROM events WHERE id = ?", (updated["id"],)
+        ).fetchone()
+        assert row["start_at"] == new_start
+        assert row["end_at"] == new_end
+
+    def test_reschedule_event_excludes_past(self, tmp_db: Database):
+        """Symmetric with cancel — past events can't be rescheduled, since
+        they already happened. The hint matching must skip them."""
+        now = tmp_db.local_now_naive()
+        past = (now - timedelta(days=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("прошлая встреча", past)
+
+        new_time = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        result = tmp_db.reschedule_event_by_hint("встреча", new_time)
+        assert result is None
+
+    def test_reschedule_event_empty_new_start_returns_none(self, tmp_db: Database):
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча", future)
+        assert tmp_db.reschedule_event_by_hint("встреча", "") is None
+        assert tmp_db.reschedule_event_by_hint("встреча", "   ") is None
+
+    def test_cancel_event_cyrillic_case_insensitive(self, tmp_db: Database):
+        """SQLite's native LOWER() is ASCII-only — must use pylower for
+        case-insensitive Cyrillic matching, same as the reminder by-hint."""
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("Встреча с Машей", future)
+        # Use the stem "Маш" so noun declension doesn't break the match
+        # — the case-insensitive part is what's under test.
+        cancelled = tmp_db.cancel_event_by_hint("МАШ")
+        assert cancelled is not None
+        assert cancelled["title"] == "Встреча с Машей"
+
 
 class TestReminders:
     def test_create_and_get_pending(self, tmp_db: Database):

@@ -413,6 +413,90 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def _find_future_event_by_hint(self, hint: str) -> dict | None:
+        """Most-imminent future event whose title or description matches
+        `hint`. Profile-local naive comparison — events.start_at is written
+        local-naive (per CLAUDE.md TZ convention, same source as the LLM
+        sees on create_event). Returns dict|None."""
+        if not hint or not hint.strip():
+            return None
+        escaped = self._escape_like(hint.strip().lower())
+        now_local = self.local_now_naive().strftime(self._SQL_TS_FMT)
+        row = self.db.execute(
+            "SELECT * FROM events "
+            "WHERE start_at >= ? "
+            "AND (pylower(title) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\') "
+            "ORDER BY start_at LIMIT 1",
+            (now_local, f"%{escaped}%", f"%{escaped}%"),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def count_future_events_matching(self, hint: str) -> int:
+        """How many FUTURE events match `hint` — used by the cancel/reschedule
+        handlers to disclose ambiguity ('matched 3, modified the soonest').
+        Past events are excluded since they can't be cancelled or rescheduled."""
+        if not hint or not hint.strip():
+            return 0
+        escaped = self._escape_like(hint.strip().lower())
+        now_local = self.local_now_naive().strftime(self._SQL_TS_FMT)
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM events "
+            "WHERE start_at >= ? "
+            "AND (pylower(title) LIKE ? ESCAPE '\\' "
+            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\')",
+            (now_local, f"%{escaped}%", f"%{escaped}%"),
+        ).fetchone()
+        return int(row[0])
+
+    def cancel_event_by_hint(self, hint: str) -> dict | None:
+        """Hard-delete the most-imminent future event matching `hint`.
+
+        Hard delete (vs reminders' soft 'cancelled' status) is intentional:
+        events have no status column and no /undo flow — once cancelled
+        they're gone. If the user later needs to reconstruct context, the
+        original create_event call lives in interactions and can be found
+        via search_conversations.
+        """
+        row = self._find_future_event_by_hint(hint)
+        if not row:
+            return None
+        self.db.execute("DELETE FROM events WHERE id = ?", (row["id"],))
+        self.db.commit()
+        return row
+
+    def reschedule_event_by_hint(self, hint: str, new_start_at: str,
+                                 new_end_at: str | None = None) -> dict | None:
+        """Move the most-imminent future event matching `hint` to
+        `new_start_at`. If `new_end_at` is None, end_at is left untouched —
+        common case is "перенеси на 17:00" without specifying duration.
+
+        Returns the updated row dict (with new times applied), or None if
+        nothing matched. Pre-existing end_at is preserved unless the caller
+        explicitly passed a new value.
+        """
+        if not new_start_at or not new_start_at.strip():
+            return None
+        row = self._find_future_event_by_hint(hint)
+        if not row:
+            return None
+        if new_end_at is not None:
+            self.db.execute(
+                "UPDATE events SET start_at = ?, end_at = ? WHERE id = ?",
+                (new_start_at, new_end_at, row["id"]),
+            )
+        else:
+            self.db.execute(
+                "UPDATE events SET start_at = ? WHERE id = ?",
+                (new_start_at, row["id"]),
+            )
+        self.db.commit()
+        updated = dict(row)
+        updated["start_at"] = new_start_at
+        if new_end_at is not None:
+            updated["end_at"] = new_end_at
+        return updated
+
     # --- Reminders ---
 
     def create_reminder(self, text: str, trigger_at: str,

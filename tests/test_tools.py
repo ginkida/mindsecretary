@@ -745,6 +745,178 @@ class TestRescheduleReminderHandler:
         assert "new_trigger_at" in result
 
 
+class TestCancelEventHandler:
+    """ToolExecutor handler for cancel_event. Mirror of cancel_reminder —
+    closes the missing CRUD on events. User says 'отмени встречу с Машей'
+    → bot can finally do it instead of asking the user to clear the calendar
+    manually."""
+
+    @pytest.mark.asyncio
+    async def test_cancels_unique_match(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("ужин с Машей", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_event", {"text_hint": "Маш"})
+
+        assert "Отменено" in result
+        assert "ужин с Машей" in result
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_event", {"text_hint": "nothing"})
+        assert "Не нашёл" in result and "nothing" in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_disclosure(self, tmp_db):
+        """When hint matches multiple future events, the response says
+        'soonest cancelled, N more remain' so Claude can ask the user to
+        disambiguate before cancelling further."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        for offset in (1, 5, 10):
+            ts = (now + timedelta(days=offset)).strftime("%Y-%m-%d %H:%M:%S")
+            tmp_db.create_event(f"встреча с Машей {offset}", ts)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_event", {"text_hint": "Маш"})
+
+        assert "Отменено: встреча с Машей 1" in result
+        assert "Похожих ещё 2" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_hint_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_event", {"text_hint": "   "})
+        assert "non-empty" in result
+
+    @pytest.mark.asyncio
+    async def test_does_not_cancel_past_events(self, tmp_db):
+        """Critical safety: 'отмени встречу с прошлой недели' is not a
+        meaningful operation — past events already happened. Past events
+        must stay in the DB untouched even if the hint matches."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        past = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("вчерашний ужин", past)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("cancel_event", {"text_hint": "ужин"})
+
+        assert "Не нашёл" in result
+        # Past event still exists, untouched
+        rows = tmp_db.db.execute("SELECT title FROM events").fetchall()
+        assert any(r["title"] == "вчерашний ужин" for r in rows)
+
+
+class TestRescheduleEventHandler:
+    """ToolExecutor handler for reschedule_event. Mirror of
+    reschedule_reminder — single-tool semantics ('перенеси встречу на
+    17:00') instead of forcing Claude into cancel + create_event."""
+
+    @pytest.mark.asyncio
+    async def test_reschedules_unique_match(self, tmp_db):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        new_time = (now + timedelta(days=2, hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("звонок с Сашей", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "Саш", "new_start_at": new_time,
+        })
+
+        assert "Перенесено" in result
+        assert "звонок с Сашей" in result
+        # DB row reflects the new start_at
+        row = tmp_db.db.execute(
+            "SELECT start_at FROM events WHERE title = 'звонок с Сашей'"
+        ).fetchone()
+        assert row["start_at"] == new_time
+
+    @pytest.mark.asyncio
+    async def test_normalizes_iso_T_separator(self, tmp_db):
+        """LLM often emits ISO 'YYYY-MM-DDTHH:MM' — sanitizer must convert
+        to space-separated 'YYYY-MM-DD HH:MM:SS' so it matches the DB
+        convention. Otherwise lexical comparisons against other events
+        break (' ' < 'T' in ASCII)."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("дантист", future)
+
+        # Pick an ISO-formatted future time
+        new_time_iso = (now + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("reschedule_event", {
+            "text_hint": "дантист", "new_start_at": new_time_iso,
+        })
+        row = tmp_db.db.execute(
+            "SELECT start_at FROM events WHERE title = 'дантист'"
+        ).fetchone()
+        # Stored format must be space-separated, not "T"
+        assert "T" not in row["start_at"]
+        assert row["start_at"][:13] == new_time_iso[:13].replace("T", " ")
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "nothing", "new_start_at": "2099-04-15 10:00:00",
+        })
+        assert "Не нашёл" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_hint_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "  ", "new_start_at": "2099-04-15 10:00:00",
+        })
+        assert "non-empty" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_new_start_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "x", "new_start_at": "",
+        })
+        assert "new_start_at" in result
+
+
 class TestGetHabitsHandler:
     """ToolExecutor handler for get_habits. The LLM had log_habit but no
     way to read habits back — user asking 'сколько уже бегаю?' got

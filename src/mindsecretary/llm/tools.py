@@ -176,6 +176,48 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "cancel_event",
+        "description": (
+            "Удалить будущее событие из календаря. Вызывай когда "
+            "пользователь говорит «отмени встречу с Машей в пятницу», "
+            "«я не пойду», «убери из календаря». Ищет по подстроке в "
+            "title или description (case-insensitive, Cyrillic-aware) "
+            "среди будущих событий. Если совпадает несколько — удалит "
+            "ближайшее по времени и сообщит сколько ещё похожих."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {
+                    "type": "string",
+                    "description": "Подстрока из title/description (напр. 'Маша', 'дантист').",
+                },
+            },
+            "required": ["text_hint"],
+        },
+    },
+    {
+        "name": "reschedule_event",
+        "description": (
+            "Перенести будущее событие на новое время. Вызывай когда "
+            "пользователь говорит «перенеси встречу на 17:00», «сдвинь "
+            "ужин на завтра», «давай не в пятницу, а в субботу». "
+            "Ищет по подстроке в title/description среди будущих "
+            "событий. Если совпадает несколько — перенесёт ближайшее "
+            "и сообщит сколько ещё похожих. end_at можно не указывать "
+            "если длительность не меняется."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_hint": {"type": "string"},
+                "new_start_at": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
+                "new_end_at": {"type": "string", "description": "Опционально"},
+            },
+            "required": ["text_hint", "new_start_at"],
+        },
+    },
+    {
         "name": "create_reminder",
         "description": "Создать напоминание. Для повторяющихся — укажи recurrence.",
         "input_schema": {
@@ -587,6 +629,14 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         hint = clean.get("text_hint") or ""
         clean["text_hint"] = str(hint)[:200]
 
+    if name == "cancel_event":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+
+    if name == "reschedule_event":
+        hint = clean.get("text_hint") or ""
+        clean["text_hint"] = str(hint)[:200]
+
     if name == "get_reminders":
         if clean.get("days_ahead") is not None:
             clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
@@ -617,6 +667,7 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         "create_event": ("start_at", "end_at"),
         "create_reminder": ("trigger_at",),
         "reschedule_reminder": ("new_trigger_at",),
+        "reschedule_event": ("new_start_at", "new_end_at"),
     }
     for field in _DT_FIELDS.get(name, ()):
         val = clean.get(field)
@@ -850,6 +901,40 @@ class ToolExecutor:
             time_str = e["start_at"][11:16] if len(e["start_at"]) > 10 else ""
             lines.append(f"- {time_str} {e['title']}")
         return "\n".join(lines)
+
+    def _handle_cancel_event(self, text_hint: str) -> str:
+        if not text_hint or not text_hint.strip():
+            return "cancel_event requires a non-empty text_hint"
+        # Count first so we can disclose ambiguity in the response —
+        # single-threaded SQLite, no race with the cancel below.
+        total = self.db.count_future_events_matching(text_hint)
+        cancelled = self.db.cancel_event_by_hint(text_hint)
+        if not cancelled:
+            return f"Не нашёл будущих событий по '{text_hint[:80]}'"
+        title = (cancelled.get("title") or "")[:120]
+        start = (cancelled.get("start_at") or "?")[:16]
+        msg = f"Отменено: {title} ({start})"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно отменить и их."
+        return msg
+
+    def _handle_reschedule_event(self, text_hint: str, new_start_at: str,
+                                 new_end_at: str | None = None) -> str:
+        if not text_hint or not text_hint.strip():
+            return "reschedule_event requires a non-empty text_hint"
+        if not new_start_at or not new_start_at.strip():
+            return "reschedule_event requires new_start_at"
+        total = self.db.count_future_events_matching(text_hint)
+        updated = self.db.reschedule_event_by_hint(text_hint, new_start_at, new_end_at)
+        if not updated:
+            return f"Не нашёл будущих событий по '{text_hint[:80]}'"
+        title = (updated.get("title") or "")[:120]
+        msg = f"Перенесено: {title} → {new_start_at[:16]}"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно перенести и их."
+        return msg
 
     def _handle_create_reminder(self, text: str, trigger_at: str,
                                 priority: str = "medium",
