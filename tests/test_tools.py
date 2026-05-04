@@ -1120,6 +1120,49 @@ class TestSearchEventsHandler:
         assert result.count("\n") == 2  # 3 lines = 2 newlines
 
 
+class TestCompleteDailyGoalStatusValidation:
+    """Invalid status from the LLM (typo, drift) gets coerced to
+    'completed' both in the DB and in the rendered Russian label —
+    pre-fix the rendered label echoed the LLM's raw value while the
+    DB silently stored 'completed', producing a confusing mismatch."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_status_coerced_to_completed_in_render(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("задача")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("complete_daily_goal", {
+            "goal_hint": "задача", "status": "done",  # not a valid enum value
+        })
+
+        # Rendered as выполнена (from coerced status="completed")
+        assert "marked as выполнена" in result
+        # LLM's raw "done" must NOT appear in the rendered label
+        assert "marked as done" not in result
+
+        # DB row reflects coerced status
+        row = tmp_db.db.execute(
+            "SELECT status FROM daily_goals WHERE title = 'задача'"
+        ).fetchone()
+        assert row["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_valid_status_preserved(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("задача")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("complete_daily_goal", {
+            "goal_hint": "задача", "status": "skipped",
+        })
+        assert "marked as пропущена" in result
+
+
 class TestCompleteDailyGoalAmbiguity:
     """complete_daily_goal_by_hint silently marks the oldest match
     when hint is ambiguous. Same UX gap that resolve_decision and

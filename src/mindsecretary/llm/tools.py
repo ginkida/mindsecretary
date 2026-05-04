@@ -13,7 +13,7 @@ _tz_utc = _dt_timezone.utc
 
 from ..core import is_person_in_title, pluralize_ru
 from ..core.database import Database
-from ..core.enums import Priority, Sentiment
+from ..core.enums import Priority, Sentiment, Status
 from ..core.memory import Memory
 
 # Forms reused across the ambiguity-disclosure messages and diary truncation
@@ -1553,6 +1553,14 @@ class ToolExecutor:
                                     reflection: str | None = None) -> str:
         if not goal_hint or not goal_hint.strip():
             return "complete_daily_goal requires a non-empty goal_hint"
+        # Coerce invalid status BEFORE the DB call so the rendered Russian
+        # label matches what's actually stored. Pre-fix the DB silently
+        # defaulted bad input to 'completed' but the handler rendered the
+        # LLM's raw value, so a status="done" call would read "marked as
+        # done" while the row actually said 'completed'. Mirror of the
+        # sentiment coercion in _handle_resolve_decision.
+        if status not in (Status.COMPLETED, Status.SKIPPED, Status.PARTIAL):
+            status = Status.COMPLETED
         # Count first so we can disclose ambiguity ("matched 2, marked
         # the soonest"). Single-threaded SQLite, no race with the mark
         # below.
