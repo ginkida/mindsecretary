@@ -832,7 +832,13 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         ttl = float(clean.get("ttl_hours", 8.0))
         clean["ttl_hours"] = max(0.5, min(72.0, ttl))
 
-    if name in ("create_event", "create_reminder"):
+    if name in ("create_event", "create_reminder", "set_daily_goal"):
+        # All three accept priority and store it on the DB row. Sanitize
+        # in the same place so handlers can rely on a valid enum value
+        # without each adding its own coercion. Pre-fix set_daily_goal
+        # was missing — DB clamped to "medium" but the handler rendered
+        # the LLM's raw value to the user (e.g. "(приоритет: urgent)"
+        # while the row actually said medium).
         priority = clean.get("priority", "medium")
         if priority not in VALID_PRIORITIES:
             clean["priority"] = "medium"

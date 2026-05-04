@@ -95,6 +95,23 @@ class TestSanitizeArgs:
         args = _sanitize_args("track_decision", {"description": "x"})
         assert "follow_up_days" not in args
 
+    def test_set_daily_goal_invalid_priority_defaults(self):
+        """Pre-fix only create_event/create_reminder validated priority
+        in the sanitizer; set_daily_goal slipped through and the handler
+        rendered "(приоритет: urgent)" while the DB silently stored
+        medium. Now the sanitizer covers all three uniformly."""
+        args = _sanitize_args("set_daily_goal", {
+            "title": "x", "priority": "urgent",
+        })
+        assert args["priority"] == "medium"
+
+    def test_set_daily_goal_valid_priorities(self):
+        for prio in VALID_PRIORITIES:
+            args = _sanitize_args("set_daily_goal", {
+                "title": "x", "priority": prio,
+            })
+            assert args["priority"] == prio
+
     def test_search_memory_no_category_unchanged(self):
         """When the LLM doesn't pass a category at all, the slot stays
         absent (not coerced to None or any default) so the handler
