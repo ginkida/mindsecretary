@@ -964,10 +964,19 @@ class Database:
         embeddings would be more flexible, but raw content isn't embedded
         (only curated memories are) and adding a second index path just for
         this tool isn't worth it. Returns newest-first.
+
+        TZ note: `interactions.timestamp` is UTC-naive (SQLite
+        `datetime('now')`). The cutoff must be UTC too — pre-fix this
+        used self._now() (profile-local) and the resulting string compared
+        wrong against UTC-stored rows, silently dropping ~|tz_offset|
+        hours of recent matches for non-UTC users.
         """
         if not query or not query.strip():
             return []
-        since = (self._now() - timedelta(days=max(1, days))).strftime(self._SQL_TS_FMT)
+        since = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            - timedelta(days=max(1, days))
+        ).strftime(self._SQL_TS_FMT)
         escaped = self._escape_like(query.strip().lower())
         rows = self.db.execute(
             "SELECT timestamp, direction, message_type, content, metadata "

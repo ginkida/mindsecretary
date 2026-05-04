@@ -1,7 +1,7 @@
 """Tests for core/database.py — CRUD operations and timestamp handling."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -632,6 +632,46 @@ class TestInteractions:
         tmp_db.log_interaction("in", "text", "anything")
         assert tmp_db.search_past_conversations("", days=30) == []
         assert tmp_db.search_past_conversations("   ", days=30) == []
+
+    def test_search_past_conversations_cutoff_uses_utc(self, tmp_path: Path):
+        """Regression: cutoff used self._now() (profile-local) while
+        interactions.timestamp is UTC-naive. For a profile in UTC+5,
+        the comparison string compared one TZ to another, silently
+        dropping the most recent ~5h of matching rows.
+
+        Setup mirrors the cleanup TZ test: profile in Asia/Almaty,
+        a row stamped slightly INSIDE the local-day window in UTC
+        terms must surface."""
+        from zoneinfo import ZoneInfo
+
+        db = Database(tmp_path / "tz_search.db", timezone="Asia/Almaty")
+        db.db.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY, content TEXT NOT NULL,
+                embedding BLOB NOT NULL, category TEXT NOT NULL,
+                importance INTEGER, related_person TEXT, related_date TEXT,
+                source_type TEXT, source_ref TEXT, confidence REAL,
+                status TEXT, created_at TEXT, last_accessed TEXT
+            )""")
+        db.db.commit()
+
+        # Insert a row stamped at "now - 30d + 3h" in UTC.
+        # Pre-fix the cutoff was 30 days ago in LOCAL time, which for
+        # Almaty is 5h LATER than 30 days ago UTC. So a UTC-stored
+        # timestamp at "29d 21h ago UTC" would be on the wrong side
+        # of the local cutoff and dropped.
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        ts_29d21h_ago = (now_utc - timedelta(days=29, hours=21)).strftime(SQL_TS_FMT)
+        db.db.execute(
+            "INSERT INTO interactions (timestamp, direction, message_type, content) "
+            "VALUES (?, 'in', 'text', 'обсуждали ПРОЕКТ')",
+            (ts_29d21h_ago,),
+        )
+        db.db.commit()
+
+        rows = db.search_past_conversations("проект", days=30)
+        # Must be visible — within the 30-day UTC window
+        assert len(rows) == 1
 
 
 class TestDecisions:
