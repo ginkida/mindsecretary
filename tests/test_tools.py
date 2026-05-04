@@ -745,6 +745,121 @@ class TestRescheduleReminderHandler:
         assert "new_trigger_at" in result
 
 
+class TestGetEventsHandler:
+    """ToolExecutor handler for get_events. Single-day vs multi-day output
+    must differ: multi-day prefixes each line with the date so the user
+    can tell which day it falls on. Location and related_person surface
+    only when populated. Long ranges get capped to keep the LLM context
+    bounded."""
+
+    @pytest.mark.asyncio
+    async def test_single_day_omits_date_prefix(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event("Dentist", "2026-04-15 10:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {"date_from": "2026-04-15"})
+
+        # No "2026-04-15" prefix — date is implicit when single-day
+        assert "2026-04-15" not in result
+        assert "10:00 Dentist" in result
+
+    @pytest.mark.asyncio
+    async def test_multi_day_prefixes_with_date(self, tmp_db):
+        """User asking 'что на неделе' must see which day each event is on
+        — without the date prefix all events look like 'today'."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event("Day1", "2026-04-15 09:00:00")
+        tmp_db.create_event("Day2", "2026-04-16 14:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {
+            "date_from": "2026-04-15", "date_to": "2026-04-16",
+        })
+
+        assert "2026-04-15 09:00 Day1" in result
+        assert "2026-04-16 14:00 Day2" in result
+
+    @pytest.mark.asyncio
+    async def test_renders_location_and_person(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event(
+            "обед", "2026-04-15 13:00:00",
+            location="кафе Пушкин", related_person="Олег",
+        )
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {"date_from": "2026-04-15"})
+
+        assert "📍 кафе Пушкин" in result
+        assert "👤 Олег" in result
+
+    @pytest.mark.asyncio
+    async def test_omits_redundant_person_in_title(self, tmp_db):
+        """If related_person is already in the title (common: 'встреча с
+        Машей' + person='Маша'), don't duplicate it as a 👤 line."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event(
+            "встреча с Машей", "2026-04-15 14:00:00", related_person="Маша",
+        )
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {"date_from": "2026-04-15"})
+
+        assert "👤" not in result
+
+    @pytest.mark.asyncio
+    async def test_renders_end_at_when_same_day(self, tmp_db):
+        """Same-day end_at renders as 'HH:MM-HH:MM'. Cross-day end_at
+        (overnight events) keeps just the start time so the dash doesn't
+        hide a day boundary."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event(
+            "стандап", "2026-04-15 09:00:00", end_at="2026-04-15 09:30:00",
+        )
+        tmp_db.create_event(
+            "хакатон", "2026-04-16 10:00:00", end_at="2026-04-17 10:00:00",
+        )
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        same_day = await te.execute("get_events", {"date_from": "2026-04-15"})
+        assert "09:00-09:30 стандап" in same_day
+
+        cross_day = await te.execute("get_events", {"date_from": "2026-04-16"})
+        # No range — cross-day end is dropped because the dash would mislead
+        assert "10:00-10:00" not in cross_day
+        assert "10:00 хакатон" in cross_day
+
+    @pytest.mark.asyncio
+    async def test_caps_output_for_busy_range(self, tmp_db):
+        """A month with 50+ events would dump too much into the LLM
+        context. Cap at 30 with a hint that the range can be narrowed."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        for i in range(40):
+            day = 1 + (i % 28)  # spread across April
+            tmp_db.create_event(f"event {i}", f"2026-04-{day:02d} 10:{i%60:02d}:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {
+            "date_from": "2026-04-01", "date_to": "2026-04-30",
+        })
+        # 30 events + 1 truncation hint line
+        assert result.count("\n") == 30
+        assert "ещё" in result and "сузь" in result
+
+
 class TestSearchEventsHandler:
     """ToolExecutor handler for search_events. Lets Claude answer 'когда
     встреча с Машей?' without first guessing a date range for get_events."""

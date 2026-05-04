@@ -953,15 +953,54 @@ class ToolExecutor:
                                      description, related_person)
         return f"Event created: {title} at {start_at}"
 
+    _EVENTS_OUTPUT_CAP = 30
+
     def _handle_get_events(self, date_from: str,
                            date_to: str | None = None) -> str:
         events = self.db.get_events(date_from, date_to)
         if not events:
             return f"No events for {date_from}"
+
+        # When the query spans multiple days, prefix each line with the
+        # date so the LLM (and ultimately the user) can tell which day the
+        # event falls on. Single-day queries skip the date — it'd be
+        # repeated noise on every line.
+        multi_day = bool(date_to and date_to != date_from)
+
+        truncated = events[: self._EVENTS_OUTPUT_CAP]
         lines = []
-        for e in events:
-            time_str = e["start_at"][11:16] if len(e["start_at"]) > 10 else ""
-            lines.append(f"- {time_str} {e['title']}")
+        for e in truncated:
+            start = e.get("start_at") or ""
+            date_part = start[:10]
+            time_part = start[11:16] if len(start) >= 16 else ""
+            end_part = ""
+            end_at = e.get("end_at") or ""
+            # Render "HH:MM-HH:MM" only if end_at is on the same day —
+            # otherwise the dash hides a day boundary and reads wrong.
+            if end_at and len(end_at) >= 16 and end_at[:10] == date_part:
+                end_part = f"-{end_at[11:16]}"
+
+            prefix = f"{date_part} {time_part}{end_part}" if multi_day else f"{time_part}{end_part}"
+            line = f"- {prefix} {e.get('title', '')}".rstrip()
+
+            extras = []
+            loc = (e.get("location") or "").strip()
+            if loc:
+                extras.append(f"📍 {loc[:80]}")
+            person = (e.get("related_person") or "").strip()
+            title_lower = (e.get("title") or "").lower()
+            # Avoid duplicating the person when they're already in the title
+            # — see _format_event_alert in monitor.py for the same heuristic.
+            if person and person.lower()[:3] not in title_lower:
+                extras.append(f"👤 {person[:80]}")
+            if extras:
+                line += " | " + " ".join(extras)
+            lines.append(line)
+
+        if len(events) > len(truncated):
+            lines.append(
+                f"... и ещё {len(events) - len(truncated)} (сузь диапазон дат)"
+            )
         return "\n".join(lines)
 
     def _handle_search_events(self, query: str, days_ahead: int = 30,
