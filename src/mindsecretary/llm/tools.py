@@ -1567,9 +1567,16 @@ class ToolExecutor:
             return "resolve_decision requires a non-empty outcome"
         if sentiment not in (Sentiment.POSITIVE, Sentiment.NEUTRAL, Sentiment.NEGATIVE):
             sentiment = Sentiment.NEUTRAL
+        # Count first so we can disclose ambiguity in the response —
+        # single-threaded SQLite, no race with the resolve below.
+        total = self.db.count_pending_decisions_matching(description_hint)
         resolved = self.db.resolve_decision_by_hint(
             description_hint.strip(), outcome, sentiment,
         )
         if not resolved:
             return f"No pending decision found matching '{description_hint}'"
-        return f"Resolved decision: {resolved['description'][:80]} → {outcome[:80]}"
+        msg = f"Resolved decision: {resolved['description'][:80]} → {outcome[:80]}"
+        remaining = total - 1
+        if remaining > 0:
+            msg += f". Похожих ещё {remaining} — уточни если нужно закрыть и их."
+        return msg

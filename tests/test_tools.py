@@ -1120,6 +1120,56 @@ class TestSearchEventsHandler:
         assert result.count("\n") == 2  # 3 lines = 2 newlines
 
 
+class TestResolveDecisionAmbiguity:
+    """resolve_decision picks the most-recent match silently when hint
+    is ambiguous. Mirror cancel_reminder/cancel_event ambiguity disclosure
+    so the LLM knows other matches were skipped."""
+
+    @pytest.mark.asyncio
+    async def test_unique_match_no_ambiguity_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_decision("купить велосипед")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("resolve_decision", {
+            "description_hint": "велосипед", "outcome": "купил",
+        })
+        assert "Resolved decision" in result
+        # Single match — no "Похожих ещё" trailer
+        assert "Похожих ещё" not in result
+
+    @pytest.mark.asyncio
+    async def test_multiple_matches_disclosed(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Three pending decisions all matching "купить"
+        tmp_db.create_decision("купить велосипед")
+        tmp_db.create_decision("купить машину")
+        tmp_db.create_decision("купить новый ноутбук")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("resolve_decision", {
+            "description_hint": "купить", "outcome": "решил",
+        })
+        # One resolved + disclosure that 2 more matched
+        assert "Resolved decision" in result
+        assert "Похожих ещё 2" in result
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_friendly_message(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("resolve_decision", {
+            "description_hint": "ничего", "outcome": "x",
+        })
+        assert "No pending decision found" in result
+
+
 class TestGetDecisionsHandler:
     """ToolExecutor handler for get_decisions. The LLM had track_decision
     + resolve_decision but the active list was only visible via

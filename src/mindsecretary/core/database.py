@@ -1221,6 +1221,21 @@ class Database:
         self.db.commit()
         return cur.rowcount > 0
 
+    def count_pending_decisions_matching(self, hint: str) -> int:
+        """How many pending decisions match `hint` — used by the resolve
+        handler to disclose ambiguity ("matched 3, resolved the most
+        recent"). Mirrors count_pending_reminders_matching /
+        count_future_events_matching in semantics."""
+        if not hint or not hint.strip():
+            return 0
+        escaped = self._escape_like(hint.strip().lower())
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM decisions "
+            "WHERE status = 'pending' AND pylower(description) LIKE ? ESCAPE '\\'",
+            (f"%{escaped}%",),
+        ).fetchone()
+        return int(row[0])
+
     def resolve_decision_by_hint(self, description_hint: str, outcome: str,
                                  sentiment: str = "neutral") -> dict | None:
         """Find the most recent pending decision matching the hint and resolve it.
