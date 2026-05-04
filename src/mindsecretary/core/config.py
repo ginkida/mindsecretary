@@ -183,9 +183,16 @@ class Settings:
     weekly_review: bool = True
     weather_monitor: bool = True
     birthday_alerts: bool = True
+    event_alerts: bool = True
     # Tunable intervals and thresholds
     reminder_check_minutes: int = 5
     weather_check_minutes: int = 60
+    # Pre-event alerts: fire `event_alert_lead_minutes` before each calendar
+    # event's start_at, scanning every `event_alert_check_minutes` ticks.
+    # Lead must be >= check, otherwise events that fall in [now, now+lead]
+    # at one tick land in the past at the next and are skipped.
+    event_alert_lead_minutes: int = 15
+    event_alert_check_minutes: int = 5
     process_timeout_sec: int = 90
     quiet_contact_days: int = 30
     quiet_contact_min_mentions: int = 3
@@ -223,8 +230,11 @@ class Settings:
             weekly_review=proactive.get("weekly_review", True),
             weather_monitor=proactive.get("weather_monitor", True),
             birthday_alerts=proactive.get("birthday_alerts", True),
+            event_alerts=proactive.get("event_alerts", True),
             reminder_check_minutes=tuning.get("reminder_check_minutes", 5),
             weather_check_minutes=tuning.get("weather_check_minutes", 60),
+            event_alert_lead_minutes=tuning.get("event_alert_lead_minutes", 15),
+            event_alert_check_minutes=tuning.get("event_alert_check_minutes", 5),
             process_timeout_sec=tuning.get("process_timeout_sec", 90),
             quiet_contact_days=tuning.get("quiet_contact_days", 30),
             quiet_contact_min_mentions=tuning.get("quiet_contact_min_mentions", 3),

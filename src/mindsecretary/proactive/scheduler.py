@@ -11,7 +11,7 @@ from ..core.config import Profile, Settings
 from ..core.database import Database
 from ..integrations.weather import WMO_CODES, WeatherClient, _merge_rain_hours
 from ..learning.mood import check_contact_frequency
-from .monitor import check_reminders
+from .monitor import check_event_alerts, check_reminders
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +260,13 @@ class ProactiveScheduler:
             id="reminder_check", replace_existing=True,
         )
 
+        if self.settings.event_alerts and self.settings.event_alert_lead_minutes > 0:
+            self.scheduler.add_job(
+                self._check_event_alerts, "interval",
+                minutes=self.settings.event_alert_check_minutes,
+                id="event_alert_check", replace_existing=True,
+            )
+
         if self.settings.birthday_alerts:
             self.scheduler.add_job(
                 self._check_birthdays, "cron", hour=9, minute=0,
@@ -340,6 +347,21 @@ class ProactiveScheduler:
                 logger.info("Sent %d reminders", sent)
         except Exception as e:
             logger.error("Reminder check failed: %s", type(e).__name__)
+
+    async def _check_event_alerts(self):
+        """Pre-event alerts — fire `event_alert_lead_minutes` before each
+        calendar event. Bypasses quiet hours: imminent calendar events
+        are user-scheduled commitments, not discretionary pings, so
+        treating them like reminders is the right semantics."""
+        try:
+            sent = await check_event_alerts(
+                self.db, self.send_fn,
+                lead_minutes=self.settings.event_alert_lead_minutes,
+            )
+            if sent:
+                logger.info("Sent %d event alerts", sent)
+        except Exception as e:
+            logger.error("Event alert check failed: %s", type(e).__name__)
 
     async def _check_birthdays(self):
         """Daily birthday alert with 7-day dedup per contact."""

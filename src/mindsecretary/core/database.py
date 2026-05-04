@@ -191,6 +191,9 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_at);
+            -- alerted_at column is added by migrations/002 — keeps schema
+            -- creation paths (fresh install vs upgrade) converging through
+            -- the same migration so PRAGMA user_version stays in sync.
 
             CREATE TABLE IF NOT EXISTS reminders (
                 id TEXT PRIMARY KEY DEFAULT (hex(randomblob(8))),
@@ -465,6 +468,43 @@ class Database:
         self.db.commit()
         return row
 
+    def get_events_to_alert(self, lead_minutes: int) -> list[dict]:
+        """Future events starting within `lead_minutes` that haven't been
+        alerted yet. Used by the scheduler's event_alert job so the user
+        gets a heads-up before each calendar event.
+
+        Window semantics:
+            now < start_at <= now + lead_minutes
+            AND alerted_at IS NULL
+
+        events.start_at is profile-local naive (LLM tool writes via
+        sanitizer-normalized format), so compare to local_now_naive().
+        Past events (start_at <= now) are excluded — the alert is
+        meaningless after the event has started.
+        """
+        if lead_minutes <= 0:
+            return []
+        now_local = self.local_now_naive()
+        threshold = now_local + timedelta(minutes=lead_minutes)
+        rows = self.db.execute(
+            "SELECT * FROM events "
+            "WHERE alerted_at IS NULL "
+            "AND start_at > ? AND start_at <= ? "
+            "ORDER BY start_at",
+            (now_local.strftime(self._SQL_TS_FMT),
+             threshold.strftime(self._SQL_TS_FMT)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_event_alerted(self, event_id: str) -> None:
+        """Stamp alerted_at=now (UTC, datetime('now') convention) so the
+        event is excluded from subsequent get_events_to_alert calls."""
+        self.db.execute(
+            "UPDATE events SET alerted_at = datetime('now') WHERE id = ?",
+            (event_id,),
+        )
+        self.db.commit()
+
     def reschedule_event_by_hint(self, hint: str, new_start_at: str,
                                  new_end_at: str | None = None) -> dict | None:
         """Move the most-imminent future event matching `hint` to
@@ -480,14 +520,18 @@ class Database:
         row = self._find_future_event_by_hint(hint)
         if not row:
             return None
+        # Reset alerted_at so the user gets a fresh pre-event alert at the
+        # new time — otherwise an event already alerted at its original
+        # start would silently miss its new lead window.
         if new_end_at is not None:
             self.db.execute(
-                "UPDATE events SET start_at = ?, end_at = ? WHERE id = ?",
+                "UPDATE events SET start_at = ?, end_at = ?, alerted_at = NULL "
+                "WHERE id = ?",
                 (new_start_at, new_end_at, row["id"]),
             )
         else:
             self.db.execute(
-                "UPDATE events SET start_at = ? WHERE id = ?",
+                "UPDATE events SET start_at = ?, alerted_at = NULL WHERE id = ?",
                 (new_start_at, row["id"]),
             )
         self.db.commit()
