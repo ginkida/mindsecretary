@@ -172,6 +172,46 @@ class TestTelegramHandlers:
         assert "Нет записи за 2024-01-01" in body
 
     @pytest.mark.asyncio
+    async def test_context_clear_uses_correct_record_plural(self):
+        """The /context clear summary used to render '2 записей' (form_other)
+        for any count != 1. With pluralize_ru, 2-4 use form_2_4 ('записи')."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["clear"])
+        # Clear returns count=2 → form_2_4
+        brain.db.clear_ephemeral_state = MagicMock(return_value=2)
+
+        await bot._handle_context(update, context)
+
+        body = update.message.reply_text.await_args.args[0]
+        assert "2 записи" in body
+        assert "2 записей" not in body
+
+    @pytest.mark.asyncio
+    async def test_context_clear_singular_uses_form_one(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["clear"])
+        brain.db.clear_ephemeral_state = MagicMock(return_value=1)
+
+        await bot._handle_context(update, context)
+
+        body = update.message.reply_text.await_args.args[0]
+        assert "1 запись" in body
+
+    @pytest.mark.asyncio
+    async def test_context_clear_five_uses_many(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=["clear"])
+        brain.db.clear_ephemeral_state = MagicMock(return_value=5)
+
+        await bot._handle_context(update, context)
+
+        body = update.message.reply_text.await_args.args[0]
+        assert "5 записей" in body
+
+    @pytest.mark.asyncio
     async def test_diary_invalid_arg_shows_usage(self):
         bot, brain = _make_bot()
         update = _make_update()

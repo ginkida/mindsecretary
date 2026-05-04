@@ -11,9 +11,14 @@ from zoneinfo import ZoneInfo
 
 _tz_utc = _dt_timezone.utc
 
+from ..core import pluralize_ru
 from ..core.database import Database
 from ..core.enums import Priority, Sentiment
 from ..core.memory import Memory
+
+# Forms reused across the ambiguity-disclosure messages and diary truncation
+# hint — keep in one place so a future translation pass touches one tuple.
+_RECORDS_FORMS = ("запись", "записи", "записей")
 from ..integrations.weather import WeatherClient
 
 logger = logging.getLogger(__name__)
@@ -962,10 +967,11 @@ class ToolExecutor:
                 f"  - [{s.get('id')}] {s.get('content', '')}"
                 for s in samples
             )
+            records_word = pluralize_ru(count, _RECORDS_FORMS)
             return (
-                f"По '{text_hint[:80]}' нашлось {count} записей — слишком "
-                f"много, удаление не выполнено. Уточни hint и вызови снова. "
-                f"Примеры найденного:\n{sample_lines}"
+                f"По '{text_hint[:80]}' нашлось {count} {records_word} — "
+                f"слишком много, удаление не выполнено. Уточни hint и "
+                f"вызови снова. Примеры найденного:\n{sample_lines}"
             )
         if status == "ok":
             mem = result.get("memory") or {}
@@ -990,10 +996,11 @@ class ToolExecutor:
                 f"  - [{s.get('id')}] {s.get('content', '')}"
                 for s in samples
             )
+            records_word = pluralize_ru(count, _RECORDS_FORMS)
             return (
-                f"По '{text_hint[:80]}' нашлось {count} записей — слишком "
-                f"много, обновление не выполнено. Уточни hint и вызови снова. "
-                f"Примеры найденного:\n{sample_lines}"
+                f"По '{text_hint[:80]}' нашлось {count} {records_word} — "
+                f"слишком много, обновление не выполнено. Уточни hint и "
+                f"вызови снова. Примеры найденного:\n{sample_lines}"
             )
         if status == "embed_failed":
             return (
@@ -1362,7 +1369,10 @@ class ToolExecutor:
                 line += "…"
             lines.append(line)
         if len(rows) > limit:
-            lines.append(f"... и ещё {len(rows) - limit} записей")
+            extra = len(rows) - limit
+            lines.append(
+                f"... и ещё {extra} {pluralize_ru(extra, _RECORDS_FORMS)}"
+            )
         return "\n\n".join(lines)
 
     def _handle_search_conversations(self, query: str, days: int = 30,

@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-from ..core import tz_now
+from ..core import pluralize_ru, tz_now
 from ..core.brain import Brain
 from ..learning.mood import check_contact_frequency
 from ..voice.stt import GroqSTT
@@ -562,8 +562,9 @@ class TelegramBot:
             target_key = args[1] if len(args) > 1 else None
             n = self.brain.db.clear_ephemeral_state(target_key)
             what = f"ключ '{target_key}'" if target_key else "весь ручной контекст"
+            records_word = pluralize_ru(n, ("запись", "записи", "записей"))
             await update.message.reply_text(
-                f"🧹 Очищено ({what}, {n} {'запись' if n == 1 else 'записей'}). "
+                f"🧹 Очищено ({what}, {n} {records_word}). "
                 f"Расписание из профиля остаётся."
             )
             return

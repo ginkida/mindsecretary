@@ -565,6 +565,8 @@ class TestDeleteMemoryHandler:
         # User-facing copy must NOT say "удалено" on the ambiguous path —
         # otherwise the user thinks deletion happened
         assert "удаление не выполнено" in result
+        # 3 → form_2_4 "записи" (not legacy hardcoded "записей")
+        assert "3 записи" in result
         assert "[a1]" in result and "[b2]" in result and "[c3]" in result
 
     @pytest.mark.asyncio
@@ -644,7 +646,9 @@ class TestUpdateMemoryHandler:
             "text_hint": "Yandex", "new_content": "Сбер",
         })
 
-        assert "3 записей" in result
+        # 3 → form_2_4 ("записи"), not the legacy hardcoded "записей"
+        assert "3 записи" in result
+        assert "3 записей" not in result
         assert "уточни" in result.lower()
         assert "[a1]" in result and "[b2]" in result and "[c3]" in result
 
@@ -957,8 +961,10 @@ class TestGetDiaryEntriesHandler:
         te = ToolExecutor(db=tmp_db, memory=MagicMock())
         result = await te.execute("get_diary_entries", {"limit": 2})
 
-        # 2 entries shown + overflow hint
-        assert "ещё 2 записей" in result
+        # 2 entries shown + overflow hint. 2 → form_2_4 ("записи"), not
+        # the legacy hardcoded "записей" (which read wrong for 2-4).
+        assert "ещё 2 записи" in result
+        assert "ещё 2 записей" not in result
         # Newest first (DB ORDER BY date DESC)
         # The first day shown is base (i=0), second is base-1
         first_day = base.strftime("%Y-%m-%d")
