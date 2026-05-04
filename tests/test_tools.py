@@ -1888,6 +1888,53 @@ class TestCreateValidation:
         assert "must be after" in result
 
     @pytest.mark.asyncio
+    async def test_create_event_accepts_valid_end_at(self, tmp_db):
+        """Sanity / regression-guard for the end-after-start check —
+        a normal valid pair (end > start) must NOT be rejected. Without
+        this test a tightening of the comparison (e.g. end >= start
+        accidentally becoming end > start + 1h) could regress silently."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "end_at": "2099-04-15T15:00",
+        })
+        assert "Event created" in result
+        # Row stored with both times intact
+        row = tmp_db.db.execute(
+            "SELECT start_at, end_at FROM events WHERE title = 'встреча'"
+        ).fetchone()
+        assert row["start_at"][:16] == "2099-04-15 14:00"
+        assert row["end_at"][:16] == "2099-04-15 15:00"
+
+    @pytest.mark.asyncio
+    async def test_reschedule_event_accepts_valid_end_at(self, tmp_db):
+        """Same regression guard for reschedule_event."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("встреча", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "встреча",
+            "new_start_at": "2099-04-15T14:00",
+            "new_end_at": "2099-04-15T16:30",
+        })
+        assert "Перенесено" in result
+        row = tmp_db.db.execute(
+            "SELECT start_at, end_at FROM events WHERE title = 'встреча'"
+        ).fetchone()
+        assert row["start_at"][:16] == "2099-04-15 14:00"
+        assert row["end_at"][:16] == "2099-04-15 16:30"
+
+    @pytest.mark.asyncio
     async def test_create_reminder_rejects_empty_text(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
