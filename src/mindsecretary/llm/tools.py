@@ -1144,6 +1144,17 @@ class ToolExecutor:
                 "update_event requires at least one of: "
                 "title, description, location, related_person"
             )
+        # Pre-validate empty title — the schema is NOT NULL so
+        # update_event_by_hint silently returns None on whitespace input.
+        # Without this guard the response was "Не нашёл будущих событий"
+        # even when an event WAS matched, just rejected for empty title.
+        # Empty string for the other fields is a documented "clear" sentinel
+        # and stays valid.
+        if title is not None and not title.strip():
+            return (
+                "update_event: title cannot be empty (other fields can "
+                "be cleared with empty string, but title is required)"
+            )
         total = self.db.count_future_events_matching(text_hint)
         updated = self.db.update_event_by_hint(
             text_hint, title=title, description=description,

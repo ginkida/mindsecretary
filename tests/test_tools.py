@@ -1585,6 +1585,33 @@ class TestUpdateEventHandler:
         assert "at least one of" in result
 
     @pytest.mark.asyncio
+    async def test_empty_title_distinguishes_from_no_match(self, tmp_db):
+        """Pre-fix: title="   " was forwarded to DB which silently rejects
+        it (NOT NULL constraint), and the handler then said 'Не нашёл
+        событий' — misleading because the event WAS matched, just the
+        title rejected. Now the handler surfaces the distinct cause."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("обед", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_event", {
+            "text_hint": "обед", "title": "   ",
+        })
+        # Distinct error path — must NOT say "Не нашёл" since the event
+        # WAS found.
+        assert "title cannot be empty" in result
+        assert "Не нашёл" not in result
+
+        # And the original event's title is unchanged
+        row = tmp_db.db.execute("SELECT title FROM events").fetchone()
+        assert row["title"] == "обед"
+
+    @pytest.mark.asyncio
     async def test_no_match_returns_message(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
