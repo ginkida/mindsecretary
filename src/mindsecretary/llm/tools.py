@@ -1281,6 +1281,21 @@ class ToolExecutor:
             return err
         if new_end_at and (err := self._check_iso_datetime(new_end_at, "reschedule_event", "new_end_at")):
             return err
+        # If both provided, new_end_at must be after new_start_at — same
+        # rationale as iter 49 for create_event. Pre-fix a transposed
+        # pair stored a broken row and reschedule_event_by_hint dutifully
+        # preserved it.
+        if new_end_at:
+            try:
+                start_dt = datetime.fromisoformat(new_start_at.replace(" ", "T"))
+                end_dt = datetime.fromisoformat(new_end_at.replace(" ", "T"))
+                if end_dt <= start_dt:
+                    return (
+                        f"reschedule_event: new_end_at ({new_end_at[:16]}) "
+                        f"must be after new_start_at ({new_start_at[:16]})"
+                    )
+            except (ValueError, TypeError):
+                pass
         total = self.db.count_future_events_matching(text_hint)
         updated = self.db.reschedule_event_by_hint(text_hint, new_start_at, new_end_at)
         if not updated:

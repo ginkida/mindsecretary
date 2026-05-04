@@ -1944,6 +1944,29 @@ class TestCreateValidation:
         assert row["start_at"] == future
 
     @pytest.mark.asyncio
+    async def test_reschedule_event_rejects_end_before_start(self, tmp_db):
+        """Same end-after-start guard as create_event — reschedule with
+        a transposed pair would silently store a broken range."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        now = tmp_db.local_now_naive()
+        future = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tmp_db.create_event("встреча", future)
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("reschedule_event", {
+            "text_hint": "встреча",
+            "new_start_at": "2099-04-15T14:00",
+            "new_end_at": "2099-04-15T13:00",
+        })
+        assert "must be after" in result
+        # Original time unchanged
+        row = tmp_db.db.execute("SELECT start_at FROM events").fetchone()
+        assert row["start_at"] == future
+
+    @pytest.mark.asyncio
     async def test_reschedule_reminder_rejects_unparseable_trigger(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
