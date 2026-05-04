@@ -1183,6 +1183,128 @@ class TestGetDecisionsHandler:
         assert result.count("\n") == 1  # 2 lines = 1 newline
 
 
+class TestGetWeatherHandler:
+    """ToolExecutor handler for get_weather. Pre-fix the date param was
+    declared in the schema but completely ignored — LLM passing
+    date='2026-05-09' got today's weather. Now date drives the request
+    range and filters the output to that day."""
+
+    @staticmethod
+    def _make_weather_mock(tz: str = "UTC", daily: list[dict] | None = None):
+        """Build a WeatherClient stub. Captures get_forecast calls so the
+        test can assert on `days` requested."""
+        from unittest.mock import AsyncMock, MagicMock
+        weather = MagicMock()
+        weather.tz = tz
+        weather.get_forecast = AsyncMock(return_value={
+            "daily": daily or [],
+        })
+        # format_daily passes through — easier to assert on output content
+        weather.format_daily = MagicMock(
+            side_effect=lambda f: "\n".join(
+                f"{d['date']}: {d.get('cond', 'cond')}"
+                for d in f.get("daily", [])
+            ) or "Нет данных.",
+        )
+        return weather
+
+    @pytest.mark.asyncio
+    async def test_no_args_returns_today(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        weather = self._make_weather_mock(daily=[
+            {"date": "2026-04-15", "cond": "ясно"},
+        ])
+        te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
+        result = await te.execute("get_weather", {})
+        weather.get_forecast.assert_awaited_once_with(days=1)
+        assert "2026-04-15" in result
+
+    @pytest.mark.asyncio
+    async def test_date_arg_filters_to_specific_day(self, tmp_db, monkeypatch):
+        """Most user value — pre-fix a Saturday query returned Wednesday's
+        weather. Now the handler computes delta from today, requests N+1
+        days, and filters output to the requested date."""
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Pin "today" in the weather TZ via tz_now patch
+        with patch(
+            "mindsecretary.llm.tools.datetime",
+        ) as mock_dt, patch(
+            "mindsecretary.core.tz_now",
+        ) as mock_tz_now:
+            mock_dt.strptime = datetime.strptime
+            mock_tz_now.return_value = datetime(2026, 4, 15)
+            weather = self._make_weather_mock(daily=[
+                {"date": "2026-04-15", "cond": "ясно"},
+                {"date": "2026-04-16", "cond": "облачно"},
+                {"date": "2026-04-17", "cond": "дождь"},
+            ])
+            te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
+            result = await te.execute("get_weather", {"date": "2026-04-17"})
+
+        # Requested 3 days (today + 2)
+        weather.get_forecast.assert_awaited_once_with(days=3)
+        # Output filtered to just the requested date
+        assert "2026-04-17" in result
+        assert "дождь" in result
+        # Other days NOT in output
+        assert "2026-04-15" not in result
+        assert "2026-04-16" not in result
+
+    @pytest.mark.asyncio
+    async def test_past_date_returns_friendly_error(self, tmp_db):
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime
+        from mindsecretary.llm.tools import ToolExecutor
+
+        with patch("mindsecretary.core.tz_now") as mock_tz_now:
+            mock_tz_now.return_value = datetime(2026, 4, 15)
+            weather = self._make_weather_mock()
+            te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
+            result = await te.execute("get_weather", {"date": "2026-04-01"})
+
+        assert "в прошлом" in result
+        # Critical: no API call wasted on a past date
+        weather.get_forecast.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_far_future_date_returns_friendly_error(self, tmp_db):
+        """Open-Meteo caps at 7-day horizon; a date 30 days out can't be
+        forecast. Don't waste an API call — tell the LLM why."""
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime
+        from mindsecretary.llm.tools import ToolExecutor
+
+        with patch("mindsecretary.core.tz_now") as mock_tz_now:
+            mock_tz_now.return_value = datetime(2026, 4, 15)
+            weather = self._make_weather_mock()
+            te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
+            result = await te.execute("get_weather", {"date": "2026-05-30"})
+
+        assert "слишком далеко" in result
+        weather.get_forecast.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_falls_back_to_today(self, tmp_db):
+        """Garbage date string → handler degrades gracefully to today's
+        forecast instead of crashing or refusing."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        weather = self._make_weather_mock(daily=[
+            {"date": "2026-04-15", "cond": "ясно"},
+        ])
+        te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
+        result = await te.execute("get_weather", {"date": "not-a-date"})
+
+        weather.get_forecast.assert_awaited_once_with(days=1)
+        assert "2026-04-15" in result
+
+
 class TestUpdateEventHandler:
     """ToolExecutor handler for update_event. Closes the event-CRUD loop
     — non-time fields (title, description, location, related_person)

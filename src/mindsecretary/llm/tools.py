@@ -415,12 +415,19 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_weather",
-        "description": "Прогноз погоды.",
+        "description": (
+            "Прогноз погоды. Передай date='YYYY-MM-DD' для конкретного "
+            "дня (макс +6 дней от сегодня), либо days=N для прогноза на "
+            "N дней вперёд. Без аргументов — сегодня."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "date": {"type": "string"},
-                "days": {"type": "integer", "maximum": 7},
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "days": {
+                    "type": "integer", "minimum": 1, "maximum": 7,
+                    "description": "Сколько дней вперёд показать.",
+                },
             },
         },
     },
@@ -1395,11 +1402,56 @@ class ToolExecutor:
         self.db.set_ephemeral_state(key, value, float(ttl_hours))
         return f"Ephemeral state saved: {key}={value} (TTL {ttl_hours}h)"
 
+    _WEATHER_FORECAST_HORIZON = 7  # Open-Meteo limit
+
     async def _handle_get_weather(self, date: str | None = None,
                                   days: int | None = None) -> str:
+        """Resolve `date` first if both are passed: 'погода в субботу?'
+        is a much more common LLM output than 'погода на 3 дня вперёд',
+        and pre-fix the date was silently ignored — caller saw today's
+        weather no matter what.
+
+        Strategy:
+          - date: parse YYYY-MM-DD, derive N = (target - today) + 1, fetch
+            that many days, filter the daily list to just the matching row.
+          - days: legacy multi-day forecast, no filtering.
+          - neither: today only.
+        """
         if not self.weather:
             return "Weather not configured."
+
+        target_date: str | None = None
+        if date:
+            from ..core import tz_now
+            try:
+                target = datetime.strptime(date, "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                target = None
+            if target is not None:
+                today = tz_now(self.weather.tz).date()
+                delta = (target - today).days
+                if delta < 0:
+                    return f"Дата {date} в прошлом — прогноз не доступен."
+                if delta >= self._WEATHER_FORECAST_HORIZON:
+                    return (
+                        f"Дата {date} слишком далеко — Open-Meteo даёт "
+                        f"максимум {self._WEATHER_FORECAST_HORIZON} дней."
+                    )
+                days = delta + 1
+                target_date = date
+
         forecast = await self.weather.get_forecast(days=days or 1)
+
+        if target_date:
+            matching = next(
+                (d for d in forecast.get("daily", [])
+                 if d.get("date") == target_date),
+                None,
+            )
+            if not matching:
+                return f"Не удалось получить прогноз на {target_date}."
+            return self.weather.format_daily({"daily": [matching]})
+
         return self.weather.format_daily(forecast)
 
     def _handle_log_habit(self, habit_name: str, done: bool,
