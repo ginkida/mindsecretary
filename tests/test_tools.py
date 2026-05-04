@@ -1651,6 +1651,60 @@ class TestUpdateEventHandler:
         assert "Похожих ещё 2" in result
 
 
+class TestCreateValidation:
+    """Defensive empty-validation on create_event / create_reminder so
+    a stray empty arg from the LLM doesn't store a row that's invisible
+    to subsequent reads."""
+
+    @pytest.mark.asyncio
+    async def test_create_event_rejects_empty_title(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "   ", "start_at": "2099-01-15 10:00:00",
+        })
+        assert "non-empty title" in result
+        # No row created
+        rows = tmp_db.db.execute("SELECT * FROM events").fetchall()
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_create_event_rejects_empty_start_at(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча", "start_at": "  ",
+        })
+        assert "non-empty start_at" in result
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_rejects_empty_text(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_reminder", {
+            "text": "  ", "trigger_at": "2099-01-15 10:00:00",
+        })
+        assert "non-empty text" in result
+        assert tmp_db.get_pending_reminders() == []
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_rejects_empty_trigger_at(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_reminder", {
+            "text": "позвонить", "trigger_at": "",
+        })
+        assert "non-empty trigger_at" in result
+
+
 class TestCancelEventHandler:
     """ToolExecutor handler for cancel_event. Mirror of cancel_reminder —
     closes the missing CRUD on events. User says 'отмени встречу с Машей'

@@ -1055,7 +1055,15 @@ class ToolExecutor:
                              location: str | None = None,
                              related_person: str | None = None,
                              description: str | None = None) -> str:
-        event = self.db.create_event(title, start_at, end_at, location,
+        # Defensive validation. Schema is NOT NULL on both, but an LLM
+        # passing whitespace would store a row that looks broken in
+        # /events output (empty title) or vanishes from date queries
+        # (empty start_at — date('') is NULL, never matches a real date).
+        if not title or not title.strip():
+            return "create_event requires a non-empty title"
+        if not start_at or not start_at.strip():
+            return "create_event requires a non-empty start_at (YYYY-MM-DDTHH:MM)"
+        event = self.db.create_event(title.strip(), start_at, end_at, location,
                                      description, related_person)
         return f"Event created: {title} at {start_at}"
 
@@ -1217,9 +1225,17 @@ class ToolExecutor:
     def _handle_create_reminder(self, text: str, trigger_at: str,
                                 priority: str = "medium",
                                 recurrence: str | None = None) -> str:
+        # Defensive validation. Empty text would surface as "⏰ Напоминание:"
+        # in monitor.py with nothing after the colon, leaving the user
+        # confused about what was supposed to remind. Empty trigger_at
+        # makes the row invisible to the time-based reminder check.
+        if not text or not text.strip():
+            return "create_reminder requires a non-empty text"
+        if not trigger_at or not trigger_at.strip():
+            return "create_reminder requires a non-empty trigger_at"
         if recurrence and recurrence not in ("daily", "weekly", "monthly"):
             recurrence = None
-        self.db.create_reminder(text, trigger_at, priority, recurrence)
+        self.db.create_reminder(text.strip(), trigger_at, priority, recurrence)
         rec_str = f" (повтор: {recurrence})" if recurrence else ""
         return f"Reminder set: {text} at {trigger_at}{rec_str}"
 
