@@ -148,6 +148,38 @@ class TestBuildHistoryTurns:
         assert "[напоминание в 01-01 11:00]" in turns[1]["content"]
         assert "позвонить" in turns[1]["content"]
 
+    def test_event_alert_and_reflection_have_distinct_labels(self):
+        """Pre-fix _NOTIFICATION_LABELS lacked entries for event_alert and
+        event_reflection (added in v0.14.x). Both fell back to generic
+        'уведомление' so Claude couldn't tell a pre-event reminder
+        apart from a post-event 'how did it go?' ping in history."""
+        brain = _make_brain("UTC")
+        brain.db.get_recent_messages.return_value = [
+            {
+                "direction": "in", "message_type": "text",
+                "content": "ok", "timestamp": "2099-01-01 09:00:00",
+                "metadata": None,
+            },
+            {
+                "direction": "out", "message_type": "notification",
+                "content": "🔔 Через ~10 мин: ужин",
+                "timestamp": "2099-01-01 17:50:00",
+                "metadata": '{"kind": "event_alert", "event_id": "x"}',
+            },
+            {
+                "direction": "out", "message_type": "notification",
+                "content": "🪞 Как прошло «ужин»?",
+                "timestamp": "2099-01-01 19:30:00",
+                "metadata": '{"kind": "event_reflection", "event_id": "x"}',
+            },
+        ]
+        turns = brain._build_history_turns()
+        assistant_text = next(t["content"] for t in turns if t["role"] == "assistant")
+        assert "[событие скоро в 01-01 17:50]" in assistant_text
+        assert "[как прошло в 01-01 19:30]" in assistant_text
+        # Crucial: NEITHER falls back to the generic 'уведомление' marker
+        assert "[уведомление в" not in assistant_text
+
     def test_malformed_metadata_falls_back_to_generic_label(self):
         brain = _make_brain("UTC")
         brain.db.get_recent_messages.return_value = [

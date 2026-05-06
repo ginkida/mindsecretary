@@ -287,6 +287,10 @@ class Brain:
             lines.append(line)
         return "\n".join(lines) or "Нет событий."
 
+    # Each entry maps a notification's `metadata.kind` to a short Russian
+    # label rendered as "[<label> в HH:MM]" when history replays as an
+    # assistant turn. Keep in sync with tools.py::_SEARCH_KIND_LABELS so
+    # the same vocabulary surfaces in search_conversations output.
     _NOTIFICATION_LABELS = {
         "morning_briefing": "брифинг",
         "evening_summary": "вечер",
@@ -298,6 +302,8 @@ class Brain:
         "birthday_alert": "день рождения",
         "weather_alert": "погода",
         "reminder": "напоминание",
+        "event_alert": "событие скоро",
+        "event_reflection": "как прошло",
     }
 
     def _fmt_local_time(self, ts: str, today_local: str) -> str:

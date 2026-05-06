@@ -1439,6 +1439,8 @@ class ToolExecutor:
         snapshot = self.db.get_open_loops(days_ahead=days_ahead, limit_per_section=5)
         return self._format_open_loops(snapshot)
 
+    # Keep in sync with brain._NOTIFICATION_LABELS so search_conversations
+    # output matches the labels Claude already sees when history replays.
     _SEARCH_KIND_LABELS = {
         "morning_briefing": "брифинг",
         "evening_summary": "вечер",
@@ -1450,6 +1452,8 @@ class ToolExecutor:
         "birthday_alert": "день рождения",
         "weather_alert": "погода",
         "reminder": "напоминание",
+        "event_alert": "событие скоро",
+        "event_reflection": "как прошло",
     }
 
     @staticmethod

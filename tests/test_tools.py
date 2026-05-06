@@ -344,6 +344,32 @@ class TestSearchConversationsHandler:
         assert ToolExecutor._ts_utc_to_local_str("", "UTC") == "?"
 
     @pytest.mark.asyncio
+    async def test_event_alert_and_reflection_have_distinct_labels(self, tmp_db):
+        """Pre-fix _SEARCH_KIND_LABELS lacked entries for event_alert and
+        event_reflection so search_conversations output rendered them as
+        the generic '[уведомление]' marker. Now each kind gets a distinct
+        Russian label so Claude (and the user, when output bubbles up)
+        can tell pre-event reminder from post-event reflection."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.log_interaction(
+            "out", "notification", "🔔 Через ~10 мин: ужин LANDMARK",
+            metadata={"kind": "event_alert", "event_id": "x"},
+        )
+        tmp_db.log_interaction(
+            "out", "notification", "🪞 Как прошло «ужин LANDMARK»?",
+            metadata={"kind": "event_reflection", "event_id": "x"},
+        )
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute(
+            "search_conversations", {"query": "LANDMARK", "days": 30, "limit": 10},
+        )
+        assert "[событие скоро]" in result
+        assert "[как прошло]" in result
+        assert "[уведомление]" not in result
+
+    @pytest.mark.asyncio
     async def test_truncated_content_gets_ellipsis(self, tmp_db):
         """A 300+ char message gets truncated in search output — signal
         the cut with an ellipsis so Claude knows the quote is partial."""
