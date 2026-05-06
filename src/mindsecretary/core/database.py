@@ -1514,15 +1514,42 @@ class Database:
         "groq_stt": (0.0, 0.0),  # billed per minute, tracked separately
         "voyage": (0.06, 0.0),
     }
+    # Anthropic prompt-cache pricing multipliers vs base input rate.
+    # Source: https://docs.anthropic.com/.../prompt-caching
+    #   creation = 1.25x (5m TTL "ephemeral" pricing)
+    #   read     = 0.10x (90% discount for cached input)
+    _CACHE_CREATION_MULTIPLIER = 1.25
+    _CACHE_READ_MULTIPLIER = 0.10
 
     def log_cost(self, provider: str, input_tokens: int = 0,
-                 output_tokens: int = 0):
+                 output_tokens: int = 0,
+                 cache_creation_input_tokens: int = 0,
+                 cache_read_input_tokens: int = 0):
+        """Record one provider call with separate buckets for cache tokens.
+
+        Anthropic returns three input-token categories when prompt caching
+        is on: regular input, cache_creation_input_tokens (1.25x base),
+        and cache_read_input_tokens (0.10x base). Sum them all into the
+        stored input_tokens column (so /stats counts total work) but use
+        the differentiated rates when computing cost.
+        """
         inp_price, out_price = self._PRICES.get(provider, (0, 0))
-        cost = (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
+        cost = (
+            input_tokens * inp_price
+            + cache_creation_input_tokens * inp_price * self._CACHE_CREATION_MULTIPLIER
+            + cache_read_input_tokens * inp_price * self._CACHE_READ_MULTIPLIER
+            + output_tokens * out_price
+        ) / 1_000_000
+        # input_tokens column rolls up all three categories so historical
+        # /stats queries remain meaningful and don't undercount on cache
+        # hits. The cost field already reflects the discount.
+        total_input = (
+            input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+        )
         self.db.execute(
             "INSERT INTO api_costs (provider, input_tokens, output_tokens, cost_usd) "
             "VALUES (?, ?, ?, ?)",
-            (provider, input_tokens, output_tokens, cost),
+            (provider, total_input, output_tokens, cost),
         )
         self.db.commit()
 

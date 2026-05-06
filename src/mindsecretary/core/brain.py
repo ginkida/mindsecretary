@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ..learning.mood import analyze_mood, check_contact_frequency, get_mood_trend
-from ..llm.prompts import MAIN_SYSTEM_PROMPT
+from ..llm.prompts import MAIN_SYSTEM_DYNAMIC, MAIN_SYSTEM_STATIC
 from ..llm.client import LLMClient
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
 from . import DAYS_RU, fmt_local_time, tz_now
@@ -126,8 +126,16 @@ class Brain:
 
             inp = response.usage.get("input_tokens", 0)
             outp = response.usage.get("output_tokens", 0)
-            total_tokens += inp + outp
-            self.db.log_cost("anthropic", input_tokens=inp, output_tokens=outp)
+            cache_creation = response.usage.get("cache_creation_input_tokens", 0)
+            cache_read = response.usage.get("cache_read_input_tokens", 0)
+            total_tokens += inp + outp + cache_creation + cache_read
+            self.db.log_cost(
+                "anthropic",
+                input_tokens=inp,
+                output_tokens=outp,
+                cache_creation_input_tokens=cache_creation,
+                cache_read_input_tokens=cache_read,
+            )
 
             # Keep the latest non-empty text across rounds. This prevents empty
             # text in a tool-only round from erasing the warm reply that was
@@ -188,12 +196,31 @@ class Brain:
             "forward": "Пересланное сообщение. Это inbox capture: извлекай action items, follow-ups, события, обещания и людей.",
         }.get(message_type, f"Тип сообщения: {message_type}")
 
-    async def _build_system_prompt(self, user_message: str, message_type: str) -> str:
+    async def _build_system_prompt(self, user_message: str, message_type: str) -> list[dict]:
+        """Return system prompt as a list of two content blocks for
+        Anthropic prompt caching.
+
+        Block 0 — static prefix (role / voice / response style / tool
+        catalogue) with `cache_control: ephemeral`. Only `{name}` and
+        `{style}` are filled, both per-user constants, so the rendered
+        text is byte-stable across all of one user's calls. Anthropic
+        caches the prefix for ~5 minutes; subsequent calls within that
+        window pay a 90% discount on cached input tokens.
+
+        Block 1 — dynamic suffix (date / today_events / memories /
+        mood / etc). Changes every call, never cached.
+
+        Pre-v0.14.62 this returned a single str. The list-of-blocks
+        shape passes through to the Anthropic SDK natively.
+        """
         now = tz_now(self.profile.timezone)
         s = sanitize_for_context
 
-        return MAIN_SYSTEM_PROMPT.format(
+        static = MAIN_SYSTEM_STATIC.format(
             name=self.profile.name,
+            style=self.profile.style,
+        )
+        dynamic = MAIN_SYSTEM_DYNAMIC.format(
             profile=self.profile.to_yaml_str(),
             date=now.strftime("%Y-%m-%d"),
             day_of_week=DAYS_RU[now.weekday()],
@@ -209,8 +236,15 @@ class Brain:
             birthdays=self._section_birthdays(now, s),
             input_channel=self._input_channel_hint(message_type),
             current_context=self._section_ephemeral_state(s),
-            style=self.profile.style,
         )
+        return [
+            {
+                "type": "text",
+                "text": static,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": dynamic},
+        ]
 
     async def _section_memories(self, user_message: str, s) -> str:
         memories = await self.memory.search(user_message, top_k=self.settings.memory_top_k)

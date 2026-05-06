@@ -24,7 +24,7 @@ class LLMClient(ABC):
     @abstractmethod
     async def chat(
         self,
-        system: str,
+        system: str | list[dict],
         messages: list[dict],
         tools: list[dict] | None = None,
         max_tokens: int = 1024,
@@ -183,11 +183,23 @@ class AnthropicClient(LLMClient):
                     "arguments": block.input,
                 })
 
+        # cache_creation_input_tokens / cache_read_input_tokens are populated
+        # only when the request used prompt caching (system arg as a list of
+        # blocks with cache_control). Use getattr so older SDK versions or
+        # responses without caching keep working with 0 defaults.
+        cache_creation = getattr(
+            resp.usage, "cache_creation_input_tokens", 0,
+        ) or 0
+        cache_read = getattr(
+            resp.usage, "cache_read_input_tokens", 0,
+        ) or 0
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             usage={
                 "input_tokens": resp.usage.input_tokens,
                 "output_tokens": resp.usage.output_tokens,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
             },
         )

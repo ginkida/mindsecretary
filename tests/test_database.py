@@ -896,6 +896,53 @@ class TestStats:
         assert stats["today_cost"] > 0
         assert stats["today_tokens"] == 1500
 
+    def test_log_cost_with_cache_tokens_uses_correct_pricing(self, tmp_db: Database):
+        """v0.14.62: cache_creation costs 1.25x base input rate,
+        cache_read costs 0.10x. Without separate accounting a heavy
+        cache_read user would appear to pay full input price for
+        cached prefix and the bot would over-trigger the cost circuit
+        breaker."""
+        # Reference: 1000 regular input tokens × $3/M = $0.003
+        tmp_db.log_cost("anthropic", input_tokens=1000)
+        ref = tmp_db.get_stats()["today_cost"]
+        assert ref > 0
+
+        # Reset for clean comparison: insert another row with 1000 cache_read.
+        # Should cost 1/10 of regular: $0.003 × 0.10 = $0.0003.
+        tmp_db.log_cost("anthropic", cache_read_input_tokens=1000)
+        after_read = tmp_db.get_stats()["today_cost"]
+        # Increment from cache_read should be ~10% of the regular input row
+        delta = after_read - ref
+        assert 0.00025 < delta < 0.00035, (
+            f"cache_read row added ${delta:.5f}, expected ~$0.0003 "
+            f"(10% of regular input)"
+        )
+
+        # cache_creation costs 1.25x base
+        tmp_db.log_cost("anthropic", cache_creation_input_tokens=1000)
+        after_creation = tmp_db.get_stats()["today_cost"]
+        delta2 = after_creation - after_read
+        assert 0.00370 < delta2 < 0.00380, (
+            f"cache_creation row added ${delta2:.5f}, expected ~$0.00375 "
+            f"(125% of regular input)"
+        )
+
+    def test_log_cost_rolls_cache_tokens_into_input_total(self, tmp_db: Database):
+        """The input_tokens column rolls up regular + cache_creation +
+        cache_read so /stats's today_tokens reflects total work, not just
+        non-cached portion. Otherwise heavy-cache days would look
+        artificially light in the per-day trend."""
+        tmp_db.log_cost(
+            "anthropic",
+            input_tokens=200,
+            cache_creation_input_tokens=300,
+            cache_read_input_tokens=500,
+            output_tokens=100,
+        )
+        stats = tmp_db.get_stats()
+        # 200 + 300 + 500 = 1000 input + 100 output = 1100
+        assert stats["today_tokens"] == 1100
+
     def test_monthly_projection_below_3day_threshold_returns_none(
         self, tmp_db: Database,
     ):

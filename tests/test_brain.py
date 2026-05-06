@@ -481,9 +481,189 @@ class TestProcessInjectsHistory:
         }
 
 
+class TestSystemPromptCaching:
+    """v0.14.62: MAIN_SYSTEM_PROMPT split into static prefix + dynamic
+    suffix and returned as a list of content blocks with cache_control
+    on the static one. Anthropic caches the prefix for ~5 minutes;
+    repeat calls within that window pay 90% off cached input tokens.
+    For an active user this is real money saved."""
+
+    @pytest.mark.asyncio
+    async def test_returns_list_of_two_blocks(self):
+        from mindsecretary.core.brain import Brain
+
+        brain = Brain.__new__(Brain)
+        brain.db = MagicMock()
+        brain.profile = MagicMock()
+        brain.profile.timezone = "UTC"
+        brain.profile.name = "Test"
+        brain.profile.style = "кратко"
+        brain.profile.to_yaml_str = MagicMock(return_value="profile yaml")
+        brain.settings = MagicMock()
+        brain.settings.memory_top_k = 5
+        brain.memory = MagicMock()
+        from unittest.mock import AsyncMock
+        brain.memory.search = AsyncMock(return_value=[])
+        # Stub out section helpers that hit DB
+        brain._section_events = MagicMock(return_value="evt")
+        brain._section_goals = MagicMock(return_value="goals")
+        brain._section_decisions = MagicMock(return_value="dec")
+        brain._section_mood_today = MagicMock(return_value="mood")
+        brain._section_mood_trend = MagicMock(return_value="trend")
+        brain._section_theme_clusters = MagicMock(return_value="th")
+        brain._section_quiet_contacts = MagicMock(return_value="qc")
+        brain._section_birthdays = MagicMock(return_value="bd")
+        brain._section_ephemeral_state = MagicMock(return_value="eph")
+
+        blocks = await brain._build_system_prompt("привет", "text")
+
+        assert isinstance(blocks, list)
+        assert len(blocks) == 2
+        # First block is the static cacheable prefix
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        # Second block is the dynamic suffix, no cache_control
+        assert blocks[1]["type"] == "text"
+        assert "cache_control" not in blocks[1]
+
+    @pytest.mark.asyncio
+    async def test_static_block_contains_role_and_tools(self):
+        """The cacheable block must be the heavy one — role + voice +
+        tool catalogue (>1024 tokens for Sonnet cache eligibility)."""
+        from mindsecretary.core.brain import Brain
+        from unittest.mock import AsyncMock
+
+        brain = Brain.__new__(Brain)
+        brain.db = MagicMock()
+        brain.profile = MagicMock()
+        brain.profile.timezone = "UTC"
+        brain.profile.name = "Test"
+        brain.profile.style = "кратко"
+        brain.profile.to_yaml_str = MagicMock(return_value="p")
+        brain.settings = MagicMock()
+        brain.settings.memory_top_k = 5
+        brain.memory = MagicMock()
+        brain.memory.search = AsyncMock(return_value=[])
+        brain._section_events = MagicMock(return_value="x")
+        brain._section_goals = MagicMock(return_value="x")
+        brain._section_decisions = MagicMock(return_value="x")
+        brain._section_mood_today = MagicMock(return_value="x")
+        brain._section_mood_trend = MagicMock(return_value="x")
+        brain._section_theme_clusters = MagicMock(return_value="x")
+        brain._section_quiet_contacts = MagicMock(return_value="x")
+        brain._section_birthdays = MagicMock(return_value="x")
+        brain._section_ephemeral_state = MagicMock(return_value="x")
+
+        blocks = await brain._build_system_prompt("test", "text")
+
+        static = blocks[0]["text"]
+        # Role identifier
+        assert "MindSecretary" in static
+        # Sample of tool names — full canary is the separate
+        # TestSystemPromptToolGuidance test
+        assert "save_memory" in static
+        assert "create_event" in static
+        # Style filled in
+        assert "кратко" in static
+        # Cache eligibility — 1024-token floor at ~3 chars/token Cyrillic
+        # gives ~3000 chars. STATIC ~8.7k chars is well above.
+        assert len(static) >= 4000
+
+    @pytest.mark.asyncio
+    async def test_dynamic_block_carries_per_call_data(self):
+        """Per-call slots (today_events, memories, mood, etc) end up in
+        the uncached dynamic block, never in the cached one."""
+        from mindsecretary.core.brain import Brain
+        from unittest.mock import AsyncMock
+
+        brain = Brain.__new__(Brain)
+        brain.db = MagicMock()
+        brain.profile = MagicMock()
+        brain.profile.timezone = "UTC"
+        brain.profile.name = "Test"
+        brain.profile.style = "кратко"
+        brain.profile.to_yaml_str = MagicMock(return_value="my-profile-yaml")
+        brain.settings = MagicMock()
+        brain.settings.memory_top_k = 5
+        brain.memory = MagicMock()
+        # Memory marker chosen to NOT collide with prompt examples
+        # (the static prompt mentions "встреча с Машей" as a tool-call
+        # example for search_events, so don't reuse that phrase here).
+        brain.memory.search = AsyncMock(return_value=[
+            {"category": "work", "content": "MEMORY_FACT_XYZ_42"},
+        ])
+        brain._section_events = MagicMock(return_value="EVT_MARKER")
+        brain._section_goals = MagicMock(return_value="GOAL_MARKER")
+        brain._section_decisions = MagicMock(return_value="DEC_MARKER")
+        brain._section_mood_today = MagicMock(return_value="MOOD_TODAY_MARKER")
+        brain._section_mood_trend = MagicMock(return_value="MOOD_TREND_MARKER")
+        brain._section_theme_clusters = MagicMock(return_value="THEME_MARKER")
+        brain._section_quiet_contacts = MagicMock(return_value="QUIET_MARKER")
+        brain._section_birthdays = MagicMock(return_value="BD_MARKER")
+        brain._section_ephemeral_state = MagicMock(return_value="EPH_MARKER")
+
+        blocks = await brain._build_system_prompt("test", "text")
+        static, dynamic = blocks[0]["text"], blocks[1]["text"]
+
+        # Per-call markers in dynamic, NOT in static
+        for marker in ("EVT_MARKER", "GOAL_MARKER", "DEC_MARKER",
+                       "MOOD_TODAY_MARKER", "MOOD_TREND_MARKER",
+                       "THEME_MARKER", "QUIET_MARKER", "BD_MARKER",
+                       "EPH_MARKER", "my-profile-yaml", "MEMORY_FACT_XYZ_42"):
+            assert marker in dynamic, f"missing {marker} in dynamic"
+            assert marker not in static, f"leaked {marker} into static"
+
+    @pytest.mark.asyncio
+    async def test_static_byte_stable_across_calls(self):
+        """Pin the cache-hit promise: with the same user (name + style),
+        the static block bytes must be byte-identical across calls so
+        Anthropic's cache key matches. Pre-fix this test, anyone
+        accidentally adding {date} or {time} to the static would silently
+        invalidate the cache every call."""
+        from mindsecretary.core.brain import Brain
+        from unittest.mock import AsyncMock
+
+        def _make():
+            b = Brain.__new__(Brain)
+            b.db = MagicMock()
+            b.profile = MagicMock()
+            b.profile.timezone = "UTC"
+            b.profile.name = "Test"
+            b.profile.style = "кратко"
+            b.profile.to_yaml_str = MagicMock(return_value="p")
+            b.settings = MagicMock()
+            b.settings.memory_top_k = 5
+            b.memory = MagicMock()
+            b.memory.search = AsyncMock(return_value=[])
+            b._section_events = MagicMock(return_value="x")
+            b._section_goals = MagicMock(return_value="x")
+            b._section_decisions = MagicMock(return_value="x")
+            b._section_mood_today = MagicMock(return_value="x")
+            b._section_mood_trend = MagicMock(return_value="x")
+            b._section_theme_clusters = MagicMock(return_value="x")
+            b._section_quiet_contacts = MagicMock(return_value="x")
+            b._section_birthdays = MagicMock(return_value="x")
+            b._section_ephemeral_state = MagicMock(return_value="x")
+            return b
+
+        brain1 = _make()
+        brain2 = _make()
+        # Different per-call data, same user
+        brain1._section_events = MagicMock(return_value="event1")
+        brain2._section_events = MagicMock(return_value="totally-different")
+
+        blocks1 = await brain1._build_system_prompt("first", "text")
+        blocks2 = await brain2._build_system_prompt("second", "voice")
+
+        # Static halves must match byte-for-byte → cache hit
+        assert blocks1[0]["text"] == blocks2[0]["text"]
+        # Dynamic halves naturally differ
+        assert blocks1[1]["text"] != blocks2[1]["text"]
+
+
 class TestSystemPromptToolGuidance:
     """The Anthropic API gets tool schemas via the `tools=` param, but the
-    'Инструменты' section in MAIN_SYSTEM_PROMPT tells Claude *when* to
+    'Инструменты' section in MAIN_SYSTEM_STATIC tells Claude *when* to
     call each one. Whenever a new LLM tool ships, the prompt MUST mention
     it — otherwise Claude will underuse the tool because no behavioural
     hint exists. This test is the canary."""
@@ -491,8 +671,12 @@ class TestSystemPromptToolGuidance:
     def test_prompt_mentions_every_custom_tool(self):
         """All custom (non-native) tool names must appear by name in the
         system prompt's tool guidance section. Drift here is invisible
-        until users notice the bot ignoring a feature."""
-        from mindsecretary.llm.prompts import MAIN_SYSTEM_PROMPT
+        until users notice the bot ignoring a feature.
+
+        v0.14.62 split MAIN_SYSTEM_PROMPT into STATIC (tools live here)
+        and DYNAMIC (per-call data) for prompt caching. The tool
+        catalogue is in STATIC, so that's where this canary checks."""
+        from mindsecretary.llm.prompts import MAIN_SYSTEM_STATIC
         from mindsecretary.llm.tools import TOOL_DEFINITIONS
 
         # Native server-side tools (web_search) have a 'type' field;
@@ -502,9 +686,9 @@ class TestSystemPromptToolGuidance:
             t["name"] for t in TOOL_DEFINITIONS
             if "input_schema" in t
         ]
-        missing = [n for n in custom_names if n not in MAIN_SYSTEM_PROMPT]
+        missing = [n for n in custom_names if n not in MAIN_SYSTEM_STATIC]
         assert not missing, (
-            f"MAIN_SYSTEM_PROMPT missing tool guidance for: {missing}. "
+            f"MAIN_SYSTEM_STATIC missing tool guidance for: {missing}. "
             "Add a `- toolname — when-to-call-it` line to the "
             "Инструменты section so Claude knows when to use it."
         )
