@@ -599,6 +599,33 @@ class TestInteractions:
         kinds = [_json.loads(m["metadata"])["kind"] for m in notifs]
         assert kinds == ["morning_briefing", "reminder"]
 
+    def test_recent_messages_includes_photo_turns(self, tmp_db: Database):
+        """Photos must replay through history — pre-fix the inbound 'photo'
+        turn was filtered out while the bot's reply (logged as 'chat') was
+        kept, leaving Claude with a one-sided conversation: "[bot] Это
+        чек на 500р" with no inbound message in front of it. The user
+        asking 'а что там было на фото?' on the next turn would get
+        nonsense because the photo+caption was invisible."""
+        tmp_db.log_interaction("in", "photo", "что это?")
+        tmp_db.log_interaction("out", "chat", "Чек на 500р из кафе.")
+        tmp_db.log_interaction("in", "text", "сохрани в расходы")
+
+        recent = tmp_db.get_recent_messages(limit=10)
+        types = [m["message_type"] for m in recent]
+        assert types == ["photo", "chat", "text"]
+        assert recent[0]["content"] == "что это?"
+
+    def test_search_past_conversations_finds_photo_caption(
+        self, tmp_db: Database,
+    ):
+        """search_conversations is the LLM's escape hatch for older
+        history — must surface photo captions too. Pre-fix it skipped
+        message_type='photo' so the user's "найди где я отправлял чек"
+        couldn't recover the image discussion."""
+        tmp_db.log_interaction("in", "photo", "вот чек из кафе Пушкин")
+        rows = tmp_db.search_past_conversations("Пушкин", days=7)
+        assert any("Пушкин" in r["content"] for r in rows)
+
     def test_count_notifications_today(self, tmp_db: Database):
         assert tmp_db.count_notifications_today() == 0
         tmp_db.log_interaction("out", "notification", "Reminder!")

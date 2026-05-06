@@ -990,13 +990,26 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # Inbound + outbound message types eligible for replay in the LLM's
+    # multi-turn history (and for the keyword-based search_conversations
+    # fallback). Skips ephemeral kinds like 'briefing'/'diary' which the
+    # LLM already gets via the system prompt's structured slots.
+    _REPLAYABLE_MESSAGE_TYPES = (
+        'voice', 'text', 'forward', 'photo', 'chat', 'notification',
+    )
+
     def get_recent_messages(self, limit: int = 20) -> list[dict]:
+        # Photo was missing from this filter pre-fix, so the user's
+        # photo+caption turn was silently dropped from history while
+        # the bot's reply (logged as 'chat') was preserved — the next
+        # turn looked one-sided to Claude.
+        placeholders = ",".join("?" for _ in self._REPLAYABLE_MESSAGE_TYPES)
         rows = self.db.execute(
-            "SELECT direction, content, timestamp, message_type, metadata "
-            "FROM interactions "
-            "WHERE message_type IN ('voice', 'text', 'forward', 'chat', 'notification') "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            f"SELECT direction, content, timestamp, message_type, metadata "
+            f"FROM interactions "
+            f"WHERE message_type IN ({placeholders}) "
+            f"ORDER BY timestamp DESC LIMIT ?",
+            (*self._REPLAYABLE_MESSAGE_TYPES, limit),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
@@ -1023,14 +1036,16 @@ class Database:
             - timedelta(days=max(1, days))
         ).strftime(self._SQL_TS_FMT)
         escaped = self._escape_like(query.strip().lower())
+        placeholders = ",".join("?" for _ in self._REPLAYABLE_MESSAGE_TYPES)
         rows = self.db.execute(
-            "SELECT timestamp, direction, message_type, content, metadata "
-            "FROM interactions "
-            "WHERE timestamp >= ? "
-            "  AND message_type IN ('voice', 'text', 'forward', 'chat', 'notification') "
-            "  AND pylower(content) LIKE ? ESCAPE '\\' "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (since, f"%{escaped}%", max(1, min(limit, 50))),
+            f"SELECT timestamp, direction, message_type, content, metadata "
+            f"FROM interactions "
+            f"WHERE timestamp >= ? "
+            f"  AND message_type IN ({placeholders}) "
+            f"  AND pylower(content) LIKE ? ESCAPE '\\' "
+            f"ORDER BY timestamp DESC LIMIT ?",
+            (since, *self._REPLAYABLE_MESSAGE_TYPES, f"%{escaped}%",
+             max(1, min(limit, 50))),
         ).fetchall()
         return [dict(r) for r in rows]
 
