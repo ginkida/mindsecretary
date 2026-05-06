@@ -196,6 +196,46 @@ class TestSnoozeGate:
         s.send_fn.assert_awaited_once()
 
 
+class TestSendProactiveLogFailure:
+    """Pre-fix log_interaction raised inside the same try as send_fn, so
+    a transient DB error AFTER successful Telegram send returned False —
+    callers (birthday alerts, event reflections) treated it as "not sent"
+    and re-fired the same notification on the next tick. Worse than a
+    missing log line: actual user-visible duplicate alerts."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_send_succeeds_but_log_fails(self):
+        s = _make_scheduler([])
+        s.db.is_snoozed_now = MagicMock(return_value=False)
+        s.db.has_recent_user_messages = MagicMock(return_value=False)
+        s.db.count_notifications_today = MagicMock(return_value=0)
+        s.db.log_interaction = MagicMock(side_effect=RuntimeError("disk full"))
+        s.send_fn = AsyncMock()
+
+        result = await s._send_proactive("text", kind="birthday_alert")
+
+        assert result is True  # message went out, log loss is acceptable
+        s.send_fn.assert_awaited_once()
+        s.db.log_interaction.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_send_itself_fails(self):
+        """Telegram failure → False → caller retries next tick. Log
+        attempt must NOT happen because there's nothing to log."""
+        s = _make_scheduler([])
+        s.db.is_snoozed_now = MagicMock(return_value=False)
+        s.db.has_recent_user_messages = MagicMock(return_value=False)
+        s.db.count_notifications_today = MagicMock(return_value=0)
+        s.db.log_interaction = MagicMock()
+        s.send_fn = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+        result = await s._send_proactive("text", kind="event_reflection")
+
+        assert result is False
+        s.send_fn.assert_awaited_once()
+        s.db.log_interaction.assert_not_called()
+
+
 class TestActionNudgeReminderPlural:
     """The 'Просрочено N напоминаний' line is the most-prominent count
     in the action nudge — it reaches the user directly. Pre-fix the

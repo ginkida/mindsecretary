@@ -155,16 +155,29 @@ class ProactiveScheduler:
             )
         try:
             await self.send_fn(text)
+        except Exception as e:
+            logger.error("Proactive send failed: %s", type(e).__name__)
+            return False
+        # Log failure must NOT downgrade the return to False — the message
+        # already went out. If we returned False here, callers like
+        # _check_birthdays would skip mark_birthday_alerted, the next day's
+        # job re-sends the same alert (for events: reflected_at would stay
+        # NULL, retriggering on every 15-min check). Worse than missing a
+        # log line.
+        try:
             self.db.log_interaction(
                 direction="out",
                 message_type="notification",
                 content=text[:500],
                 metadata={"kind": kind},
             )
-            return True
         except Exception as e:
-            logger.error("Proactive send failed: %s", type(e).__name__)
-            return False
+            logger.warning(
+                "Proactive send succeeded but log_interaction failed (%s) — "
+                "history may miss this %s",
+                type(e).__name__, kind,
+            )
+        return True
 
     def _build_action_nudge(self) -> str | None:
         """Build a concrete midday nudge from open loops and stale follow-ups."""
