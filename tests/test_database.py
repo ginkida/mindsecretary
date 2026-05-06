@@ -943,6 +943,47 @@ class TestStats:
         # 200 + 300 + 500 = 1000 input + 100 output = 1100
         assert stats["today_tokens"] == 1100
 
+    def test_log_llm_response_records_cost_from_usage_dict(
+        self, tmp_db: Database,
+    ):
+        """log_llm_response unwraps a response object's usage dict and
+        forwards it to log_cost. Used by briefings / weekly review /
+        smart questions — pre-fix those skipped logging entirely so
+        proactive spend escaped both /stats and the daily limiter."""
+        class _Resp:
+            usage = {
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "cache_creation_input_tokens": 500,
+                "cache_read_input_tokens": 800,
+            }
+        before = tmp_db.get_stats()["today_cost"]
+        tmp_db.log_llm_response(_Resp())
+        after = tmp_db.get_stats()["today_cost"]
+        # Spend recorded — exact amount validated by test_log_cost_*; here
+        # we just want to confirm the helper actually books the call.
+        assert after > before
+        stats = tmp_db.get_stats()
+        # Total input rolls regular + cache_creation + cache_read
+        assert stats["today_tokens"] == 1000 + 500 + 800 + 100
+
+    def test_log_llm_response_skips_when_usage_missing(
+        self, tmp_db: Database,
+    ):
+        """Test mocks often return MagicMock-style stubs without a usage
+        dict. The helper must no-op rather than blow up — pre-fix it
+        passed a MagicMock through to sqlite3.execute and tripped a
+        ProgrammingError, killing the briefing/diary path."""
+        class _NoUsage:
+            usage = None
+        class _MockUsage:
+            usage = object()  # not a dict
+        before = tmp_db.get_stats()["today_cost"]
+        tmp_db.log_llm_response(_NoUsage())
+        tmp_db.log_llm_response(_MockUsage())
+        after = tmp_db.get_stats()["today_cost"]
+        assert after == before
+
     def test_monthly_projection_below_3day_threshold_returns_none(
         self, tmp_db: Database,
     ):

@@ -1598,6 +1598,26 @@ class Database:
         )
         self.db.commit()
 
+    def log_llm_response(self, response, provider: str = "anthropic") -> None:
+        """Pass-through helper for non-Brain LLM call sites (briefings,
+        weekly review, smart questions). They previously skipped log_cost
+        entirely, so proactive spend escaped both /stats and the daily
+        cost circuit breaker. Untyped on `response` to avoid an import
+        cycle (database → llm.client → ... → database)."""
+        usage = getattr(response, "usage", None)
+        if not isinstance(usage, dict):
+            return  # No usage attached (e.g. test stub) — nothing to log.
+        def _i(key: str) -> int:
+            v = usage.get(key, 0)
+            return v if isinstance(v, int) else 0
+        self.log_cost(
+            provider,
+            input_tokens=_i("input_tokens"),
+            output_tokens=_i("output_tokens"),
+            cache_creation_input_tokens=_i("cache_creation_input_tokens"),
+            cache_read_input_tokens=_i("cache_read_input_tokens"),
+        )
+
     def get_today_cost(self) -> float:
         """Total API cost (USD) accumulated today (profile local day).
 

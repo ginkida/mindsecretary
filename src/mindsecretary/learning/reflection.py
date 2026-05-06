@@ -104,9 +104,8 @@ class WeeklyReflection:
                 system=prompt,
                 messages=[{"role": "user", "content": "Проанализируй неделю."}],
                 max_tokens=2000,
-
-
             )
+            self.db.log_llm_response(response)
             text = response.text or ""
         except Exception as e:
             logger.error("Weekly review LLM failed: %s", type(e).__name__)

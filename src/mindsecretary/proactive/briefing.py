@@ -265,6 +265,7 @@ class BriefingGenerator:
                 messages=[{"role": "user", "content": "Сгенерируй утренний брифинг."}],
                 max_tokens=800,
             )
+            self.db.log_llm_response(response)
             text = response.text
             if text:
                 self.db.log_interaction(
@@ -379,6 +380,7 @@ class BriefingGenerator:
                 messages=[{"role": "user", "content": "Сгенерируй вечерний итог."}],
                 max_tokens=800,
             )
+            self.db.log_llm_response(response)
             text = response.text
             if text:
                 self.db.log_interaction(
@@ -470,6 +472,7 @@ class BriefingGenerator:
                 messages=[{"role": "user", "content": "Напиши запись в дневник за сегодня."}],
                 max_tokens=800,
             )
+            self.db.log_llm_response(response)
             text = response.text
             if text:
                 self.db.save_diary_entry(

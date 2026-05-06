@@ -172,6 +172,7 @@ class SmartQuestions:
                 messages=[{"role": "user", "content": "Сгенерируй вопрос."}],
                 max_tokens=200,
             )
+            self.db.log_llm_response(response)
             text = (response.text or "").strip()
             if not text or text == "SKIP":
                 return None
