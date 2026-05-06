@@ -24,6 +24,7 @@ proactive:
   weather_monitor: true
   birthday_alerts: true
   event_alerts: true
+  event_reflections: true
 
 # Tunable intervals and thresholds (defaults shown)
 tuning:
@@ -32,6 +33,10 @@ tuning:
   # Pre-event alerts: ping N minutes before each calendar event
   event_alert_lead_minutes: 15
   event_alert_check_minutes: 5
+  # Post-event reflection: ask "как прошло?" N minutes after end_at
+  event_reflection_lag_minutes: 30
+  event_reflection_check_minutes: 15
+  event_reflection_window_minutes: 180
   process_timeout_sec: 90
   quiet_contact_days: 30
   quiet_contact_min_mentions: 3

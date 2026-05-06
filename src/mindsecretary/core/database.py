@@ -545,6 +545,48 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_events_to_reflect(self, lag_minutes: int,
+                              window_minutes: int = 180) -> list[dict]:
+        """Events whose end_at finished `lag_minutes` to
+        `lag_minutes + window_minutes` ago, with end_at populated and
+        reflected_at IS NULL. Used by the post-event reflection job.
+
+        Window cap prevents a "catch-up storm" if the bot was offline
+        for hours — instead of asking about every event from yesterday,
+        only events that ended recently enough for reflection to be
+        meaningful surface. Default 3h matches the typical "still fresh
+        enough to recall details" window.
+
+        Past tense in window terms: end_at is between
+            (now - lag - window) and (now - lag).
+        end_at is profile-local naive (LLM tool sanitizer normalizes
+        on create_event), so compare to local_now_naive().
+        """
+        if lag_minutes <= 0:
+            return []
+        now_local = self.local_now_naive()
+        upper = now_local - timedelta(minutes=lag_minutes)
+        lower = upper - timedelta(minutes=max(1, window_minutes))
+        rows = self.db.execute(
+            "SELECT * FROM events "
+            "WHERE end_at IS NOT NULL "
+            "AND reflected_at IS NULL "
+            "AND end_at <= ? AND end_at > ? "
+            "ORDER BY end_at",
+            (upper.strftime(self._SQL_TS_FMT),
+             lower.strftime(self._SQL_TS_FMT)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_event_reflected(self, event_id: str) -> None:
+        """Stamp reflected_at=now (UTC) so the event won't be reflected
+        again. Mirror of mark_event_alerted but for the closing edge."""
+        self.db.execute(
+            "UPDATE events SET reflected_at = datetime('now') WHERE id = ?",
+            (event_id,),
+        )
+        self.db.commit()
+
     def get_events_to_alert(self, lead_minutes: int) -> list[dict]:
         """Future events starting within `lead_minutes` that haven't been
         alerted yet. Used by the scheduler's event_alert job so the user
@@ -597,18 +639,21 @@ class Database:
         row = self._find_future_event_by_hint(hint)
         if not row:
             return None
-        # Reset alerted_at so the user gets a fresh pre-event alert at the
-        # new time — otherwise an event already alerted at its original
-        # start would silently miss its new lead window.
+        # Reset alerted_at AND reflected_at so the user gets a fresh
+        # pre-event alert at the new time and a fresh post-event
+        # reflection after the new end. Otherwise an event already
+        # alerted/reflected at its original time would silently skip
+        # both windows of the rescheduled occurrence.
         if new_end_at is not None:
             self.db.execute(
-                "UPDATE events SET start_at = ?, end_at = ?, alerted_at = NULL "
-                "WHERE id = ?",
+                "UPDATE events SET start_at = ?, end_at = ?, "
+                "alerted_at = NULL, reflected_at = NULL WHERE id = ?",
                 (new_start_at, new_end_at, row["id"]),
             )
         else:
             self.db.execute(
-                "UPDATE events SET start_at = ?, alerted_at = NULL WHERE id = ?",
+                "UPDATE events SET start_at = ?, "
+                "alerted_at = NULL, reflected_at = NULL WHERE id = ?",
                 (new_start_at, row["id"]),
             )
         self.db.commit()

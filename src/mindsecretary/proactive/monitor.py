@@ -71,6 +71,68 @@ def _format_event_alert(event: dict, now_local: datetime) -> str:
     return "\n".join(parts)
 
 
+def _format_event_reflection(event: dict) -> str:
+    """Render the post-event reflection prompt. Gender-neutral framing
+    ('Как прошло') side-steps Russian gender agreement on the title noun
+    (встреча vs ужин vs звонок all decline differently)."""
+    title = (event.get("title") or "событие").strip()
+    end_raw = event.get("end_at") or ""
+    end_str = end_raw[11:16] if len(end_raw) >= 16 else None
+    parts = [f"🪞 Как прошло «{title}»?"]
+    if end_str:
+        parts[0] += f" (закончилось в {end_str})"
+    person = (event.get("related_person") or "").strip()
+    location = (event.get("location") or "").strip()
+    extras: list[str] = []
+    if person:
+        extras.append(f"с {person}")
+    if location:
+        extras.append(f"в {location}")
+    if extras:
+        parts.append(" / ".join(extras))
+    parts.append("Если есть что записать про итог — расскажи.")
+    return "\n".join(parts)
+
+
+async def check_event_reflections(
+    db: Database, send_fn, *, lag_minutes: int, window_minutes: int,
+) -> int:
+    """Post-event reflection: fire ~`lag_minutes` after each event's
+    end_at. `window_minutes` caps how stale a candidate can be — prevents
+    a "catch-up storm" if the bot was offline for hours.
+
+    Caller's `send_fn(text) -> bool | Awaitable[bool]` MUST return True
+    if the message actually went out, False if it was suppressed (quiet
+    hours / snooze / rate limit). Reflected_at is stamped only on
+    successful send — that way a quiet-hours-suppressed reflection
+    retries on the next tick (still within window) instead of being
+    permanently lost. Different semantics from event_alerts which use
+    at-most-once because they bypass _send_proactive's gates.
+    """
+    if lag_minutes <= 0:
+        return 0
+    pending = db.get_events_to_reflect(
+        lag_minutes=lag_minutes, window_minutes=window_minutes,
+    )
+    sent = 0
+    for ev in pending:
+        text = _format_event_reflection(ev)
+        try:
+            result = send_fn(text)
+            if hasattr(result, "__await__"):
+                result = await result
+            if not result:
+                continue  # suppressed — try again next tick
+            db.mark_event_reflected(ev["id"])
+            sent += 1
+        except Exception as e:
+            logger.error(
+                "Failed to send event reflection for %s: %s",
+                ev.get("id"), type(e).__name__,
+            )
+    return sent
+
+
 async def check_event_alerts(db: Database, send_fn, lead_minutes: int) -> int:
     """Pre-event alert: fire once per event when it's within `lead_minutes`
     of starting. Returns count alerted.

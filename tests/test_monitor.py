@@ -8,7 +8,9 @@ import pytest
 
 from mindsecretary.proactive.monitor import (
     _format_event_alert,
+    _format_event_reflection,
     check_event_alerts,
+    check_event_reflections,
     check_reminders,
 )
 
@@ -255,3 +257,188 @@ def test_format_event_alert_skips_redundant_person():
     }
     text = _format_event_alert(event, now)
     assert text.count("Маш") == 1  # appears in title only, not as 👤 line
+
+
+# --- Post-event reflection ---
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_fires_after_lag_window(tmp_db):
+    """Event ended 35 min ago with lag=30 → must reflect (within
+    lag..lag+window range). reflected_at populated → won't re-fire."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now - timedelta(minutes=35)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("ужин с Машей", start, end_at=end, location="кафе")
+
+    sent: list[str] = []
+
+    def fake_send(text):
+        sent.append(text)
+        return True
+
+    count = await check_event_reflections(
+        tmp_db, fake_send, lag_minutes=30, window_minutes=180,
+    )
+    assert count == 1
+    assert "ужин с Машей" in sent[0]
+    # reflected_at populated
+    row = tmp_db.db.execute(
+        "SELECT reflected_at FROM events WHERE title = 'ужин с Машей'"
+    ).fetchone()
+    assert row["reflected_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_skips_too_recent(tmp_db):
+    """Event ended 5 min ago with lag=30 → too soon, skip. Reflecting
+    while the user is still walking out of the meeting feels rushed."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("свежее", start, end_at=end)
+
+    sent: list[str] = []
+    count = await check_event_reflections(
+        tmp_db, lambda t: (sent.append(t), True)[1],
+        lag_minutes=30, window_minutes=180,
+    )
+    assert count == 0
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_skips_outside_window(tmp_db):
+    """Event ended 5h ago with window=180 (3h) → too stale, skip.
+    Yesterday's lunch isn't worth a 'how was it' ping."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("вчерашний", start, end_at=end)
+
+    sent: list[str] = []
+    count = await check_event_reflections(
+        tmp_db, lambda t: (sent.append(t), True)[1],
+        lag_minutes=30, window_minutes=180,
+    )
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_skips_events_without_end_at(tmp_db):
+    """Without end_at we don't know when to reflect — skip silently."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("без_конца", start)  # no end_at
+
+    sent: list[str] = []
+    count = await check_event_reflections(
+        tmp_db, lambda t: (sent.append(t), True)[1],
+        lag_minutes=30, window_minutes=180,
+    )
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_dedup_no_double_fire(tmp_db):
+    """Once reflected, subsequent ticks must skip even if still in
+    window. Without dedup the user gets the same prompt every 15 min."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("одиночный", start, end_at=end)
+
+    sent: list[str] = []
+
+    def fake_send(text):
+        sent.append(text)
+        return True
+
+    first = await check_event_reflections(
+        tmp_db, fake_send, lag_minutes=30, window_minutes=180,
+    )
+    second = await check_event_reflections(
+        tmp_db, fake_send, lag_minutes=30, window_minutes=180,
+    )
+    assert first == 1
+    assert second == 0
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_event_reflection_retries_when_send_returns_false(tmp_db):
+    """Quiet hours / snooze suppress the send (returns False from
+    _send_proactive). reflected_at must NOT be marked, so the next
+    tick can retry within window. At-least-once-within-window is the
+    deliberate trade vs at-most-once for event_alerts."""
+    now = tmp_db.local_now_naive()
+    start = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.create_event("retry", start, end_at=end)
+
+    # Send suppressed (e.g. quiet hours) — returns False
+    count = await check_event_reflections(
+        tmp_db, lambda text: False,
+        lag_minutes=30, window_minutes=180,
+    )
+    assert count == 0
+    # reflected_at NOT marked → next tick can try again
+    row = tmp_db.db.execute(
+        "SELECT reflected_at FROM events WHERE title = 'retry'"
+    ).fetchone()
+    assert row["reflected_at"] is None
+
+
+def test_event_reflection_resets_on_reschedule(tmp_db):
+    """Reschedule clears reflected_at along with alerted_at. Defensive:
+    in the normal flow reflected_at is only set after end_at passes,
+    by which point reschedule_event_by_hint can't find the row anymore
+    (its filter is `start_at >= now`). But if reflected_at gets set on
+    a future event somehow (manual DB intervention, future code path),
+    rescheduling to a different future time must clear both flags so
+    the new occurrence's alert + reflection both fire."""
+    now = tmp_db.local_now_naive()
+    start = (now + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    e = tmp_db.create_event("resched", start, end_at=end)
+    # Force-set both flags (simulating a prior alert + reflection cycle)
+    tmp_db.db.execute(
+        "UPDATE events SET alerted_at = datetime('now'), "
+        "reflected_at = datetime('now') WHERE id = ?",
+        (e["id"],),
+    )
+    tmp_db.db.commit()
+
+    # Reschedule to different future time — both flags must reset
+    new_start = (now + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    new_end = (now + timedelta(hours=4)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp_db.reschedule_event_by_hint("resched", new_start, new_end)
+
+    row = tmp_db.db.execute(
+        "SELECT reflected_at, alerted_at FROM events WHERE title = 'resched'"
+    ).fetchone()
+    assert row["reflected_at"] is None
+    assert row["alerted_at"] is None
+
+
+def test_format_event_reflection_basic():
+    text = _format_event_reflection({
+        "title": "ужин с Машей",
+        "end_at": "2026-04-15 19:00:00",
+        "related_person": "Маша",
+        "location": "кафе Пушкин",
+    })
+    assert "ужин с Машей" in text
+    assert "19:00" in text
+    assert "кафе Пушкин" in text
+
+
+def test_format_event_reflection_handles_minimal_event():
+    """Bare event (just title, end_at) — must not break on missing
+    location / person."""
+    text = _format_event_reflection({
+        "title": "стандап",
+        "end_at": "2026-04-15 09:30:00",
+    })
+    assert "стандап" in text
+    assert "09:30" in text

@@ -11,7 +11,7 @@ from ..core.config import Profile, Settings
 from ..core.database import Database
 from ..integrations.weather import WMO_CODES, WeatherClient, _merge_rain_hours
 from ..learning.mood import check_contact_frequency
-from .monitor import check_event_alerts, check_reminders
+from .monitor import check_event_alerts, check_event_reflections, check_reminders
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,14 @@ class ProactiveScheduler:
                 id="event_alert_check", replace_existing=True,
             )
 
+        if (self.settings.event_reflections
+                and self.settings.event_reflection_lag_minutes > 0):
+            self.scheduler.add_job(
+                self._check_event_reflections, "interval",
+                minutes=self.settings.event_reflection_check_minutes,
+                id="event_reflection_check", replace_existing=True,
+            )
+
         if self.settings.birthday_alerts:
             self.scheduler.add_job(
                 self._check_birthdays, "cron", hour=9, minute=0,
@@ -366,6 +374,32 @@ class ProactiveScheduler:
                 logger.info("Sent %d event alerts", sent)
         except Exception as e:
             logger.error("Event alert check failed: %s", type(e).__name__)
+
+    async def _check_event_reflections(self):
+        """Post-event reflection — fire `event_reflection_lag_minutes`
+        after each event's end_at. Routes through _send_proactive so
+        quiet hours / snooze / notification limits apply. Reflections
+        are discretionary (unlike pre-event alerts which match user-
+        scheduled commitments), so respecting the gates is the right
+        semantics — late-night events shouldn't trigger 02:00 pings.
+
+        Window cap (event_reflection_window_minutes, default 3h) drops
+        events that ended too long ago. A reflection suppressed by
+        quiet hours retries each tick until either the gate clears or
+        the window closes — better than at-most-once losing every
+        late-evening event.
+        """
+        try:
+            sent = await check_event_reflections(
+                self.db,
+                lambda text: self._send_proactive(text, kind="event_reflection"),
+                lag_minutes=self.settings.event_reflection_lag_minutes,
+                window_minutes=self.settings.event_reflection_window_minutes,
+            )
+            if sent:
+                logger.info("Sent %d event reflections", sent)
+        except Exception as e:
+            logger.error("Event reflection check failed: %s", type(e).__name__)
 
     async def _check_birthdays(self):
         """Daily birthday alert with 7-day dedup per contact."""

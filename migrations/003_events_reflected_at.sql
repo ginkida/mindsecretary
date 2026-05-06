@@ -1,0 +1,12 @@
+-- Post-event reflection (v0.14.63): scheduler pings user N minutes
+-- after each calendar event ends to capture "как прошло?" while the
+-- experience is still fresh. Mirror of alerted_at (migration 002):
+-- once stamped, the event won't be re-reflected on subsequent ticks
+-- even if it's still inside the lag window. NULL means "not yet
+-- reflected".
+--
+-- Only events with end_at populated qualify — without an end time
+-- there's no reliable point to ask, and "started 30 min ago" might
+-- still be ongoing. Users who want reflection prompts include
+-- end_at on create_event.
+ALTER TABLE events ADD COLUMN reflected_at TEXT;

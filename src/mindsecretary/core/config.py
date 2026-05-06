@@ -202,6 +202,7 @@ class Settings:
     weather_monitor: bool = True
     birthday_alerts: bool = True
     event_alerts: bool = True
+    event_reflections: bool = True
     # Tunable intervals and thresholds
     reminder_check_minutes: int = 5
     weather_check_minutes: int = 60
@@ -211,6 +212,13 @@ class Settings:
     # at one tick land in the past at the next and are skipped.
     event_alert_lead_minutes: int = 15
     event_alert_check_minutes: int = 5
+    # Post-event reflection: ping the user `event_reflection_lag_minutes`
+    # after end_at to capture "как прошло?" while the experience is fresh.
+    # Window cap drops events that ended too long ago (bot offline, quiet
+    # hours absorbed the slot) — yesterday's lunch isn't worth a 9am ping.
+    event_reflection_lag_minutes: int = 30
+    event_reflection_check_minutes: int = 15
+    event_reflection_window_minutes: int = 180
     process_timeout_sec: int = 90
     quiet_contact_days: int = 30
     quiet_contact_min_mentions: int = 3
@@ -249,10 +257,14 @@ class Settings:
             weather_monitor=proactive.get("weather_monitor", True),
             birthday_alerts=proactive.get("birthday_alerts", True),
             event_alerts=proactive.get("event_alerts", True),
+            event_reflections=proactive.get("event_reflections", True),
             reminder_check_minutes=tuning.get("reminder_check_minutes", 5),
             weather_check_minutes=tuning.get("weather_check_minutes", 60),
             event_alert_lead_minutes=tuning.get("event_alert_lead_minutes", 15),
             event_alert_check_minutes=tuning.get("event_alert_check_minutes", 5),
+            event_reflection_lag_minutes=tuning.get("event_reflection_lag_minutes", 30),
+            event_reflection_check_minutes=tuning.get("event_reflection_check_minutes", 15),
+            event_reflection_window_minutes=tuning.get("event_reflection_window_minutes", 180),
             process_timeout_sec=tuning.get("process_timeout_sec", 90),
             quiet_contact_days=tuning.get("quiet_contact_days", 30),
             quiet_contact_min_mentions=tuning.get("quiet_contact_min_mentions", 3),
