@@ -143,6 +143,36 @@ class TestRecurringReminders:
         assert len(pending) == 1
         assert "2099-05-15" in pending[0]["trigger_at"]
 
+    def test_monthly_recurrence_preserves_first_of_month(
+        self, tmp_db: Database,
+    ):
+        """Pre-fix monthly = 30 days, so May 1 → May 31, then drift earlier
+        every iteration. With calendar-aware bumping, "1-го каждого месяца
+        платить за квартиру" lands on the 1st in perpetuity."""
+        r = tmp_db.create_reminder("rent", "2099-05-01 10:00:00",
+                                   recurrence="monthly")
+        tmp_db.mark_reminder_sent(r["id"])
+        pending = tmp_db.get_pending_reminders()
+        assert "2099-06-01" in pending[0]["trigger_at"]
+
+    def test_monthly_recurrence_clamps_short_month(self, tmp_db: Database):
+        """Jan 31 → Feb 28 (or 29 in leap years). Without clamp,
+        replace(day=31) on Feb raises ValueError and the recurrence
+        silently dies. 2099 is non-leap, so Feb has 28 days."""
+        r = tmp_db.create_reminder("month-end report", "2099-01-31 10:00:00",
+                                   recurrence="monthly")
+        tmp_db.mark_reminder_sent(r["id"])
+        pending = tmp_db.get_pending_reminders()
+        assert "2099-02-28" in pending[0]["trigger_at"]
+
+    def test_monthly_recurrence_rolls_over_december(self, tmp_db: Database):
+        """Dec 15 → Jan 15 of next year. Pre-fix month=13 would explode."""
+        r = tmp_db.create_reminder("year wrap", "2099-12-15 10:00:00",
+                                   recurrence="monthly")
+        tmp_db.mark_reminder_sent(r["id"])
+        pending = tmp_db.get_pending_reminders()
+        assert "2100-01-15" in pending[0]["trigger_at"]
+
     def test_recurring_catchup_rolls_past_now(self, tmp_db: Database):
         """If bot was offline for multiple periods, a daily reminder set 5
         days ago should NOT fire 5 times back-to-back when bot returns.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import sqlite3
@@ -691,11 +692,38 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # daily / weekly are exact deltas. "monthly" is intentionally NOT here
+    # because calendar months aren't a fixed delta — a 30-day approximation
+    # drifts (May 1 → May 31 → Jun 30 → Jul 30 → ...) and "1-го каждого
+    # месяца" lands on a different day every iteration. _bump_recurrence
+    # handles monthly via calendar arithmetic (preserve day-of-month, clamp
+    # to month's last day for Feb 30 / Apr 31 cases).
     _RECURRENCE_DELTAS = {
         "daily": timedelta(days=1),
         "weekly": timedelta(weeks=1),
-        "monthly": timedelta(days=30),
     }
+    _RECURRENCE_KINDS = ("daily", "weekly", "monthly")
+
+    @staticmethod
+    def _bump_recurrence(dt: datetime, kind: str) -> datetime:
+        """Advance `dt` by one recurrence period for the given kind.
+
+        For daily/weekly this is just `dt + delta`. For monthly we walk
+        the calendar: bump the month (rolling to next year on Dec→Jan)
+        and clamp the day to whatever's valid for the new month, so a
+        Jan 31 reminder lands on Feb 28/29, then Mar 31, etc. — instead
+        of slowly drifting earlier in the month with a 30-day delta.
+        """
+        if kind == "monthly":
+            new_month = dt.month + 1
+            new_year = dt.year + (1 if new_month > 12 else 0)
+            new_month = ((new_month - 1) % 12) + 1
+            last_day = calendar.monthrange(new_year, new_month)[1]
+            return dt.replace(
+                year=new_year, month=new_month,
+                day=min(dt.day, last_day),
+            )
+        return dt + Database._RECURRENCE_DELTAS[kind]
 
     def reschedule_reminder_by_hint(self, hint: str,
                                     new_trigger_at: str) -> dict | None:
@@ -789,8 +817,8 @@ class Database:
         # next FUTURE occurrence. The bounded delta (1d/7d/30d) makes
         # iteration count tiny even after long downtime — at most ~365 hops
         # for "daily" after a year offline.
-        if row and row["recurrence"] in self._RECURRENCE_DELTAS:
-            delta = self._RECURRENCE_DELTAS[row["recurrence"]]
+        if row and row["recurrence"] in self._RECURRENCE_KINDS:
+            kind = row["recurrence"]
             try:
                 old_trigger = datetime.fromisoformat(
                     row["trigger_at"].replace(" ", "T")
@@ -800,12 +828,12 @@ class Database:
                 # against the same clock so rollforward respects the user's
                 # day boundary, not UTC.
                 now_local = self.local_now_naive()
-                next_trigger = old_trigger + delta
+                next_trigger = self._bump_recurrence(old_trigger, kind)
                 while next_trigger <= now_local:
-                    next_trigger += delta
+                    next_trigger = self._bump_recurrence(next_trigger, kind)
                 self.create_reminder(
                     row["text"], next_trigger.strftime(self._SQL_TS_FMT),
-                    row["priority"], row["recurrence"],
+                    row["priority"], kind,
                 )
             except (ValueError, TypeError):
                 pass  # Can't parse trigger_at — skip recurrence
