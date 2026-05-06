@@ -646,8 +646,14 @@ class ProactiveScheduler:
             if not nudge_on_cooldown:
                 nudge = self._build_action_nudge()
                 if nudge:
-                    await self._send_proactive(nudge, kind="open_loops_nudge")
-                    self._set_last_nudge()
+                    # Only stamp cooldown when the nudge actually went out.
+                    # Pre-fix _set_last_nudge ran unconditionally, so a
+                    # nudge suppressed by recent-activity defer or snooze
+                    # still locked the next 44h — user mid-chat at 13:00
+                    # lost their nudge for two days. Now suppression keeps
+                    # the cooldown clear so tomorrow's tick can retry.
+                    if await self._send_proactive(nudge, kind="open_loops_nudge"):
+                        self._set_last_nudge()
                     return
             if not self.smart_questions:
                 return

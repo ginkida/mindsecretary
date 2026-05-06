@@ -679,6 +679,55 @@ class TestNudgeCooldown:
         )
 
 
+class TestNudgeCooldownGatedOnSend:
+    """Pre-fix _set_last_nudge() ran unconditionally after _send_proactive,
+    locking the next 44h even when the message was suppressed by quiet
+    hours / snooze / recent-activity defer. User mid-chat at 13:00 lost
+    nudges for ~two days. Now cooldown is set ONLY when the send actually
+    went out (return True from _send_proactive)."""
+
+    def _make(self):
+        return _make_scheduler(["23:00", "07:00"])
+
+    @pytest.mark.asyncio
+    async def test_cooldown_not_set_when_send_suppressed(self):
+        from datetime import datetime as real_dt
+        from datetime import timezone as real_tz
+
+        s = self._make()
+        s.smart_questions = MagicMock()
+        # Suppression path: send returns False (quiet hours / snooze /
+        # recent-activity defer all funnel through this).
+        s._send_proactive = AsyncMock(return_value=False)
+        s._build_action_nudge = MagicMock(return_value="⚠️ На контроле")
+        stale = real_dt.now(real_tz.utc).replace(tzinfo=None) - timedelta(hours=48)
+        set_last = MagicMock()
+        with patch.object(s, "_get_last_nudge", return_value=stale), \
+             patch.object(s, "_set_last_nudge", set_last):
+            await s._smart_question()
+        s._send_proactive.assert_awaited_once()
+        set_last.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_set_when_send_succeeded(self):
+        """Mirror of the suppression test — confirm the happy path still
+        stamps cooldown so the nudge doesn't re-fire every 13:00 forever."""
+        from datetime import datetime as real_dt
+        from datetime import timezone as real_tz
+
+        s = self._make()
+        s.smart_questions = MagicMock()
+        s._send_proactive = AsyncMock(return_value=True)
+        s._build_action_nudge = MagicMock(return_value="⚠️ На контроле")
+        stale = real_dt.now(real_tz.utc).replace(tzinfo=None) - timedelta(hours=48)
+        set_last = MagicMock()
+        with patch.object(s, "_get_last_nudge", return_value=stale), \
+             patch.object(s, "_set_last_nudge", set_last):
+            await s._smart_question()
+        s._send_proactive.assert_awaited_once()
+        set_last.assert_called_once()
+
+
 class TestBirthdayAlertFormat:
     """Birthday alert text used to dump the raw 'YYYY-MM-DD' birthday into
     the message — uninformative to the user and missing the age calc the
