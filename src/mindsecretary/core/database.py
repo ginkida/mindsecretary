@@ -417,39 +417,53 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # Predicate for "still actionable" events — title-based mutators
+    # (cancel/reschedule/update) shouldn't refuse a 2h meeting just
+    # because start_at is in the past. If end_at is set, the event is
+    # actionable until it ends; otherwise fall back to "future start".
+    # Pre-fix the strict `start_at >= now` filter rejected events the
+    # user said "обнови локацию — мы переехали в кафе" about while the
+    # meeting was already happening — bot replied "Не нашёл будущих
+    # событий" with the row right there.
+    _ACTIONABLE_EVENT_PREDICATE = (
+        "(end_at IS NOT NULL AND end_at > ?) OR "
+        "(end_at IS NULL AND start_at >= ?)"
+    )
+
     def _find_future_event_by_hint(self, hint: str) -> dict | None:
-        """Most-imminent future event whose title or description matches
-        `hint`. Profile-local naive comparison — events.start_at is written
-        local-naive (per CLAUDE.md TZ convention, same source as the LLM
-        sees on create_event). Returns dict|None."""
+        """Most-imminent still-actionable event whose title or description
+        matches `hint`. Profile-local naive comparison — events.start_at
+        is written local-naive (per CLAUDE.md TZ convention, same source
+        as the LLM sees on create_event). Returns dict|None."""
         if not hint or not hint.strip():
             return None
         escaped = self._escape_like(hint.strip().lower())
         now_local = self.local_now_naive().strftime(self._SQL_TS_FMT)
         row = self.db.execute(
-            "SELECT * FROM events "
-            "WHERE start_at >= ? "
-            "AND (pylower(title) LIKE ? ESCAPE '\\' "
-            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\') "
-            "ORDER BY start_at LIMIT 1",
-            (now_local, f"%{escaped}%", f"%{escaped}%"),
+            f"SELECT * FROM events "
+            f"WHERE ({self._ACTIONABLE_EVENT_PREDICATE}) "
+            f"AND (pylower(title) LIKE ? ESCAPE '\\' "
+            f"     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\') "
+            f"ORDER BY start_at LIMIT 1",
+            (now_local, now_local, f"%{escaped}%", f"%{escaped}%"),
         ).fetchone()
         return dict(row) if row else None
 
     def count_future_events_matching(self, hint: str) -> int:
-        """How many FUTURE events match `hint` — used by the cancel/reschedule
-        handlers to disclose ambiguity ('matched 3, modified the soonest').
-        Past events are excluded since they can't be cancelled or rescheduled."""
+        """How many still-actionable events match `hint` — used by the
+        cancel/reschedule handlers to disclose ambiguity ('matched 3,
+        modified the soonest'). Fully-ended events are excluded since
+        they can't be cancelled or rescheduled."""
         if not hint or not hint.strip():
             return 0
         escaped = self._escape_like(hint.strip().lower())
         now_local = self.local_now_naive().strftime(self._SQL_TS_FMT)
         row = self.db.execute(
-            "SELECT COUNT(*) FROM events "
-            "WHERE start_at >= ? "
-            "AND (pylower(title) LIKE ? ESCAPE '\\' "
-            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\')",
-            (now_local, f"%{escaped}%", f"%{escaped}%"),
+            f"SELECT COUNT(*) FROM events "
+            f"WHERE ({self._ACTIONABLE_EVENT_PREDICATE}) "
+            f"AND (pylower(title) LIKE ? ESCAPE '\\' "
+            f"     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\')",
+            (now_local, now_local, f"%{escaped}%", f"%{escaped}%"),
         ).fetchone()
         return int(row[0])
 

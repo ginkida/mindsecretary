@@ -90,6 +90,45 @@ class TestEvents:
         assert tmp_db.count_future_events_matching("") == 0
         assert tmp_db.count_future_events_matching("   ") == 0
 
+    def test_in_progress_event_with_end_at_is_findable(self, tmp_db: Database):
+        """A 2h meeting that started 30 min ago must still match by hint —
+        the user often updates location or reschedules mid-event ('встреча
+        перенеслась в кафе'). Pre-fix start_at >= now rejected the row,
+        bot replied 'Не нашёл будущих событий' while the meeting was
+        running."""
+        now = tmp_db.local_now_naive()
+        start_30min_ago = (now - timedelta(minutes=30)).strftime(SQL_TS_FMT)
+        end_in_90min = (now + timedelta(minutes=90)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча с Машей", start_30min_ago,
+                            end_at=end_in_90min)
+
+        assert tmp_db.count_future_events_matching("Маш") == 1
+        cancelled = tmp_db.cancel_event_by_hint("Маш")
+        assert cancelled is not None
+        assert cancelled["title"] == "встреча с Машей"
+
+    def test_in_progress_event_without_end_at_stays_excluded(
+        self, tmp_db: Database,
+    ):
+        """Without end_at we can't tell when an event 'finishes', so the
+        old strict semantics (start_at >= now) still apply — past-started
+        no-end-time rows are treated as completed. Otherwise a 5-min call
+        from this morning would shadow tonight's actual reschedule."""
+        now = tmp_db.local_now_naive()
+        start_2h_ago = (now - timedelta(hours=2)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("звонок", start_2h_ago)  # no end_at
+        assert tmp_db.count_future_events_matching("звонок") == 0
+        assert tmp_db.cancel_event_by_hint("звонок") is None
+
+    def test_already_ended_event_is_excluded(self, tmp_db: Database):
+        """end_at < now → fully finished, can't be cancelled/rescheduled."""
+        now = tmp_db.local_now_naive()
+        start = (now - timedelta(hours=3)).strftime(SQL_TS_FMT)
+        end = (now - timedelta(hours=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("закончилась", start, end_at=end)
+        assert tmp_db.count_future_events_matching("закончилась") == 0
+        assert tmp_db.cancel_event_by_hint("закончилась") is None
+
     def test_reschedule_event_picks_soonest_future(self, tmp_db: Database):
         now = tmp_db.local_now_naive()
         soon = (now + timedelta(days=2)).strftime(SQL_TS_FMT)
