@@ -1069,6 +1069,62 @@ class TestGetDiaryEntriesHandler:
         assert first_day in result.split("\n\n")[0]
 
 
+class TestGetEventsDateValidation:
+    """Pre-fix get_events accepted any string as date_from. SQLite's
+    date(?) silently returns NULL on unparseable input, so an LLM call
+    like get_events(date_from="tomorrow") matched zero rows and the
+    handler reported 'No events for tomorrow' even with real events
+    on the calendar. Strict YYYY-MM-DD check surfaces the format hint
+    so the LLM retries with a proper date."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_from_returns_format_hint(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Real event on the calendar — confirms we're rejecting at the
+        # validation step, not just empty-coincidentally.
+        tmp_db.create_event("ужин", "2026-04-15 19:00:00")
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {"date_from": "tomorrow"})
+        assert "invalid date_from" in result
+        assert "YYYY-MM-DD" in result
+        # The real event must NOT leak into a "No events" false-negative
+        assert "ужин" not in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_to_returns_format_hint(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {
+            "date_from": "2026-04-15", "date_to": "не понятно",
+        })
+        assert "invalid date_to" in result
+
+    @pytest.mark.asyncio
+    async def test_valid_date_passes_through(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_event("работа", "2026-04-15 09:00:00")
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_events", {"date_from": "2026-04-15"})
+        assert "работа" in result
+        assert "invalid" not in result
+
+    @pytest.mark.asyncio
+    async def test_get_daily_goals_invalid_date_rejected(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("get_daily_goals", {"date": "вчера"})
+        assert "invalid date" in result
+
+
 class TestGetDailyGoalsHandler:
     """ToolExecutor handler for get_daily_goals. Closes the last write-only
     pair (set_daily_goal + complete_daily_goal had no read tool). User

@@ -1098,6 +1098,28 @@ class ToolExecutor:
             )
         return None
 
+    @staticmethod
+    def _check_iso_date(value: str, tool: str, field: str) -> str | None:
+        """Date-only counterpart to _check_iso_datetime.
+
+        get_events / get_daily_goals etc. expect YYYY-MM-DD. SQLite's
+        date(?) silently returns NULL for unparseable input, the WHERE
+        clause then matches nothing, and the LLM tells the user "нет
+        событий" while real events sit in the calendar. Strictly check
+        the YYYY-MM-DD shape via strptime so the LLM gets a format
+        hint instead of empty-look-alike-success.
+        """
+        if not value or not value.strip():
+            return f"{tool}: {field} is required (use YYYY-MM-DD)"
+        try:
+            datetime.strptime(value.strip(), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return (
+                f"{tool}: invalid {field} {value!r} — "
+                f"use YYYY-MM-DD (e.g. 2026-04-15)"
+            )
+        return None
+
     def _handle_create_event(self, title: str, start_at: str,
                              end_at: str | None = None,
                              location: str | None = None,
@@ -1137,6 +1159,10 @@ class ToolExecutor:
 
     def _handle_get_events(self, date_from: str,
                            date_to: str | None = None) -> str:
+        if (err := self._check_iso_date(date_from, "get_events", "date_from")):
+            return err
+        if date_to and (err := self._check_iso_date(date_to, "get_events", "date_to")):
+            return err
         events = self.db.get_events(date_from, date_to)
         if not events:
             return f"No events for {date_from}"
@@ -1677,6 +1703,8 @@ class ToolExecutor:
         return result
 
     def _handle_get_daily_goals(self, date: str | None = None) -> str:
+        if date and (err := self._check_iso_date(date, "get_daily_goals", "date")):
+            return err
         rows = self.db.get_daily_goals(date)
         when = date or "сегодня"
         if not rows:
