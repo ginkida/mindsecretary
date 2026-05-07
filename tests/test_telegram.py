@@ -160,9 +160,11 @@ class TestForwardedPhotoFlow:
         assert "вот чек" in kwargs["user_message"]
 
     @pytest.mark.asyncio
-    async def test_forwarded_photo_without_caption_uses_default(self):
-        """No caption on the forwarded photo → use the same inbox-capture
-        instruction _handle_photo uses, but keep the forward prefix."""
+    async def test_forwarded_photo_without_caption_keeps_only_prefix(self):
+        """No caption on the forwarded photo → user_message is just the
+        forward prefix (no inbox-capture instruction injected). Brain
+        injects PHOTO_DEFAULT_INSTRUCTION at the LLM-facing layer
+        when caption is empty, keeping the interactions log clean."""
         from unittest.mock import AsyncMock, MagicMock
         from mindsecretary.core.brain import BrainResponse
 
@@ -194,9 +196,13 @@ class TestForwardedPhotoFlow:
         await bot._handle_forward(update, context)
 
         kwargs = brain.process.await_args.kwargs
-        # Default inbox instruction used
-        assert "inbox" in kwargs["user_message"].lower() or "разбери" in kwargs["user_message"].lower()
-        assert kwargs["user_message"].startswith("[Переслано]:")
+        # No "разбери" / "inbox" in the logged user_message — Brain
+        # adds that to the LLM-facing text block, not the log.
+        assert "разбери" not in kwargs["user_message"].lower()
+        assert "inbox" not in kwargs["user_message"].lower()
+        # Just the forward prefix (trailing colon kept, trailing space
+        # stripped since there's no caption body to follow).
+        assert kwargs["user_message"] == "[Переслано]:"
 
 
 class TestTextHandlerWhitespaceGuard:

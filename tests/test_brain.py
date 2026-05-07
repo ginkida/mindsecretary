@@ -645,6 +645,103 @@ class TestProcessEmptyResponseFallback:
         assert result.text == "конкретный ответ"
 
 
+class TestProcessPhotoCaptionInjection:
+    """When user sends a photo without caption, the LLM still needs
+    SOME text block, but pre-fix telegram injected the instruction
+    "Разбери фото..." as the caption itself — landing in interactions
+    log as if the user said it. History replay then read the instruction
+    back, confusing follow-up turns. Brain now keeps the log clean
+    (real caption, possibly empty) and injects PHOTO_DEFAULT_INSTRUCTION
+    only into the LLM-facing multimodal text block."""
+
+    @pytest.mark.asyncio
+    async def test_empty_caption_uses_default_in_llm_block(self, tmp_db):
+        from unittest.mock import AsyncMock
+        from mindsecretary.core.brain import PHOTO_DEFAULT_INSTRUCTION
+        from mindsecretary.llm.client import LLMResponse
+
+        captured: dict = {}
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                captured["messages"] = messages
+                return LLMResponse(
+                    text="ok", tool_calls=[],
+                    usage={"input_tokens": 5, "output_tokens": 1},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        # User sent photo with no caption
+        await brain.process(
+            user_message="", message_type="photo", image_base64="abc==",
+        )
+
+        # The LLM's user content is multimodal — text block contains
+        # the inbox instruction, image_url block has the data URI.
+        msg = captured["messages"][-1]
+        assert msg["role"] == "user"
+        text_blocks = [
+            b for b in msg["content"] if b.get("type") == "text"
+        ]
+        assert any(
+            PHOTO_DEFAULT_INSTRUCTION in b["text"] for b in text_blocks
+        )
+        # But the interactions log stores the REAL caption (empty)
+        rows = tmp_db.get_interactions(message_type="photo", limit=5)
+        assert rows
+        assert PHOTO_DEFAULT_INSTRUCTION not in (rows[0]["content"] or "")
+
+    @pytest.mark.asyncio
+    async def test_real_caption_passes_through_to_llm_unchanged(self, tmp_db):
+        """User-provided caption stays as-is in BOTH log and LLM block —
+        no double-injection."""
+        from unittest.mock import AsyncMock
+        from mindsecretary.core.brain import PHOTO_DEFAULT_INSTRUCTION
+        from mindsecretary.llm.client import LLMResponse
+
+        captured: dict = {}
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                captured["messages"] = messages
+                return LLMResponse(
+                    text="ok", tool_calls=[],
+                    usage={"input_tokens": 5, "output_tokens": 1},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        await brain.process(
+            user_message="вот чек", message_type="photo", image_base64="abc==",
+        )
+
+        msg = captured["messages"][-1]
+        text_blocks = [
+            b for b in msg["content"] if b.get("type") == "text"
+        ]
+        assert text_blocks[0]["text"] == "вот чек"
+        # Default instruction NOT injected since user provided real text
+        assert PHOTO_DEFAULT_INSTRUCTION not in text_blocks[0]["text"]
+
+        rows = tmp_db.get_interactions(message_type="photo", limit=5)
+        assert rows[0]["content"] == "вот чек"
+
+
 class TestSystemPromptCaching:
     """v0.14.62: MAIN_SYSTEM_PROMPT split into static prefix + dynamic
     suffix and returned as a list of content blocks with cache_control

@@ -34,6 +34,18 @@ CONVERSATION_HISTORY_TURNS = 20
 # injection defense since past content may include user text.
 HISTORY_TURN_CHAR_CAP = 800
 
+# Default LLM-facing caption when a user sends a photo without a real
+# caption. Lives in Brain (not telegram.py) so the interactions log
+# stores the user's ACTUAL caption (often empty) — pre-fix telegram
+# injected this string as the caption, and history replay then read
+# back as "user: Разбери фото..." which confused Claude on follow-ups
+# like "что было на этом фото?". Now log captures empty, LLM gets
+# the instruction at the multimodal-content layer.
+PHOTO_DEFAULT_INSTRUCTION = (
+    "Разбери фото как inbox: извлеки факты, задачи, контакты, даты "
+    "и важные детали."
+)
+
 
 @dataclass
 class BrainResponse:
@@ -87,8 +99,17 @@ class Brain:
 
         # Build user message — text or multimodal (text + image)
         if image_base64:
+            # When the user sent a photo without a caption, the LLM still
+            # needs SOME text block to know what to do. The interaction
+            # row already stored the real (possibly empty) caption above
+            # — only the LLM-facing text block gets the inbox-capture
+            # instruction injected here. Keeps history replay clean.
+            llm_caption = (
+                user_message.strip() or PHOTO_DEFAULT_INSTRUCTION
+                if user_message else PHOTO_DEFAULT_INSTRUCTION
+            )
             user_content = [
-                {"type": "text", "text": user_message},
+                {"type": "text", "text": llm_caption},
                 {"type": "image_url", "image_url": {
                     "url": f"data:image/jpeg;base64,{image_base64}",
                 }},

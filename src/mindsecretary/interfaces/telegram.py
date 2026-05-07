@@ -1115,10 +1115,12 @@ class TelegramBot:
             await msg.reply_text("Фото слишком большое (макс 10 МБ).")
             return
 
-        caption = (
-            msg.caption
-            or "Разбери фото как inbox: извлеки факты, задачи, контакты, даты и важные детали."
-        )[:MAX_TEXT_LENGTH]
+        # Caption is stored as-is (possibly empty) on the interaction
+        # row so history replay reads back as the user's actual
+        # message. Brain.process injects the inbox-capture instruction
+        # at the LLM-facing layer when caption is empty — see
+        # PHOTO_DEFAULT_INSTRUCTION in brain.py.
+        caption = (msg.caption or "")[:MAX_TEXT_LENGTH]
         await self._typing(update)
 
         try:
@@ -1240,16 +1242,15 @@ class TelegramBot:
                 await msg.reply_text("Фото слишком большое (макс 10 МБ).")
                 return
             caption_body = (msg.caption or "")[:MAX_TEXT_LENGTH].strip()
-            # Caption is optional on forwards. When missing, use the same
-            # default inbox-capture instruction _handle_photo uses; the
-            # forward prefix still goes through so Claude knows the
-            # source.
-            if not caption_body:
-                caption_body = (
-                    "Разбери фото как inbox: извлеки факты, задачи, "
-                    "контакты, даты и важные детали."
-                )
-            full_caption = f"{forward_from}{caption_body}"
+            # Caption is optional on forwards. We log the user's actual
+            # caption (possibly empty) along with the [Переслано]
+            # prefix; Brain.process injects PHOTO_DEFAULT_INSTRUCTION
+            # at the LLM-facing layer when the caption body is empty,
+            # so history replay reads cleanly.
+            full_caption = (
+                f"{forward_from}{caption_body}" if caption_body
+                else forward_from.rstrip()
+            )
             await self._typing(update)
             try:
                 file = await context.bot.get_file(photo.file_id)
