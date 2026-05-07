@@ -8,6 +8,29 @@ DAYS_RU = {
     4: "Пятница", 5: "Суббота", 6: "Воскресенье",
 }
 
+# Single source of truth for notification kind → short Russian label.
+# Used by:
+#   - brain._build_history_turns: assistant turn prefix in history replay
+#   - tools._handle_search_conversations: row label in tool output
+#   - briefing._interaction_label: evening summary interactions_text
+# Pre-consolidation each callsite kept its own copy with "keep in sync"
+# comments — drift-prone (iter 8 caught a missing event_alert/reflection
+# pair). Adding a new kind = add ONE entry here.
+NOTIFICATION_KIND_LABELS: dict[str, str] = {
+    "morning_briefing": "брифинг",
+    "evening_summary": "вечер",
+    "diary": "дневник",
+    "weekly_review": "неделя",
+    "smart_question": "вопрос",
+    "open_loops_nudge": "контроль",
+    "decision_followup": "решение",
+    "birthday_alert": "день рождения",
+    "weather_alert": "погода",
+    "reminder": "напоминание",
+    "event_alert": "событие скоро",
+    "event_reflection": "как прошло",
+}
+
 
 def is_person_in_title(person: str | None, title: str | None) -> bool:
     """Heuristic: does `person`'s name stem already appear in `title`?

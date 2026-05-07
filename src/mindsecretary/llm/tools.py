@@ -11,7 +11,12 @@ from zoneinfo import ZoneInfo
 
 _tz_utc = _dt_timezone.utc
 
-from ..core import is_person_in_title, pluralize_ru, tz_now
+from ..core import (
+    NOTIFICATION_KIND_LABELS,
+    is_person_in_title,
+    pluralize_ru,
+    tz_now,
+)
 from ..core.database import Database
 from ..core.enums import Priority, Sentiment, Status
 from ..core.memory import Memory
@@ -1518,22 +1523,9 @@ class ToolExecutor:
         snapshot = self.db.get_open_loops(days_ahead=days_ahead, limit_per_section=5)
         return self._format_open_loops(snapshot)
 
-    # Keep in sync with brain._NOTIFICATION_LABELS so search_conversations
-    # output matches the labels Claude already sees when history replays.
-    _SEARCH_KIND_LABELS = {
-        "morning_briefing": "брифинг",
-        "evening_summary": "вечер",
-        "diary": "дневник",
-        "weekly_review": "неделя",
-        "smart_question": "вопрос",
-        "open_loops_nudge": "контроль",
-        "decision_followup": "решение",
-        "birthday_alert": "день рождения",
-        "weather_alert": "погода",
-        "reminder": "напоминание",
-        "event_alert": "событие скоро",
-        "event_reflection": "как прошло",
-    }
+    # Source of truth is core.NOTIFICATION_KIND_LABELS. Re-aliased to
+    # preserve `self._SEARCH_KIND_LABELS.get(...)` callers.
+    _SEARCH_KIND_LABELS = NOTIFICATION_KIND_LABELS
 
     @staticmethod
     def _ts_utc_to_local_str(ts: str, tz_name: str | None) -> str:

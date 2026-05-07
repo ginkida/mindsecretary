@@ -9,7 +9,7 @@ from ..learning.mood import analyze_mood, check_contact_frequency, get_mood_tren
 from ..llm.prompts import MAIN_SYSTEM_DYNAMIC, MAIN_SYSTEM_STATIC
 from ..llm.client import LLMClient
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
-from . import DAYS_RU, fmt_local_time, tz_now
+from . import DAYS_RU, NOTIFICATION_KIND_LABELS, fmt_local_time, tz_now
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
@@ -301,24 +301,11 @@ class Brain:
             lines.append(line)
         return "\n".join(lines) or "Нет событий."
 
-    # Each entry maps a notification's `metadata.kind` to a short Russian
-    # label rendered as "[<label> в HH:MM]" when history replays as an
-    # assistant turn. Keep in sync with tools.py::_SEARCH_KIND_LABELS so
-    # the same vocabulary surfaces in search_conversations output.
-    _NOTIFICATION_LABELS = {
-        "morning_briefing": "брифинг",
-        "evening_summary": "вечер",
-        "diary": "дневник",
-        "weekly_review": "неделя",
-        "smart_question": "вопрос",
-        "open_loops_nudge": "контроль",
-        "decision_followup": "решение",
-        "birthday_alert": "день рождения",
-        "weather_alert": "погода",
-        "reminder": "напоминание",
-        "event_alert": "событие скоро",
-        "event_reflection": "как прошло",
-    }
+    # Source of truth for kind → label is `core.NOTIFICATION_KIND_LABELS`.
+    # Re-aliased here so existing callers (`self._NOTIFICATION_LABELS.get(...)`)
+    # keep working without sweeping the codebase. Adding a new kind =
+    # update the central map only.
+    _NOTIFICATION_LABELS = NOTIFICATION_KIND_LABELS
 
     def _fmt_local_time(self, ts: str, today_local: str) -> str:
         """Thin wrapper over `fmt_local_time` that bakes in the profile TZ."""

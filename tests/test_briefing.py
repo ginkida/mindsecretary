@@ -645,6 +645,51 @@ class TestIsPersonInTitle:
             assert is_person_in_title("Олег", declined) is True
 
 
+class TestNotificationKindLabels:
+    """Single source of truth for kind→label was duplicated across
+    brain, tools, briefing. Iter 8 caught a drift (event_alert/reflection
+    missing from two of the three). Now all three import from
+    core.NOTIFICATION_KIND_LABELS — verify everyone sees the same map."""
+
+    def test_brain_aliases_central_map(self):
+        from mindsecretary.core import NOTIFICATION_KIND_LABELS
+        from mindsecretary.core.brain import Brain
+        # brain re-aliases — same dict object would be ideal but at
+        # minimum the keys must match.
+        assert Brain._NOTIFICATION_LABELS is NOTIFICATION_KIND_LABELS
+
+    def test_tools_aliases_central_map(self):
+        from mindsecretary.core import NOTIFICATION_KIND_LABELS
+        from mindsecretary.llm.tools import ToolExecutor
+        assert ToolExecutor._SEARCH_KIND_LABELS is NOTIFICATION_KIND_LABELS
+
+    def test_briefing_overrides_birthday_label_only(self):
+        """Briefing shortens birthday to 'ДР' for the per-line evening
+        format. Other entries stay aligned with the central map."""
+        from mindsecretary.core import NOTIFICATION_KIND_LABELS
+        from mindsecretary.proactive.briefing import _NOTIFICATION_LABELS
+        assert _NOTIFICATION_LABELS["birthday_alert"] == "ДР"
+        for k, v in NOTIFICATION_KIND_LABELS.items():
+            if k == "birthday_alert":
+                continue
+            assert _NOTIFICATION_LABELS[k] == v
+
+    def test_central_map_covers_all_notification_kinds(self):
+        """Every kind written by _send_proactive must have a label.
+        Acts as a regression guard for the iter 8 / iter 25 drift class."""
+        from mindsecretary.core import NOTIFICATION_KIND_LABELS
+        # Every kind that any of the schedulers / monitor.py writes via
+        # metadata.kind:
+        expected = {
+            "morning_briefing", "evening_summary", "diary",
+            "weekly_review", "smart_question", "open_loops_nudge",
+            "decision_followup", "birthday_alert", "weather_alert",
+            "reminder", "event_alert", "event_reflection",
+        }
+        missing = expected - set(NOTIFICATION_KIND_LABELS)
+        assert not missing, f"missing labels for: {missing}"
+
+
 class TestPluralizeRu:
     """Russian plural helper. The 11-14 teens special case is the most
     common bug — without it 'год' becomes 'лет' too aggressively."""

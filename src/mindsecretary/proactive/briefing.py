@@ -4,7 +4,14 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from ..core import DAYS_RU, fmt_local_time, is_person_in_title, pluralize_ru, tz_now
+from ..core import (
+    DAYS_RU,
+    NOTIFICATION_KIND_LABELS,
+    fmt_local_time,
+    is_person_in_title,
+    pluralize_ru,
+    tz_now,
+)
 from ..core.config import Profile
 from ..core.database import Database
 from ..core.memory import Memory
@@ -17,24 +24,15 @@ from ..llm.client import LLMClient
 logger = logging.getLogger(__name__)
 
 
-# Map metadata.kind → short label that reads cleanly in evening summary
-# interactions_text. Keep keys aligned with brain._NOTIFICATION_LABELS
-# / tools._SEARCH_KIND_LABELS (English keys for stable identification,
-# Russian values for the prompt). Anything unmapped falls back to the
-# row's message_type.
+# Map metadata.kind → short label for evening summary's
+# interactions_text. Mostly mirrors core.NOTIFICATION_KIND_LABELS, but
+# overrides the birthday label to a tighter "ДР" since the summary's
+# per-line format is already prefixed with timestamp + arrow and
+# the long label crowded the line. Falls back to row message_type
+# for unmapped kinds.
 _NOTIFICATION_LABELS = {
-    "morning_briefing": "брифинг",
-    "evening_summary": "вечер",
-    "diary": "дневник",
-    "weekly_review": "неделя",
-    "smart_question": "вопрос",
-    "open_loops_nudge": "контроль",
-    "decision_followup": "решение",
+    **NOTIFICATION_KIND_LABELS,
     "birthday_alert": "ДР",
-    "weather_alert": "погода",
-    "reminder": "напоминание",
-    "event_alert": "событие скоро",
-    "event_reflection": "как прошло",
 }
 
 
