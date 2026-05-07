@@ -480,11 +480,28 @@ class TelegramBot:
             )
         if loops.get("upcoming_events"):
             lines.append("\n📅 Ближайшие события:")
-            lines.extend(
-                f"• {e['start_at'][5:16]} — {e['title'][:140]}"
-                + (f" ({e['related_person']})" if e.get("related_person") else "")
-                for e in loops["upcoming_events"]
-            )
+            now_local = self.brain.db.local_now_naive()
+            for e in loops["upcoming_events"]:
+                # iter 13 added in-progress events (start_at in past, end_at
+                # in future) to upcoming_events. Without a marker, /loops
+                # at 14:30 reads "Ближайшее: 14:00 встреча" while the
+                # user is 30 min into the meeting. Mirror of iter 15's
+                # briefing fix.
+                start_raw = e.get("start_at") or ""
+                in_progress = False
+                try:
+                    start_dt = datetime.fromisoformat(
+                        start_raw.replace(" ", "T"),
+                    )
+                    in_progress = start_dt <= now_local
+                except (ValueError, TypeError):
+                    pass
+                marker = "▶️ сейчас" if in_progress else start_raw[5:16]
+                tail = (
+                    f" ({e['related_person']})"
+                    if e.get("related_person") else ""
+                )
+                lines.append(f"• {marker} — {e['title'][:140]}{tail}")
         if loops.get("pending_goals"):
             lines.append("\n🎯 Незакрытые цели:")
             lines.extend(

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.constants import ParseMode
@@ -253,6 +253,79 @@ def _make_update():
         message=message,
     )
     return update
+
+
+class TestLoopsInProgressMarker:
+    """Iter 13 added in-progress events (start_at past, end_at future)
+    to upcoming_events. The /loops handler must mark them so the user
+    isn't told "Ближайшее: 14:00 встреча" while sitting in that meeting
+    at 14:30. Mirror of iter 15's briefing-side fix."""
+
+    @pytest.mark.asyncio
+    async def test_in_progress_event_renders_with_marker(self):
+        from datetime import datetime as real_dt
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        # Pin the DB clock to 14:30 — meeting started at 14:00 and ends 16:00.
+        brain.db.local_now_naive = MagicMock(return_value=real_dt(2026, 4, 15, 14, 30))
+        brain.db.get_open_loops = MagicMock(return_value={
+            "counts": {"upcoming_events": 1},
+            "upcoming_events": [{
+                "start_at": "2026-04-15 14:00:00",
+                "end_at": "2026-04-15 16:00:00",
+                "title": "встреча с Машей",
+                "related_person": None,
+            }],
+            "overdue_reminders": [], "due_today_reminders": [],
+            "pending_goals": [], "due_decisions": [],
+        })
+        with patch(
+            "mindsecretary.interfaces.telegram.check_contact_frequency",
+            return_value=[],
+        ):
+            await bot._handle_loops(update, context)
+
+        # Captured the rendered text via reply_text call(s)
+        call_text = " ".join(
+            str(c.args[0]) for c in update.message.reply_text.await_args_list
+        )
+        assert "▶️ сейчас" in call_text
+        assert "встреча с Машей" in call_text
+        # Crucially: must NOT show start time as "ближайшее" of 14:00 alone
+        assert "04-15 14:00" not in call_text
+
+    @pytest.mark.asyncio
+    async def test_future_event_keeps_timestamp(self):
+        """Sanity: future events still render with their MM-DD HH:MM
+        timestamp — the in-progress swap is gated on time comparison."""
+        from datetime import datetime as real_dt
+        bot, brain = _make_bot()
+        update = _make_update()
+        context = SimpleNamespace(args=[])
+        brain.db.local_now_naive = MagicMock(return_value=real_dt(2026, 4, 15, 9, 0))
+        brain.db.get_open_loops = MagicMock(return_value={
+            "counts": {"upcoming_events": 1},
+            "upcoming_events": [{
+                "start_at": "2026-04-15 14:00:00",
+                "end_at": "2026-04-15 16:00:00",
+                "title": "встреча с Машей",
+                "related_person": None,
+            }],
+            "overdue_reminders": [], "due_today_reminders": [],
+            "pending_goals": [], "due_decisions": [],
+        })
+        with patch(
+            "mindsecretary.interfaces.telegram.check_contact_frequency",
+            return_value=[],
+        ):
+            await bot._handle_loops(update, context)
+
+        call_text = " ".join(
+            str(c.args[0]) for c in update.message.reply_text.await_args_list
+        )
+        assert "04-15 14:00" in call_text
+        assert "▶️ сейчас" not in call_text
 
 
 class TestTelegramHandlers:
