@@ -270,6 +270,31 @@ class ProactiveScheduler:
 
     # --- Scheduler lifecycle ---
 
+    # Cron jobs miss their fire window if the bot is offline at the exact
+    # scheduled minute. APScheduler's default misfire_grace_time=1s would
+    # silently drop a 09:00 briefing if the bot started at 09:01 — next
+    # fire 24h later. Grant 1h grace so a delayed startup still catches
+    # daily jobs, with coalesce=True collapsing multiple missed fires
+    # (multi-day downtime) into a single run instead of stampeding.
+    # Interval jobs (reminder_check, event_alert_check, etc.) keep
+    # the default — missing one is fine, next interval fires soon
+    # anyway, and stale catch-up could spam after a weekend offline.
+    _CRON_GRACE_SECONDS = 3600
+
+    def _add_cron(self, fn, **trigger_kwargs):
+        """Wrapper for cron jobs that uniformly applies the grace and
+        coalesce policy. id and replace_existing must be passed by
+        caller; trigger fields (hour/minute/day_of_week) go through
+        as kwargs."""
+        job_id = trigger_kwargs.pop("id")
+        self.scheduler.add_job(
+            fn, "cron",
+            id=job_id, replace_existing=True,
+            misfire_grace_time=self._CRON_GRACE_SECONDS,
+            coalesce=True,
+            **trigger_kwargs,
+        )
+
     def start(self):
         # Reminders — always on, bypass quiet hours (user intent)
         self.scheduler.add_job(
@@ -293,9 +318,9 @@ class ProactiveScheduler:
             )
 
         if self.settings.birthday_alerts:
-            self.scheduler.add_job(
-                self._check_birthdays, "cron", hour=9, minute=0,
-                id="birthday_check", replace_existing=True,
+            self._add_cron(
+                self._check_birthdays, hour=9, minute=0,
+                id="birthday_check",
             )
 
         if self.weather and self.settings.weather_monitor:
@@ -306,33 +331,33 @@ class ProactiveScheduler:
 
         if self.settings.morning_briefing:
             wake_h, wake_m = map(int, self.profile.wake_up.split(":"))
-            self.scheduler.add_job(
-                self._morning_prompt, "cron", hour=wake_h, minute=wake_m,
-                id="morning_prompt", replace_existing=True,
+            self._add_cron(
+                self._morning_prompt, hour=wake_h, minute=wake_m,
+                id="morning_prompt",
             )
 
         if self.settings.smart_questions:
-            self.scheduler.add_job(
-                self._smart_question, "cron", hour=13, minute=0,
-                id="smart_question", replace_existing=True,
+            self._add_cron(
+                self._smart_question, hour=13, minute=0,
+                id="smart_question",
             )
 
         if self.settings.decision_followups:
-            self.scheduler.add_job(
-                self._check_decision_followups, "cron", hour=10, minute=0,
-                id="decision_followup", replace_existing=True,
+            self._add_cron(
+                self._check_decision_followups, hour=10, minute=0,
+                id="decision_followup",
             )
 
         if self.settings.evening_summary:
-            self.scheduler.add_job(
-                self._evening_prompt, "cron", hour=21, minute=0,
-                id="evening_prompt", replace_existing=True,
+            self._add_cron(
+                self._evening_prompt, hour=21, minute=0,
+                id="evening_prompt",
             )
 
         if self.settings.weekly_review:
-            self.scheduler.add_job(
-                self._weekly_review, "cron", day_of_week="sun", hour=20, minute=0,
-                id="weekly_review", replace_existing=True,
+            self._add_cron(
+                self._weekly_review, day_of_week="sun", hour=20, minute=0,
+                id="weekly_review",
             )
 
         # Daily DB backup at 03:30 — mirrors scripts/backup.sh defaults
@@ -341,17 +366,17 @@ class ProactiveScheduler:
         # the Sunday 03:00 cleanup so weekly snapshots reflect the
         # post-cleanup state; on other days it's just a quiet pre-dawn
         # slot far from morning_prompt and reminder_check noise.
-        self.scheduler.add_job(
-            self._daily_backup, "cron", hour=3, minute=30,
-            id="daily_backup", replace_existing=True,
+        self._add_cron(
+            self._daily_backup, hour=3, minute=30,
+            id="daily_backup",
         )
 
         # Weekly data cleanup — deletes interactions / api_costs / soft-deleted
         # memories older than settings.data_retention_days. Sunday 03:00 to
         # avoid colliding with weekly_review at 20:00 and morning briefing.
-        self.scheduler.add_job(
-            self._cleanup_old_data, "cron", day_of_week="sun", hour=3, minute=0,
-            id="cleanup_old_data", replace_existing=True,
+        self._add_cron(
+            self._cleanup_old_data, day_of_week="sun", hour=3, minute=0,
+            id="cleanup_old_data",
         )
 
         self.scheduler.start()

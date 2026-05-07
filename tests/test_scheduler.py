@@ -137,7 +137,16 @@ class TestConversationAwareDefer:
         s.profile.notification_limit = 10
         s.send_fn = AsyncMock()
 
-        result = await s._send_proactive("☀️ Доброе утро", kind="morning_briefing")
+        # Pin the scheduler clock to 12:00 — well outside the
+        # "23:00-07:00" quiet hours window. Without this the test was
+        # flaky between 23:00-07:00 wall-clock since _in_quiet_hours()
+        # uses live tz_now.
+        fake_dt = datetime(2026, 4, 15, 12, 0, 0)
+        with patch("mindsecretary.proactive.scheduler.tz_now",
+                   return_value=fake_dt):
+            result = await s._send_proactive(
+                "☀️ Доброе утро", kind="morning_briefing",
+            )
 
         assert result is True
         s.send_fn.assert_awaited_once()
@@ -156,7 +165,10 @@ class TestConversationAwareDefer:
         s.profile.notification_limit = 10
         s.send_fn = AsyncMock()
 
-        result = await s._send_proactive("text", kind="evening_summary")
+        fake_dt = datetime(2026, 4, 15, 12, 0, 0)
+        with patch("mindsecretary.proactive.scheduler.tz_now",
+                   return_value=fake_dt):
+            result = await s._send_proactive("text", kind="evening_summary")
 
         # Send still happened despite the recency check failing
         assert result is True
@@ -190,7 +202,10 @@ class TestSnoozeGate:
         s.profile.notification_limit = 10
         s.send_fn = AsyncMock()
 
-        result = await s._send_proactive("text", kind="evening_summary")
+        fake_dt = datetime(2026, 4, 15, 12, 0, 0)
+        with patch("mindsecretary.proactive.scheduler.tz_now",
+                   return_value=fake_dt):
+            result = await s._send_proactive("text", kind="evening_summary")
 
         assert result is True
         s.send_fn.assert_awaited_once()
@@ -423,6 +438,96 @@ class TestSchedulerTimezone:
             send_fn=MagicMock(), weather=None,
         )
         assert s.scheduler is not None
+
+
+class TestCronJobMisfireGrace:
+    """All cron-scheduled jobs must have misfire_grace_time + coalesce
+    set so a delayed startup (bot restart at 09:01 for a 09:00 cron)
+    still fires the missed daily job. APScheduler's default 1-second
+    grace silently dropped briefings / birthday checks / cleanups
+    after even a brief startup delay."""
+
+    def _start_with_all_cron(self):
+        from unittest.mock import patch
+        from mindsecretary.proactive.scheduler import ProactiveScheduler
+
+        profile = MagicMock()
+        profile.quiet_hours = []
+        profile.notification_limit = 10
+        profile.wake_up = "07:00"
+        profile.timezone = "UTC"
+
+        settings = MagicMock()
+        # Enable every cron job we care about.
+        settings.morning_briefing = True
+        settings.evening_summary = True
+        settings.smart_questions = True
+        settings.decision_followups = True
+        settings.weekly_review = True
+        settings.weather_monitor = False
+        settings.birthday_alerts = True
+        settings.event_alerts = False
+        settings.event_reflections = False
+        settings.reminder_check_minutes = 5
+        settings.weather_check_minutes = 60
+        settings.quiet_contact_days = 30
+        settings.quiet_contact_min_mentions = 3
+        settings.event_alert_lead_minutes = 0
+        settings.event_reflection_lag_minutes = 0
+
+        s = ProactiveScheduler(
+            db=MagicMock(), profile=profile, settings=settings,
+            send_fn=MagicMock(), weather=None,
+        )
+        # Don't actually start the loop — just register jobs, assert,
+        # then shutdown.
+        with patch.object(s.scheduler, "start"):
+            s.start()
+        return s
+
+    def test_all_cron_jobs_have_misfire_grace(self):
+        s = self._start_with_all_cron()
+        try:
+            cron_ids = {
+                "birthday_check", "morning_prompt", "smart_question",
+                "decision_followup", "evening_prompt", "weekly_review",
+                "daily_backup", "cleanup_old_data",
+            }
+            seen = set()
+            for job in s.scheduler.get_jobs():
+                if job.id in cron_ids:
+                    seen.add(job.id)
+                    assert job.misfire_grace_time == 3600, (
+                        f"{job.id} missing misfire_grace_time"
+                    )
+                    assert job.coalesce is True, (
+                        f"{job.id} should have coalesce=True"
+                    )
+            missing = cron_ids - seen
+            assert not missing, f"cron jobs not registered: {missing}"
+        finally:
+            if s.scheduler.running:
+                s.scheduler.shutdown(wait=False)
+
+    def test_interval_jobs_keep_default_no_grace(self):
+        """Interval jobs (reminder_check) fire often enough that a
+        misfire is not catastrophic — keep the default behavior so a
+        weekend offline doesn't unleash a stampede on restart.
+
+        APScheduler doesn't set the `misfire_grace_time` attribute on
+        a Job when none is passed, so confirm the attribute is absent
+        (or, if APScheduler internals change to always set it, that
+        the value differs from our 3600s cron policy)."""
+        s = self._start_with_all_cron()
+        try:
+            interval_ids = {"reminder_check"}
+            for job in s.scheduler.get_jobs():
+                if job.id in interval_ids:
+                    grace = getattr(job, "misfire_grace_time", None)
+                    assert grace != 3600
+        finally:
+            if s.scheduler.running:
+                s.scheduler.shutdown(wait=False)
 
 
 class TestFormatRainAlert:
