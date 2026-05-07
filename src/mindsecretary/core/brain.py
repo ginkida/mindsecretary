@@ -174,6 +174,20 @@ class Brain:
             if not final_text:
                 final_text = "Превышен лимит вызовов инструментов."
 
+        # Guard against silent empty-response: Claude occasionally returns
+        # stop_reason=end_turn with no content blocks (rare but observed
+        # in practice — and easy to trigger with edge-case prompts).
+        # Pre-fix final_text stayed "", the out interaction logged empty
+        # content, telegram._reply suppressed the send, and the user saw
+        # nothing back from a message they sent. No error, no diagnostic.
+        # Better: surface a generic ask-again message so the user knows
+        # the bot received it but didn't have anything to say.
+        if not final_text or not final_text.strip():
+            final_text = (
+                "Hmm, не получилось сформулировать ответ. "
+                "Попробуй переформулировать вопрос."
+            )
+
         self.db.log_interaction(
             direction="out",
             message_type="chat",

@@ -556,6 +556,95 @@ class TestProcessInjectsHistory:
         }
 
 
+class TestProcessEmptyResponseFallback:
+    """Pre-fix Brain.process logged final_text="" and returned an empty
+    BrainResponse when the LLM responded with stop_reason=end_turn but
+    no content blocks (rare but observed). telegram._reply suppresses
+    empty replies, so the user saw NOTHING — message sent, processed,
+    silent. Now we substitute a "couldn't formulate" message so the
+    user gets a clear "try again" rather than dead air."""
+
+    @pytest.mark.asyncio
+    async def test_empty_text_no_tools_falls_back_to_friendly_message(
+        self, tmp_db,
+    ):
+        from unittest.mock import AsyncMock
+        from mindsecretary.core.brain import BrainResponse
+        from mindsecretary.llm.client import LLMResponse
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                return LLMResponse(
+                    text=None, tool_calls=[],
+                    usage={"input_tokens": 10, "output_tokens": 0},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        result = await brain.process("вопрос")
+
+        assert isinstance(result, BrainResponse)
+        # Must NOT be empty — that's the bug. Tell the user something.
+        assert result.text and result.text.strip()
+        assert "переформулировать" in result.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_text_also_falls_back(self, tmp_db):
+        from unittest.mock import AsyncMock
+        from mindsecretary.llm.client import LLMResponse
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                return LLMResponse(
+                    text="   \n  ", tool_calls=[],
+                    usage={"input_tokens": 10, "output_tokens": 0},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        result = await brain.process("вопрос")
+        assert "переформулировать" in result.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_normal_response_passes_through_unchanged(self, tmp_db):
+        """Sanity: don't trample real responses."""
+        from unittest.mock import AsyncMock
+        from mindsecretary.llm.client import LLMResponse
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                return LLMResponse(
+                    text="конкретный ответ", tool_calls=[],
+                    usage={"input_tokens": 10, "output_tokens": 5},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        result = await brain.process("вопрос")
+        assert result.text == "конкретный ответ"
+
+
 class TestSystemPromptCaching:
     """v0.14.62: MAIN_SYSTEM_PROMPT split into static prefix + dynamic
     suffix and returned as a list of content blocks with cache_control
