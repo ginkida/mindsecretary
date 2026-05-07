@@ -906,6 +906,36 @@ class TestBirthdayAlertFormat:
         assert self._format({"name": "X", "birthday": None}) == ""
         assert self._format({"name": "X"}) == ""
 
+    def test_feb29_renders_today_in_non_leap_year(self):
+        """Iter 27 made Feb 29 contacts surface in get_upcoming_birthdays
+        on Feb 28 in non-leap years. The formatter must complete the
+        carve-out by rendering "🎂 Сегодня ДР" — pre-fix it fell into
+        the days_until path, ValueError'd on now.replace(day=29) for a
+        non-leap year, and ended at the "Скоро ДР" fallback."""
+        # Feb 28, 2026 — non-leap. Contact born Feb 29, 1996.
+        result = self._format(
+            {"name": "Leap", "birthday": "1996-02-29"},
+            year=2026, month=2, day=28,
+        )
+        assert result.startswith("🎂 Сегодня ДР:")
+        assert "Leap" in result
+        # Age computed from next-occurrence year (2026 since Feb 29 is
+        # treated as today via the carve-out)
+        assert "(30)" in result
+        # Must NOT fall through to the upcoming/skoro renderer
+        assert "Скоро ДР" not in result
+
+    def test_feb29_renders_today_normally_in_leap_year(self):
+        """In leap years Feb 29 is a real day; the carve-out branch
+        must not double-fire."""
+        result = self._format(
+            {"name": "Leap", "birthday": "1996-02-29"},
+            year=2028, month=2, day=29,
+        )
+        assert result.startswith("🎂 Сегодня ДР:")
+        assert "Leap" in result
+        assert "(32)" in result
+
     def test_implausible_age_omitted(self):
         """A birth year of 1700 (typo, junk data) gives age > 150 — the
         guard drops the parens so we don't render '(326)' which would

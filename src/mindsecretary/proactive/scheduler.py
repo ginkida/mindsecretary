@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 from datetime import datetime, time, timedelta, timezone
@@ -510,7 +511,18 @@ class ProactiveScheduler:
             except (ValueError, TypeError):
                 age_str = ""
 
-        if bday_md == today_md:
+        # Feb 29 → Feb 28 carve-out in non-leap years matches the lookup
+        # window in get_upcoming_birthdays (iter 27). Without this the
+        # contact correctly surfaces in the alert pool but the
+        # formatter renders "📅 Скоро ДР" because the literal MM-DD
+        # match fails and the days_until path raises ValueError on
+        # `now.replace(day=29)` in a non-leap year.
+        is_feb29_carveout = (
+            bday_md == "02-29"
+            and today_md == "02-28"
+            and not calendar.isleap(now.year)
+        )
+        if bday_md == today_md or is_feb29_carveout:
             return f"🎂 Сегодня ДР: {name}{age_str}{relation}"
 
         # Days-until: count calendar days from `now` to the next bday_md.
