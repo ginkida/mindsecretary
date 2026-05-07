@@ -1809,6 +1809,51 @@ class TestEmptyInputValidation:
         assert tmp_db.get_contacts("") == []
 
     @pytest.mark.asyncio
+    async def test_update_contact_rejects_bogus_birthday(self, tmp_db):
+        """Pre-fix update_contact stored "1990-13-99" without complaint.
+        get_upcoming_birthdays substr-matched MM-DD against the next
+        7 days' list, "13-99" never appeared, and the user wondered
+        "почему бот не напомнил про ДР Маши" forever."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_contact", {
+            "name": "Маша", "birthday": "1990-13-99",
+        })
+        assert "invalid birthday" in result
+        assert "YYYY-MM-DD" in result
+        # Contact row also not created — boundary stops short of any
+        # DB write so a typo doesn't silently land a partial Маша row.
+        assert tmp_db.get_contacts("") == []
+
+    @pytest.mark.asyncio
+    async def test_update_contact_accepts_year_less_birthday(self, tmp_db):
+        """Year-less MM-DD must work — common case when user doesn't
+        know friend's birth year."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_contact", {
+            "name": "Олег", "birthday": "04-15",
+        })
+        assert "Contact updated" in result
+        contacts = tmp_db.get_contacts("Олег")
+        assert contacts[0]["birthday"] == "04-15"
+
+    @pytest.mark.asyncio
+    async def test_update_contact_accepts_full_birthday(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("update_contact", {
+            "name": "Иван", "birthday": "1985-12-01",
+        })
+        assert "Contact updated" in result
+
+    @pytest.mark.asyncio
     async def test_log_habit_rejects_empty_name(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor

@@ -1120,6 +1120,28 @@ class ToolExecutor:
             )
         return None
 
+    @staticmethod
+    def _check_birthday(value: str, tool: str, field: str = "birthday") -> str | None:
+        """Birthday columns accept either full date (YYYY-MM-DD) or
+        year-less (MM-DD). get_upcoming_birthdays does substr(birthday,
+        -5) and matches against the next 7 days' MM-DD list — invalid
+        input silently never matches, so a typo'd birthday goes into
+        the DB and the user never gets reminded ("я же добавил Машу!"
+        but no alert ever fires)."""
+        if not value or not value.strip():
+            return f"{tool}: {field} is required if provided"
+        v = value.strip()
+        for fmt in ("%Y-%m-%d", "%m-%d"):
+            try:
+                datetime.strptime(v, fmt)
+                return None
+            except ValueError:
+                continue
+        return (
+            f"{tool}: invalid {field} {value!r} — "
+            f"use YYYY-MM-DD (e.g. 1990-04-15) or MM-DD (e.g. 04-15)"
+        )
+
     def _handle_create_event(self, title: str, start_at: str,
                              end_at: str | None = None,
                              location: str | None = None,
@@ -1442,6 +1464,12 @@ class ToolExecutor:
         # but the rendered output is '— (relation)'). Defend at the boundary.
         if not name or not name.strip():
             return "update_contact requires a non-empty name"
+        # Validate birthday shape so a typo doesn't silently break
+        # get_upcoming_birthdays — it uses substr(birthday, -5) for the
+        # MM-DD match, which never lines up with bogus input. User adds
+        # "Маша 1990-13-99", waits for the alert that never comes.
+        if birthday and (err := self._check_birthday(birthday, "update_contact")):
+            return err
         contact = self.db.upsert_contact(name.strip(), relation, birthday, notes)
         return f"Contact updated: {name}"
 
