@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -321,9 +322,25 @@ class BriefingGenerator:
             except Exception as e:
                 logger.warning("Weather for evening summary failed: %s", type(e).__name__)
 
-        # Count completed reminders
-        completed = [i for i in interactions
-                     if i.get("message_type") == "reminder" and i.get("direction") == "out"]
+        # Count reminders fired today. Pre-fix the filter looked for
+        # message_type == "reminder", but reminders are logged as
+        # message_type="notification" with metadata={"kind":"reminder"}
+        # (per monitor.check_reminders). The old check never matched and
+        # the evening prompt got "0 напоминаний отправлено" baked in
+        # every day — Claude then wrote a misleading summary that
+        # implied the user had nothing scheduled, regardless of reality.
+        completed = []
+        for i in interactions:
+            if i.get("message_type") != "notification" or i.get("direction") != "out":
+                continue
+            meta_raw = i.get("metadata")
+            if not meta_raw:
+                continue
+            try:
+                if json.loads(meta_raw).get("kind") == "reminder":
+                    completed.append(i)
+            except (json.JSONDecodeError, TypeError):
+                continue
 
         # Habits: active streaks and what wasn't logged today.
         # Habit names are user-origin (created via log_habit from voice/text)

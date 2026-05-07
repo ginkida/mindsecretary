@@ -410,6 +410,57 @@ class TestEveningEventsTimeIncluded:
         assert "кафе Пушкин" in prompt
 
 
+class TestEveningRemindersCount:
+    """Pre-fix the evening summary's "completed" reminder counter
+    looked for message_type == "reminder", but check_reminders logs
+    them as message_type="notification" with metadata.kind="reminder".
+    The filter never matched, so the prompt got "0 напоминаний
+    отправлено" hardcoded into every evening summary — Claude
+    rendered a wrap-up that implied a quiet day even when the bot
+    had fired 8 reminders."""
+
+    @pytest.mark.asyncio
+    async def test_counts_reminder_notifications_via_metadata(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        # Two reminder firings + one unrelated notification (briefing).
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="⏰ Напоминание: позвонить",
+            metadata={"kind": "reminder", "reminder_id": "r1"},
+        )
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="⏰ Напоминание: оплатить",
+            metadata={"kind": "reminder", "reminder_id": "r2"},
+        )
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="☀️ Доброе утро",
+            metadata={"kind": "morning_briefing"},
+        )
+
+        await bg.generate_evening()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        assert "2 напоминаний отправлено" in prompt
+        # Sanity: morning briefing didn't get counted as a reminder
+        assert "3 напоминаний отправлено" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_zero_when_no_reminders_today(self, tmp_path):
+        """No reminder firings → 0 sent. Other notification kinds must
+        not bump the count."""
+        bg, db, llm = _make_briefing(tmp_path)
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="🎂 Сегодня ДР",
+            metadata={"kind": "birthday_alert"},
+        )
+        await bg.generate_evening()
+        prompt = llm.chat.call_args.kwargs["system"]
+        assert "0 напоминаний отправлено" in prompt
+
+
 class TestIsPersonInTitle:
     """3-char-stem heuristic for suppressing redundant '👤 person' lines
     when the title already names them. The naive substring approach
