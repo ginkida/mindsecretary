@@ -1624,6 +1624,13 @@ class ToolExecutor:
         # lookup matches against name). Defend at the boundary.
         if not habit_name or not habit_name.strip():
             return "log_habit requires a non-empty habit_name"
+        # Validate the date string so a stray "вчера" / "yesterday" passed
+        # by the LLM doesn't land in habit_log with garbage that
+        # get_habit_stats then silently skips (Cyrillic > '2026' lexically,
+        # so `date <= '2026-05-07'` filters it out and the user thinks
+        # the habit wasn't logged). Mirrors get_events / get_daily_goals.
+        if date and (err := self._check_iso_date(date, "log_habit", "date")):
+            return err
         result = self.db.log_habit(habit_name.strip(), done, date)
         status = "done" if done else "skipped"
         return f"Habit '{habit_name}' {status} for {result['date']}"

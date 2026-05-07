@@ -1822,6 +1822,26 @@ class TestEmptyInputValidation:
         assert tmp_db.get_habit_stats() == []
 
     @pytest.mark.asyncio
+    async def test_log_habit_rejects_invalid_date(self, tmp_db):
+        """LLM passing a Russian word like "вчера" as date must be
+        caught at the boundary — pre-fix the row landed in habit_log
+        with date='вчера', and get_habit_stats filtered it out lexically
+        ('вчера' > '2026-05-07' so `date <= today` is FALSE) so the
+        user saw "habit not logged" while the row sat polluting the DB."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("log_habit", {
+            "habit_name": "зарядка", "done": True, "date": "вчера",
+        })
+        assert "invalid date" in result
+        assert "YYYY-MM-DD" in result
+        # Habit row in habits table also not created — boundary stops
+        # short of any DB write.
+        assert tmp_db.get_habit_stats() == []
+
+    @pytest.mark.asyncio
     async def test_set_daily_goal_rejects_empty_title(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
