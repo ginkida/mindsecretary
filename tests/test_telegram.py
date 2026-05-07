@@ -50,6 +50,7 @@ class TestForwardEmptyContentGuard:
         update = _make_update()
         update.message.text = None
         update.message.caption = None
+        update.message.photo = None
         update.message.forward_origin = None
         update.message.chat = MagicMock()
         update.message.chat.send_action = AsyncMock()
@@ -68,6 +69,7 @@ class TestForwardEmptyContentGuard:
         update = _make_update()
         update.message.text = "   \n  "
         update.message.caption = None
+        update.message.photo = None
         update.message.forward_origin = None
         update.message.chat = MagicMock()
         update.message.chat.send_action = AsyncMock()
@@ -88,6 +90,7 @@ class TestForwardEmptyContentGuard:
         update = _make_update()
         update.message.text = "interesting article from somewhere"
         update.message.caption = None
+        update.message.photo = None
         update.message.forward_origin = None
         update.message.chat = MagicMock()
         update.message.chat.send_action = AsyncMock()
@@ -103,6 +106,97 @@ class TestForwardEmptyContentGuard:
         # Prefix preserved on real content
         assert kwargs["user_message"].startswith("[Переслано]:")
         assert "interesting article" in kwargs["user_message"]
+
+
+class TestForwardedPhotoFlow:
+    """Pre-fix _handle_forward only read text/caption — the image was
+    silently dropped because filters.FORWARDED matches before
+    filters.PHOTO. User forwarded a screenshot of a receipt expecting
+    OCR analysis and bot saw caption-only nonsense. Now forwarded
+    photos get the multimodal flow with the [Переслано от X] prefix
+    baked into the caption."""
+
+    @pytest.mark.asyncio
+    async def test_forwarded_photo_passes_image_to_brain(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = None
+        update.message.caption = "вот чек"
+        # Mock photo with a single photo size
+        photo = MagicMock()
+        photo.file_id = "AAA"
+        photo.file_size = 12345
+        update.message.photo = [photo]
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+
+        # Mock context.bot.get_file().download_as_bytearray()
+        file_mock = MagicMock()
+        file_mock.download_as_bytearray = AsyncMock(
+            return_value=bytearray(b"fakepngbytes")
+        )
+        context = SimpleNamespace(
+            args=[],
+            bot=SimpleNamespace(get_file=AsyncMock(return_value=file_mock)),
+        )
+
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="вижу чек на 500р", tool_calls_made=0, total_tokens=10,
+        ))
+        brain.settings.process_timeout_sec = 30
+
+        await bot._handle_forward(update, context)
+
+        brain.process.assert_awaited_once()
+        kwargs = brain.process.await_args.kwargs
+        assert kwargs["message_type"] == "photo"
+        assert kwargs["image_base64"]  # non-empty
+        # Forward prefix on caption so Claude knows the source
+        assert kwargs["user_message"].startswith("[Переслано]:")
+        assert "вот чек" in kwargs["user_message"]
+
+    @pytest.mark.asyncio
+    async def test_forwarded_photo_without_caption_uses_default(self):
+        """No caption on the forwarded photo → use the same inbox-capture
+        instruction _handle_photo uses, but keep the forward prefix."""
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = None
+        update.message.caption = None
+        photo = MagicMock()
+        photo.file_id = "AAA"
+        photo.file_size = 1024
+        update.message.photo = [photo]
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+
+        file_mock = MagicMock()
+        file_mock.download_as_bytearray = AsyncMock(
+            return_value=bytearray(b"x")
+        )
+        context = SimpleNamespace(
+            args=[],
+            bot=SimpleNamespace(get_file=AsyncMock(return_value=file_mock)),
+        )
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="ok", tool_calls_made=0, total_tokens=5,
+        ))
+        brain.settings.process_timeout_sec = 30
+
+        await bot._handle_forward(update, context)
+
+        kwargs = brain.process.await_args.kwargs
+        # Default inbox instruction used
+        assert "inbox" in kwargs["user_message"].lower() or "разбери" in kwargs["user_message"].lower()
+        assert kwargs["user_message"].startswith("[Переслано]:")
 
 
 class TestTextHandlerWhitespaceGuard:

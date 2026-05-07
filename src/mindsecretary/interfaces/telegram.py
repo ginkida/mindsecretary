@@ -1194,28 +1194,101 @@ class TelegramBot:
             logger.error("Brain failed: %s", type(e).__name__)
             await update.message.reply_text("Произошла ошибка.")
 
+    @staticmethod
+    def _forward_attribution(origin) -> str:
+        """Render the "[Переслано от X]: " prefix for a forwarded message.
+
+        Telegram's forward_origin can carry sender_user (regular user),
+        sender_user_name (privacy-protected user), or sender_chat (channel
+        forward). Defensive try/except so an unexpected origin shape
+        doesn't crash the handler — falls back to a generic [Переслано].
+        """
+        if not origin:
+            return "[Переслано]: "
+        try:
+            if hasattr(origin, "sender_user") and origin.sender_user:
+                u = origin.sender_user
+                name = u.first_name or ""
+                if u.last_name:
+                    name += f" {u.last_name}"
+                return f"[Переслано от {name}]: "
+            if hasattr(origin, "sender_user_name") and origin.sender_user_name:
+                return f"[Переслано от {origin.sender_user_name}]: "
+            if hasattr(origin, "sender_chat") and origin.sender_chat:
+                return f"[Переслано из {origin.sender_chat.title}]: "
+        except Exception:
+            pass
+        return "[Переслано]: "
+
     async def _handle_forward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
             return
         if not await self._require_rate_limit(update):
             return
         msg = update.message
-        forward_from = "[Переслано]: "
-        origin = msg.forward_origin
-        if origin:
+        forward_from = self._forward_attribution(msg.forward_origin)
+
+        # Forwarded PHOTO branch: filters.FORWARDED is registered before
+        # filters.PHOTO so forwarded screenshots / receipts / memes land
+        # here, NOT in _handle_photo. Pre-fix this branch fell through
+        # to text-only and the image was dropped silently — user
+        # forwarded a receipt expecting OCR and bot saw "[Переслано
+        # от Маша]: " (caption-only) and answered nonsense.
+        if msg.photo:
+            photo = msg.photo[-1]
+            if photo.file_size and photo.file_size > MAX_PHOTO_SIZE:
+                await msg.reply_text("Фото слишком большое (макс 10 МБ).")
+                return
+            caption_body = (msg.caption or "")[:MAX_TEXT_LENGTH].strip()
+            # Caption is optional on forwards. When missing, use the same
+            # default inbox-capture instruction _handle_photo uses; the
+            # forward prefix still goes through so Claude knows the
+            # source.
+            if not caption_body:
+                caption_body = (
+                    "Разбери фото как inbox: извлеки факты, задачи, "
+                    "контакты, даты и важные детали."
+                )
+            full_caption = f"{forward_from}{caption_body}"
+            await self._typing(update)
             try:
-                if hasattr(origin, "sender_user") and origin.sender_user:
-                    u = origin.sender_user
-                    name = u.first_name or ""
-                    if u.last_name:
-                        name += f" {u.last_name}"
-                    forward_from = f"[Переслано от {name}]: "
-                elif hasattr(origin, "sender_user_name") and origin.sender_user_name:
-                    forward_from = f"[Переслано от {origin.sender_user_name}]: "
-                elif hasattr(origin, "sender_chat") and origin.sender_chat:
-                    forward_from = f"[Переслано из {origin.sender_chat.title}]: "
-            except Exception:
-                pass
+                file = await context.bot.get_file(photo.file_id)
+                photo_bytes = bytes(await asyncio.wait_for(
+                    file.download_as_bytearray(), timeout=DOWNLOAD_TIMEOUT,
+                ))
+            except asyncio.TimeoutError:
+                await msg.reply_text("Таймаут загрузки фото.")
+                return
+            except Exception as e:
+                logger.error("Forwarded photo download failed: %s", type(e).__name__)
+                await msg.reply_text("Не удалось скачать фото.")
+                return
+            if len(photo_bytes) > MAX_PHOTO_SIZE:
+                del photo_bytes
+                await msg.reply_text("Фото слишком большое (макс 10 МБ).")
+                return
+            image_b64 = base64.b64encode(photo_bytes).decode("utf-8")
+            del photo_bytes
+            logger.info(
+                "Forwarded photo received (%d KB), caption: %s",
+                len(image_b64) // 1024, caption_body[:50],
+            )
+            await self._typing(update)
+            try:
+                response = await asyncio.wait_for(
+                    self.brain.process(
+                        user_message=full_caption, message_type="photo",
+                        image_base64=image_b64,
+                    ),
+                    timeout=self.brain.settings.process_timeout_sec,
+                )
+                await self._reply(update, response.text)
+            except asyncio.TimeoutError:
+                await msg.reply_text("Таймаут обработки фото.")
+            except Exception as e:
+                logger.error("Brain failed on forwarded photo: %s", type(e).__name__)
+                await msg.reply_text("Не удалось обработать фото.")
+            return
 
         text = (msg.text or msg.caption or "")[:MAX_TEXT_LENGTH]
         # Pre-fix the empty-check used full_text, which always has the
