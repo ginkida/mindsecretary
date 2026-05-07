@@ -165,6 +165,73 @@ class TestFormatCurrentRain:
         assert "20:00-" not in text
 
 
+class TestParseDefensiveAgainstNoneArrays:
+    """Open-Meteo's JSON schema permits null for missing arrays; pre-fix
+    `len(daily.get("X", []))` exploded with TypeError because dict.get's
+    default only applies on MISSING keys, not on explicit None values.
+    A single null field would crash _parse → propagate to scheduler's
+    _check_weather → silent suppression of the entire forecast cycle."""
+
+    def test_null_daily_arrays_dont_crash(self):
+        """All daily arrays explicitly None — extract should bail
+        gracefully with empty 'daily' list rather than TypeError."""
+        client = WeatherClient(55.0, 37.0, timezone="Asia/Almaty")
+        payload = {
+            "current": {},
+            "daily": {
+                "time": None,
+                "temperature_2m_max": None,
+                "temperature_2m_min": None,
+                "weather_code": None,
+                "precipitation_sum": None,
+                "wind_speed_10m_max": None,
+            },
+            "hourly": {},
+        }
+        # Pre-fix: TypeError. Post-fix: empty result, no exception.
+        result = client._parse(payload, days=1)
+        assert result["daily"] == []
+
+    def test_null_hourly_arrays_dont_crash(self):
+        """Hourly fields all None — rain_today should be empty, no crash."""
+        client = WeatherClient(55.0, 37.0, timezone="Asia/Almaty")
+        payload = {
+            "current": {},
+            "daily": {"time": []},
+            "hourly": {
+                "time": None,
+                "precipitation_probability": None,
+                "weather_code": None,
+            },
+        }
+        result = client._parse(payload, days=1)
+        assert result["rain_today"] == []
+
+    def test_partial_array_lengths_dont_crash(self):
+        """Mismatched lengths (longer time array than weather_code) used
+        to work via the `if i < len(...)` guard, but only when the
+        outer arrays survived the None-len trap. Confirm short arrays
+        still get the per-index fallback."""
+        client = WeatherClient(55.0, 37.0, timezone="Asia/Almaty")
+        payload = {
+            "current": {},
+            "daily": {
+                "time": ["2026-04-24", "2026-04-25"],
+                "weather_code": [63],  # only 1 entry for 2 dates
+                "temperature_2m_max": [20],
+                "temperature_2m_min": [10],
+                "precipitation_sum": [0],
+                "wind_speed_10m_max": [5],
+            },
+            "hourly": {},
+        }
+        result = client._parse(payload, days=2)
+        assert len(result["daily"]) == 2
+        # First day got the real code; second fell back to default.
+        assert result["daily"][0]["temp_max"] == 20
+        assert result["daily"][1]["temp_max"] is None
+
+
 class TestWeatherClientInit:
     def test_invalid_timezone_falls_back_to_none(self):
         client = WeatherClient(55.0, 37.0, timezone="Nonsense/Invalid")

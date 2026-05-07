@@ -105,19 +105,27 @@ class WeatherClient:
                 "humidity": current.get("relative_humidity_2m"),
             }
 
-        # Daily forecast
-        daily = data.get("daily", {})
-        dates = daily.get("time", [])
+        # Daily forecast — extract each array once with an `or []` fallback
+        # so an explicit-None field from Open-Meteo (rare but allowed by the
+        # JSON schema) doesn't crash with `len(None)`. dict.get's default
+        # only kicks in when the key is MISSING, not when the value is None.
+        daily = data.get("daily") or {}
+        dates = daily.get("time") or []
+        codes = daily.get("weather_code") or []
+        temp_maxes = daily.get("temperature_2m_max") or []
+        temp_mins = daily.get("temperature_2m_min") or []
+        precip_sums = daily.get("precipitation_sum") or []
+        wind_maxes = daily.get("wind_speed_10m_max") or []
         result["daily"] = []
         for i, date in enumerate(dates[:days]):
-            code = (daily.get("weather_code") or [0])[i] if i < len(daily.get("weather_code", [])) else 0
+            code = codes[i] if i < len(codes) else 0
             result["daily"].append({
                 "date": date,
-                "temp_max": (daily.get("temperature_2m_max") or [None])[i],
-                "temp_min": (daily.get("temperature_2m_min") or [None])[i],
+                "temp_max": temp_maxes[i] if i < len(temp_maxes) else None,
+                "temp_min": temp_mins[i] if i < len(temp_mins) else None,
                 "condition": WMO_CODES.get(code, f"код {code}"),
-                "precipitation": (daily.get("precipitation_sum") or [0])[i],
-                "wind_max": (daily.get("wind_speed_10m_max") or [None])[i],
+                "precipitation": precip_sums[i] if i < len(precip_sums) else 0,
+                "wind_max": wind_maxes[i] if i < len(wind_maxes) else None,
             })
 
         # Hourly — find rain windows for today, in the user's local TZ.
@@ -125,10 +133,11 @@ class WeatherClient:
         # `timezone=self.tz`, but "now" must be computed in the same TZ —
         # otherwise we compare local forecast hours against UTC/system hours
         # and leak past hours (the "rain at 13:00 sent at 18:56" bug).
-        hourly = data.get("hourly", {})
-        times = hourly.get("time", [])
-        precip_probs = hourly.get("precipitation_probability", [])
-        weather_codes = hourly.get("weather_code", [])
+        # `or []` defends against a null hourly array shape from the API.
+        hourly = data.get("hourly") or {}
+        times = hourly.get("time") or []
+        precip_probs = hourly.get("precipitation_probability") or []
+        weather_codes = hourly.get("weather_code") or []
         now_local = datetime.now(self._tz_info) if self._tz_info else datetime.now()
         today_str = now_local.strftime("%Y-%m-%d")
         now_hour = now_local.hour
