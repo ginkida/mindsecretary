@@ -546,15 +546,25 @@ class Database:
         like = f"%{escaped}%"
         now_local = self.local_now_naive()
         threshold = now_local + timedelta(days=days_ahead)
+        # Use the shared "still actionable" predicate so an in-progress
+        # meeting (started in the past, ends in the future) appears in
+        # results — mirror of the cancel/reschedule fix. Pre-fix this
+        # filtered start_at > now and "когда у меня встреча с Машей?"
+        # asked mid-meeting returned "не нашёл" with the row right there.
+        # `start_at <= ?` (the days-ahead horizon) caps the future end of
+        # the window; the actionable predicate covers the past-start /
+        # in-progress side.
+        now_sql = now_local.strftime(self._SQL_TS_FMT)
         rows = self.db.execute(
-            "SELECT * FROM events "
-            "WHERE start_at > ? AND start_at <= ? "
-            "AND (pylower(title) LIKE ? ESCAPE '\\' "
-            "     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\' "
-            "     OR pylower(COALESCE(location, '')) LIKE ? ESCAPE '\\' "
-            "     OR pylower(COALESCE(related_person, '')) LIKE ? ESCAPE '\\') "
-            "ORDER BY start_at LIMIT ?",
-            (now_local.strftime(self._SQL_TS_FMT),
+            f"SELECT * FROM events "
+            f"WHERE ({self._ACTIONABLE_EVENT_PREDICATE}) "
+            f"AND start_at <= ? "
+            f"AND (pylower(title) LIKE ? ESCAPE '\\' "
+            f"     OR pylower(COALESCE(description, '')) LIKE ? ESCAPE '\\' "
+            f"     OR pylower(COALESCE(location, '')) LIKE ? ESCAPE '\\' "
+            f"     OR pylower(COALESCE(related_person, '')) LIKE ? ESCAPE '\\') "
+            f"ORDER BY start_at LIMIT ?",
+            (now_sql, now_sql,
              threshold.strftime(self._SQL_TS_FMT),
              like, like, like, like, limit),
         ).fetchall()

@@ -220,6 +220,28 @@ class TestEvents:
         # for an event already past is meaningless.
         assert tmp_db.search_events("Маш") == []
 
+    def test_search_events_finds_in_progress_meeting(self, tmp_db: Database):
+        """A 2h meeting that started 30min ago must surface in
+        search — user mid-meeting asks 'когда у меня встреча с Машей?'
+        and gets useful answer instead of 'не нашёл'. Mirrors the
+        cancel/reschedule fix in iter 9."""
+        now = tmp_db.local_now_naive()
+        start_30min_ago = (now - timedelta(minutes=30)).strftime(SQL_TS_FMT)
+        end_in_90min = (now + timedelta(minutes=90)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("встреча с Машей", start_30min_ago,
+                            end_at=end_in_90min)
+        rows = tmp_db.search_events("Маш")
+        assert len(rows) == 1
+        assert rows[0]["title"] == "встреча с Машей"
+
+    def test_search_events_excludes_already_ended(self, tmp_db: Database):
+        """end_at < now → meeting concluded, must NOT match."""
+        now = tmp_db.local_now_naive()
+        start = (now - timedelta(hours=3)).strftime(SQL_TS_FMT)
+        end = (now - timedelta(hours=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("закончилась с Машей", start, end_at=end)
+        assert tmp_db.search_events("Маш") == []
+
     def test_search_events_orders_by_start_at(self, tmp_db: Database):
         now = tmp_db.local_now_naive()
         for offset in (10, 1, 5):
