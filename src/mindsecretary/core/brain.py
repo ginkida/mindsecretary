@@ -378,26 +378,52 @@ class Brain:
 
     @staticmethod
     def _merge_consecutive(turns: list[dict]) -> list[dict]:
-        """Collapse consecutive same-role text turns into one.
+        """Collapse consecutive same-role turns into one.
 
         Anthropic's messages API requires alternating user/assistant roles —
         two notifications firing back-to-back (e.g. birthday alert + briefing
         at 09:00 with no user reply between) would produce two assistant
-        turns in a row and fail the API call. Multimodal content (lists) is
-        left alone so we never merge an image turn with a text turn.
+        turns in a row and fail the API call.
+
+        Mixed content kinds (str + list-of-blocks) used to skip merging,
+        which surfaced as a 400 error when a user sent a photo right
+        after a text message that hadn't been replied to (e.g. previous
+        Brain.process timed out). The in-row was logged with no out-row
+        counterpart, so history ended with `user=str` and the current
+        multimodal photo turn was appended as a second consecutive user.
+        Now we normalize both sides to block lists and concatenate.
         """
         result: list[dict] = []
         for t in turns:
-            if (result
-                    and result[-1]["role"] == t["role"]
-                    and isinstance(result[-1].get("content"), str)
-                    and isinstance(t.get("content"), str)):
+            if not result or result[-1]["role"] != t["role"]:
+                result.append(dict(t))
+                continue
+            prev_content = result[-1].get("content")
+            cur_content = t.get("content")
+            # Fast path: both strings → simple concat keeps content as
+            # str (matches the pre-fix shape that the rest of the code
+            # already handled).
+            if isinstance(prev_content, str) and isinstance(cur_content, str):
                 result[-1] = {
                     "role": t["role"],
-                    "content": result[-1]["content"] + "\n\n" + t["content"],
+                    "content": prev_content + "\n\n" + cur_content,
                 }
-            else:
-                result.append(dict(t))
+                continue
+            # At least one side is a block list (multimodal). Normalize
+            # both to lists and concatenate so the merged turn has all
+            # blocks (text + image) in one role.
+            prev_blocks = (
+                [{"type": "text", "text": prev_content}]
+                if isinstance(prev_content, str) else list(prev_content or [])
+            )
+            cur_blocks = (
+                [{"type": "text", "text": cur_content}]
+                if isinstance(cur_content, str) else list(cur_content or [])
+            )
+            result[-1] = {
+                "role": t["role"],
+                "content": prev_blocks + cur_blocks,
+            }
         return result
 
     def _section_decisions(self, s) -> str:

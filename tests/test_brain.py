@@ -360,9 +360,16 @@ class TestMergeConsecutive:
             {"role": "user", "content": "y"},
         ]
 
-    def test_does_not_merge_multimodal_content(self):
-        """Current user turn may be a content list (text + image). Must
-        not be merged into a prior plain-text user turn."""
+    def test_merges_str_into_multimodal_block_list(self):
+        """When prior user turn is plain text (str) and current is
+        multimodal (list of blocks), they MUST merge — Anthropic API
+        rejects two consecutive user turns with a 400 error. Triggers
+        in practice when bot timed out on the previous text message
+        (in-row logged, no out-row) and user sends a photo next.
+
+        Pre-fix _merge_consecutive bailed on type mismatch and left two
+        consecutive user turns. Now it normalizes both sides to block
+        lists so the image stays attached to all preceding user text."""
         from mindsecretary.core.brain import Brain
         text_turn = {"role": "user", "content": "earlier text"}
         multimodal = {
@@ -373,9 +380,45 @@ class TestMergeConsecutive:
             ],
         }
         out = Brain._merge_consecutive([text_turn, multimodal])
-        assert len(out) == 2
-        assert out[0] == text_turn
-        assert out[1] == multimodal
+        assert len(out) == 1
+        assert out[0]["role"] == "user"
+        assert out[0]["content"] == [
+            {"type": "text", "text": "earlier text"},
+            {"type": "text", "text": "photo"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,xxx"}},
+        ]
+
+    def test_merges_two_multimodal_user_turns(self):
+        """Two photos in a row with no bot reply — both block lists
+        must concatenate into one user turn."""
+        from mindsecretary.core.brain import Brain
+        photo1 = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "image_url", "image_url": {"url": "data:1"}},
+            ],
+        }
+        photo2 = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "second"},
+                {"type": "image_url", "image_url": {"url": "data:2"}},
+            ],
+        }
+        out = Brain._merge_consecutive([photo1, photo2])
+        assert len(out) == 1
+        assert len(out[0]["content"]) == 4
+
+    def test_str_user_str_user_still_concats_to_str(self):
+        """Sanity: pure-string merge path still produces str content
+        (callers downstream may still expect str shape for plain text)."""
+        from mindsecretary.core.brain import Brain
+        out = Brain._merge_consecutive([
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+        ])
+        assert out == [{"role": "user", "content": "a\n\nb"}]
 
     def test_empty_input(self):
         from mindsecretary.core.brain import Brain
