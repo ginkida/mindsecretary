@@ -101,13 +101,21 @@ class BriefingGenerator:
         return f"{days} дн. назад"
 
     @staticmethod
-    def _format_open_loops(snapshot: dict) -> str:
+    def _format_open_loops(snapshot: dict, now_local: datetime | None = None) -> str:
         """Render open-loops snapshot with the most-pressing item per
         section. Pre-fix this just emitted counts for goals/decisions
         ('Незакрытые цели: 2'), but those categories don't appear in
         any other briefing slot — the user couldn't tell WHICH goal
         was open without invoking another command. Reminders stay
         as counts because reminders_text already lists them in full.
+
+        `now_local` (profile-local naive) is used to label in-progress
+        events distinctly. Since iter 13, upcoming_events can include
+        events that started in the past but haven't ended yet, and
+        rendering those as "Ближайшее" misled Claude when the user was
+        already 30 min into the meeting. Optional so existing test
+        callers (and any future caller without ready-made `now`) keep
+        the legacy "Ближайшее" framing.
         """
         s = sanitize_for_context
         counts = snapshot.get("counts", {})
@@ -142,7 +150,26 @@ class BriefingGenerator:
             # Event title is user-controlled → sanitize before it lands in the
             # briefing system prompt, matching the pattern used elsewhere.
             title = s(first.get("title") or "", 200)
-            lines.append(f"- Ближайшее событие: {first['start_at'][11:16]} {title}")
+            start_raw = first.get("start_at") or ""
+            time_part = start_raw[11:16] if len(start_raw) >= 16 else "??:??"
+            in_progress = False
+            if now_local is not None:
+                try:
+                    start_dt = datetime.fromisoformat(start_raw.replace(" ", "T"))
+                    in_progress = start_dt <= now_local
+                except (ValueError, TypeError):
+                    in_progress = False
+            if in_progress:
+                end_raw = first.get("end_at") or ""
+                end_part = ""
+                if (end_raw and len(end_raw) >= 16 and len(start_raw) >= 10
+                        and end_raw[:10] == start_raw[:10]):
+                    end_part = f"-{end_raw[11:16]}"
+                lines.append(
+                    f"- Сейчас идёт: {time_part}{end_part} {title}"
+                )
+            else:
+                lines.append(f"- Ближайшее событие: {time_part} {title}")
         return "\n".join(lines) or "Критичных хвостов нет."
 
     async def generate_morning(self) -> str | None:
@@ -190,7 +217,9 @@ class BriefingGenerator:
             f"- {s(m['content'])}" for m in promises
         ) or "Нет незакрытых обещаний."
         open_loops = self.db.get_open_loops(days_ahead=2, limit_per_section=3)
-        open_loops_text = self._format_open_loops(open_loops)
+        open_loops_text = self._format_open_loops(
+            open_loops, now_local=self.db.local_now_naive(),
+        )
 
         # Anniversary recall — items from this calendar date in past
         # months/years. Turns the bot's accumulated memory into living

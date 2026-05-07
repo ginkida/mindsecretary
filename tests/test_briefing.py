@@ -255,6 +255,60 @@ class TestFormatOpenLoops:
         # No "—" trailer when no list to source the title from
         assert "—" not in result
 
+    def test_in_progress_event_labeled_as_now_running(self):
+        """Iter 13 added in-progress events to upcoming_events. Without
+        passing `now_local`, the legacy "Ближайшее" framing applied —
+        that's misleading when the meeting is actively running. With
+        now_local the format swaps to "Сейчас идёт: HH:MM-HH:MM"."""
+        from datetime import datetime as real_dt
+        anchor = real_dt(2026, 4, 15, 14, 30)
+        result = BriefingGenerator._format_open_loops(
+            {
+                "counts": {"upcoming_events": 1},
+                "upcoming_events": [{
+                    "start_at": "2026-04-15 14:00:00",
+                    "end_at": "2026-04-15 16:00:00",
+                    "title": "встреча с Машей",
+                }],
+            },
+            now_local=anchor,
+        )
+        assert "Сейчас идёт: 14:00-16:00 встреча с Машей" in result
+        assert "Ближайшее событие" not in result
+
+    def test_future_event_keeps_blizhayshee_label(self):
+        """Sanity: future events still get the legacy "Ближайшее" label
+        (not in-progress). Confirms the swap is gated on the time
+        comparison, not always."""
+        from datetime import datetime as real_dt
+        anchor = real_dt(2026, 4, 15, 9, 0)  # 09:00 — meeting at 14:00 is future
+        result = BriefingGenerator._format_open_loops(
+            {
+                "counts": {"upcoming_events": 1},
+                "upcoming_events": [{
+                    "start_at": "2026-04-15 14:00:00",
+                    "end_at": "2026-04-15 16:00:00",
+                    "title": "встреча с Машей",
+                }],
+            },
+            now_local=anchor,
+        )
+        assert "Ближайшее событие: 14:00 встреча с Машей" in result
+        assert "Сейчас идёт" not in result
+
+    def test_no_now_local_keeps_legacy_label(self):
+        """Backwards compat: callers that don't pass now_local (e.g.
+        existing tests) get the original "Ближайшее" framing — tools.py
+        consumer also doesn't pass it."""
+        result = BriefingGenerator._format_open_loops({
+            "counts": {"upcoming_events": 1},
+            "upcoming_events": [{
+                "start_at": "2026-04-15 14:00:00",
+                "title": "встреча",
+            }],
+        })
+        assert "Ближайшее событие: 14:00 встреча" in result
+
 
 class TestFormatReminderLine:
     """_format_reminder_line surfaces trigger_at so Claude can sequence
