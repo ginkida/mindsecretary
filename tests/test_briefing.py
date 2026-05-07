@@ -464,6 +464,81 @@ class TestEveningEventsTimeIncluded:
         assert "кафе Пушкин" in prompt
 
 
+class TestEveningInteractionLabels:
+    """Pre-fix `interactions_text` rendered every notification with a
+    generic "(notification)" tag. Claude couldn't tell a reminder
+    firing apart from a birthday alert or weather warning when
+    writing the evening recap. Now metadata.kind drives a more
+    specific Russian label."""
+
+    @pytest.mark.asyncio
+    async def test_notification_kinds_render_distinct_labels(self, tmp_path):
+        bg, db, llm = _make_briefing(tmp_path)
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="⏰ позвонить",
+            metadata={"kind": "reminder", "reminder_id": "r"},
+        )
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="🎂 ДР Маши",
+            metadata={"kind": "birthday_alert"},
+        )
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="🌧 дождь",
+            metadata={"kind": "weather_alert"},
+        )
+        db.log_interaction(direction="in", message_type="text", content="ok")
+
+        await bg.generate_evening()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        assert "(напоминание)" in prompt
+        assert "(ДР)" in prompt
+        assert "(погода)" in prompt
+        # User text falls through unchanged
+        assert "(text)" in prompt
+        # Old generic tag must not surface for notifications
+        assert "(notification)" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_unknown_kind_falls_back_to_message_type(self, tmp_path):
+        """If metadata.kind is something we don't recognize, fall back
+        to message_type instead of dropping the line entirely."""
+        bg, db, llm = _make_briefing(tmp_path)
+        db.log_interaction(
+            direction="out", message_type="notification",
+            content="новое",
+            metadata={"kind": "future_kind_we_dont_know_yet"},
+        )
+        db.log_interaction(direction="in", message_type="text", content="ok")
+        await bg.generate_evening()
+        prompt = llm.chat.call_args.kwargs["system"]
+        # Falls back to "notification" since the kind isn't in the map
+        assert "(notification) новое" in prompt
+
+    @pytest.mark.asyncio
+    async def test_malformed_metadata_falls_back_safely(self, tmp_path):
+        """Garbled metadata JSON shouldn't crash — fall back to
+        message_type as the displayed label."""
+        bg, db, llm = _make_briefing(tmp_path)
+        # Insert a row with non-JSON metadata bypassing log_interaction
+        # which auto-jsonifies.
+        db.db.execute(
+            "INSERT INTO interactions (direction, message_type, content, metadata) "
+            "VALUES (?, ?, ?, ?)",
+            ("out", "notification", "x", "this-is-not-json"),
+        )
+        db.db.commit()
+        db.log_interaction(direction="in", message_type="text", content="hi")
+
+        await bg.generate_evening()
+        prompt = llm.chat.call_args.kwargs["system"]
+        # Doesn't crash; falls back to message_type label
+        assert "(notification) x" in prompt
+
+
 class TestEveningRemindersCount:
     """Pre-fix the evening summary's "completed" reminder counter
     looked for message_type == "reminder", but check_reminders logs

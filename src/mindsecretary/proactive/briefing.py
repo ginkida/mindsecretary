@@ -17,6 +17,47 @@ from ..llm.client import LLMClient
 logger = logging.getLogger(__name__)
 
 
+# Map metadata.kind → short label that reads cleanly in evening summary
+# interactions_text. Keep keys aligned with brain._NOTIFICATION_LABELS
+# / tools._SEARCH_KIND_LABELS (English keys for stable identification,
+# Russian values for the prompt). Anything unmapped falls back to the
+# row's message_type.
+_NOTIFICATION_LABELS = {
+    "morning_briefing": "брифинг",
+    "evening_summary": "вечер",
+    "diary": "дневник",
+    "weekly_review": "неделя",
+    "smart_question": "вопрос",
+    "open_loops_nudge": "контроль",
+    "decision_followup": "решение",
+    "birthday_alert": "ДР",
+    "weather_alert": "погода",
+    "reminder": "напоминание",
+    "event_alert": "событие скоро",
+    "event_reflection": "как прошло",
+}
+
+
+def _interaction_label(row: dict) -> str:
+    """Pick the most informative single-word label for an interaction.
+
+    For notification rows, parse metadata.kind and return the
+    corresponding Russian label. For other types, return message_type
+    as-is. Defensive against malformed JSON in metadata.
+    """
+    msg_type = row.get("message_type") or ""
+    if msg_type != "notification":
+        return msg_type
+    meta_raw = row.get("metadata")
+    if not meta_raw:
+        return msg_type
+    try:
+        kind = json.loads(meta_raw).get("kind")
+    except (ValueError, TypeError):
+        return msg_type
+    return _NOTIFICATION_LABELS.get(kind, msg_type)
+
+
 class BriefingGenerator:
     def __init__(self, llm: LLMClient, memory: Memory, db: Database,
                  weather: WeatherClient | None, profile: Profile):
@@ -323,10 +364,15 @@ class BriefingGenerator:
         # timestamp is UTC-naive; render in profile TZ so Claude sees the
         # times the user actually lived, not UTC wall-clock.
         today_local_str = now.strftime("%Y-%m-%d")
+        # Refine the kind label for `notification` rows by reading
+        # metadata.kind. Pre-fix every proactive send showed the same
+        # "(notification)" tag, so Claude couldn't tell a reminder
+        # firing apart from a birthday alert or weather warning when
+        # writing the evening recap.
         interactions_text = "\n".join(
             f"[{fmt_local_time(i['timestamp'], self.profile.timezone, today_local_str)}] "
             f"{'→' if i['direction'] == 'out' else '←'} "
-            f"({i['message_type']}) {s(i['content'], 100)}"
+            f"({_interaction_label(i)}) {s(i['content'], 100)}"
             for i in interactions[:30]
         ) or "Нет взаимодействий."
 
