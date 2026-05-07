@@ -1720,11 +1720,16 @@ class Database:
             "ORDER BY trigger_at LIMIT ?",
             (now_sql, end_of_today_sql, limit_per_section),
         ).fetchall()
+        # _ACTIONABLE_EVENT_PREDICATE keeps in-progress meetings visible
+        # — a 2h workshop that started 30 min ago should still appear in
+        # /loops (and in the action_nudge that consumes this dict),
+        # mirroring the cancel/reschedule/search semantics.
         upcoming_events = self.db.execute(
-            "SELECT id, title, start_at, related_person, location FROM events "
-            "WHERE start_at >= ? AND date(start_at) <= date(?) "
-            "ORDER BY start_at LIMIT ?",
-            (now_sql, horizon, limit_per_section),
+            f"SELECT id, title, start_at, related_person, location FROM events "
+            f"WHERE ({self._ACTIONABLE_EVENT_PREDICATE}) "
+            f"AND date(start_at) <= date(?) "
+            f"ORDER BY start_at LIMIT ?",
+            (now_sql, now_sql, horizon, limit_per_section),
         ).fetchall()
         pending_goals = self.db.execute(
             "SELECT id, title, priority, status, reflection FROM daily_goals "
@@ -1751,8 +1756,10 @@ class Database:
                 (now_sql, end_of_today_sql),
             ).fetchone()[0],
             "upcoming_events": self.db.execute(
-                "SELECT COUNT(*) FROM events WHERE start_at >= ? AND date(start_at) <= date(?)",
-                (now_sql, horizon),
+                f"SELECT COUNT(*) FROM events "
+                f"WHERE ({self._ACTIONABLE_EVENT_PREDICATE}) "
+                f"AND date(start_at) <= date(?)",
+                (now_sql, now_sql, horizon),
             ).fetchone()[0],
             "pending_goals": self.db.execute(
                 "SELECT COUNT(*) FROM daily_goals "

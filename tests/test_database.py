@@ -1184,6 +1184,33 @@ class TestOpenLoops:
         assert loops["counts"]["due_decisions"] >= 1
 
 
+    def test_in_progress_event_appears_in_upcoming(self, tmp_db: Database):
+        """An event currently happening (started in the past, ends in
+        the future) must appear in /loops upcoming_events. Pre-fix
+        start_at >= now filtered it out, so a 2h workshop that started
+        30 min ago vanished from /loops AND from the action_nudge that
+        consumes this dict — same family of fixes as iter 9/10."""
+        now = tmp_db.local_now_naive()
+        start_30min_ago = (now - timedelta(minutes=30)).strftime(SQL_TS_FMT)
+        end_in_90min = (now + timedelta(minutes=90)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("workshop", start_30min_ago, end_at=end_in_90min)
+
+        loops = tmp_db.get_open_loops(days_ahead=2)
+
+        titles = [e["title"] for e in loops["upcoming_events"]]
+        assert "workshop" in titles
+        assert loops["counts"]["upcoming_events"] >= 1
+
+    def test_already_ended_event_not_in_upcoming(self, tmp_db: Database):
+        """end_at <= now → event concluded, must NOT appear."""
+        now = tmp_db.local_now_naive()
+        start = (now - timedelta(hours=3)).strftime(SQL_TS_FMT)
+        end = (now - timedelta(hours=1)).strftime(SQL_TS_FMT)
+        tmp_db.create_event("done", start, end_at=end)
+        loops = tmp_db.get_open_loops(days_ahead=2)
+        assert loops["counts"]["upcoming_events"] == 0
+
+
 class TestPragmaOptimize:
     """PRAGMA optimize is the SQLite-recommended pre-close incantation
     that refreshes query-planner stats. It's a no-op or a tiny ANALYZE
