@@ -714,6 +714,32 @@ def _truncate(val: str | None, max_len: int = MAX_STR_LEN) -> str | None:
     return str(val)[:max_len]
 
 
+def _safe_int(val: Any, default: int) -> int:
+    """Coerce LLM-provided value to int with a default fallback.
+
+    Pre-fix `int(clean.get("limit", 5))` raised ValueError when the LLM
+    hallucinated "five" or "all" instead of a real integer. Sanitize_args
+    propagated the exception, tool_executor caught it as a generic
+    "Error executing X: ValueError" and the LLM had no path to recover.
+    With the fallback the call still goes through with sane defaults
+    and the user gets a real answer.
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        # bool is a subclass of int — int(True)=1 is meaningless as a
+        # "limit" or "days_ahead". Treat as garbage and fall back.
+        return default
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        return int(val)
+    try:
+        return int(str(val).strip())
+    except (ValueError, TypeError):
+        return default
+
+
 def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate and sanitize tool arguments from LLM output."""
     clean = {}
@@ -732,8 +758,7 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         cat = clean.get("category", "")
         if cat not in VALID_CATEGORIES:
             clean["category"] = "personal"
-        imp = clean.get("importance", 5)
-        clean["importance"] = max(1, min(10, int(imp)))
+        clean["importance"] = max(1, min(10, _safe_int(clean.get("importance"), 5)))
 
     if name == "search_memory":
         # Drop invalid categories instead of letting them through to the SQL
@@ -752,10 +777,10 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # prompt the user about a decision they just created — looks like
         # the bot lost track of when "now" is.
         if clean.get("follow_up_days") is not None:
-            clean["follow_up_days"] = max(1, min(365, int(clean["follow_up_days"])))
+            clean["follow_up_days"] = max(1, min(365, _safe_int(clean["follow_up_days"], 30)))
 
     if name == "get_recent_memories":
-        clean["limit"] = max(1, min(10, int(clean.get("limit", 5))))
+        clean["limit"] = max(1, min(10, _safe_int(clean.get("limit"), 5)))
         # Same guard as search_memory: invalid category drops to None
         # (no filter) instead of letting bogus value through to the SQL
         # WHERE clause and producing a misleading empty result.
@@ -764,7 +789,7 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
             clean["category"] = None
 
     if name == "get_open_loops":
-        clean["days_ahead"] = max(1, min(7, int(clean.get("days_ahead", 2))))
+        clean["days_ahead"] = max(1, min(7, _safe_int(clean.get("days_ahead"), 2)))
 
     if name == "cancel_reminder":
         hint = clean.get("text_hint") or ""
@@ -800,26 +825,26 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "get_reminders":
         if clean.get("days_ahead") is not None:
-            clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
-        clean["limit"] = max(1, min(50, int(clean.get("limit", 20))))
+            clean["days_ahead"] = max(1, min(365, _safe_int(clean["days_ahead"], 7)))
+        clean["limit"] = max(1, min(50, _safe_int(clean.get("limit"), 20)))
 
     if name == "search_conversations":
-        clean["days"] = max(1, min(365, int(clean.get("days", 30))))
-        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+        clean["days"] = max(1, min(365, _safe_int(clean.get("days"), 30)))
+        clean["limit"] = max(1, min(30, _safe_int(clean.get("limit"), 10)))
 
     if name == "get_decisions":
-        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+        clean["limit"] = max(1, min(30, _safe_int(clean.get("limit"), 10)))
 
     if name == "search_events":
         if clean.get("days_ahead") is not None:
-            clean["days_ahead"] = max(1, min(365, int(clean["days_ahead"])))
+            clean["days_ahead"] = max(1, min(365, _safe_int(clean["days_ahead"], 30)))
         else:
             clean["days_ahead"] = 30
-        clean["limit"] = max(1, min(30, int(clean.get("limit", 10))))
+        clean["limit"] = max(1, min(30, _safe_int(clean.get("limit"), 10)))
 
     if name == "get_diary_entries":
-        clean["days"] = max(1, min(90, int(clean.get("days", 7))))
-        clean["limit"] = max(1, min(30, int(clean.get("limit", 5))))
+        clean["days"] = max(1, min(90, _safe_int(clean.get("days"), 7)))
+        clean["limit"] = max(1, min(30, _safe_int(clean.get("limit"), 5)))
 
     if name == "get_weather":
         # Schema declares max 7 but no min; sanitizer is the safety net.
@@ -827,7 +852,7 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # values, so the cap below 7 is mostly cosmetic. The min=1 floor
         # is the one that actually prevents an API error.
         if clean.get("days") is not None:
-            clean["days"] = max(1, min(7, int(clean["days"])))
+            clean["days"] = max(1, min(7, _safe_int(clean["days"], 1)))
 
     if name == "set_ephemeral_state":
         key = clean.get("key", "")

@@ -73,6 +73,41 @@ class TestSanitizeArgs:
             })
             assert args["category"] == cat
 
+    def test_int_field_handles_non_numeric_string(self):
+        """Pre-fix int(clean.get("limit", 5)) raised ValueError when the
+        LLM hallucinated "five" or "all". sanitize_args propagated it,
+        tool_executor returned "Error executing X: ValueError" with no
+        diagnostic. _safe_int now falls back to the default so the call
+        proceeds with sane defaults."""
+        args = _sanitize_args("get_recent_memories", {"limit": "five"})
+        assert args["limit"] == 5  # default
+
+    def test_int_field_accepts_numeric_string(self):
+        """LLM sometimes sends "8" as a string instead of 8 — the safe
+        coerce should still return the integer value."""
+        args = _sanitize_args("get_recent_memories", {"limit": "8"})
+        assert args["limit"] == 8
+
+    def test_int_field_handles_bool_via_default(self):
+        """bool is an int subclass, so int(True)=1 silently. For limit/
+        days_ahead that's meaningless — fall back to default instead."""
+        args = _sanitize_args("get_open_loops", {"days_ahead": True})
+        assert args["days_ahead"] == 2  # default, not 1
+
+    def test_int_field_clamps_after_safe_coerce(self):
+        """Sanity: defensive int still passes through the min/max clamp."""
+        # importance schema is 1-10
+        args = _sanitize_args("save_memory", {
+            "content": "x", "category": "personal", "importance": "999",
+        })
+        assert args["importance"] == 10
+
+    def test_int_field_negative_string_clamped(self):
+        args = _sanitize_args("save_memory", {
+            "content": "x", "category": "personal", "importance": "-5",
+        })
+        assert args["importance"] == 1
+
     def test_track_decision_clamps_negative_follow_up(self):
         """Schema says 1-365 but defensive clamp protects against drift —
         negative follow_up_days makes follow_up_at land in the past, so
