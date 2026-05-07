@@ -956,6 +956,14 @@ class Database:
         for i in range(days):
             d = today + timedelta(days=i)
             dates.append(d.strftime("%m-%d"))
+            # Feb 29 birthdays vanish from the lookup window in non-leap
+            # years because today + i never rolls into "02-29". Without
+            # this carve-out a Feb 29 baby gets alerted once every four
+            # years. Standard practice: in non-leap years, treat Feb 28
+            # as the alert anchor for Feb 29 birthdays.
+            if (d.month == 2 and d.day == 28
+                    and not calendar.isleap(d.year)):
+                dates.append("02-29")
 
         placeholders = ",".join("?" * len(dates))
         where_extra = ""

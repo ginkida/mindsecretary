@@ -577,6 +577,48 @@ class TestContacts:
         assert len(bdays) == 1
         assert bdays[0]["name"] == "Eve"
 
+    def test_feb29_birthday_alerts_on_feb28_in_non_leap_year(
+        self, tmp_db: Database, monkeypatch,
+    ):
+        """Feb 29 babies must still get a birthday alert in non-leap
+        years. Pre-fix the lookup window built `today + i` strftime
+        strings — "02-29" never appeared in non-leap years, so the
+        contact silently received an alert only once every 4 years.
+        Standard workaround: in non-leap years anchor on Feb 28."""
+        # Pin DB clock to Feb 28, 2026 (non-leap)
+        anchor = datetime(2026, 2, 28, 9, 0, 0)
+        monkeypatch.setattr(tmp_db, "_now", lambda: anchor)
+        tmp_db.upsert_contact("Leap", birthday="1996-02-29")
+
+        bdays = tmp_db.get_upcoming_birthdays(days=1)
+        names = [b["name"] for b in bdays]
+        assert "Leap" in names
+
+    def test_feb29_birthday_alerts_normally_on_leap_year(
+        self, tmp_db: Database, monkeypatch,
+    ):
+        """In leap years Feb 29 is a real day — must still alert
+        without being double-counted via the non-leap fallback."""
+        anchor = datetime(2028, 2, 29, 9, 0, 0)  # 2028 IS a leap year
+        monkeypatch.setattr(tmp_db, "_now", lambda: anchor)
+        tmp_db.upsert_contact("Leap", birthday="1996-02-29")
+
+        bdays = tmp_db.get_upcoming_birthdays(days=1)
+        # Single alert, not duplicated
+        assert sum(1 for b in bdays if b["name"] == "Leap") == 1
+
+    def test_feb29_carveout_only_applies_on_feb28(
+        self, tmp_db: Database, monkeypatch,
+    ):
+        """Sanity: the Feb 29 fallback fires only when today=Feb 28.
+        On other days a Feb 29 birthday stays out of the lookup
+        window (matching pre-fix behavior on all non-anchor days)."""
+        anchor = datetime(2026, 6, 15, 9, 0, 0)
+        monkeypatch.setattr(tmp_db, "_now", lambda: anchor)
+        tmp_db.upsert_contact("Leap", birthday="1996-02-29")
+        bdays = tmp_db.get_upcoming_birthdays(days=7)
+        assert all(b["name"] != "Leap" for b in bdays)
+
     # --- Cyrillic-aware case folding (pylower) ---
     # SQLite's native lower() is ASCII-only — without pylower these would
     # silently fail for Russian users (~the entire user base of this app).
