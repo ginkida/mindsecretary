@@ -1401,6 +1401,28 @@ class TestBackup:
         copy.close()
         assert len(rows) == 1
 
+    def test_backup_filename_uses_profile_local_time(
+        self, tmp_path, monkeypatch,
+    ):
+        """Pre-fix the filename was UTC. On Asia/Almaty (UTC+5) a 03:30
+        local backup got a 22:30-yesterday-UTC filename, which sorted
+        wrong in `ls -lt` and didn't match scripts/backup.sh's
+        local-time naming. Now uses profile-local time."""
+        from datetime import datetime as real_dt
+        from zoneinfo import ZoneInfo
+
+        db = Database(tmp_path / "tz.db", timezone="Asia/Almaty")
+        # Pin the clock to 03:30 local on 2026-05-08 (UTC: 2026-05-07 22:30)
+        anchor_local = real_dt(2026, 5, 8, 3, 30, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        monkeypatch.setattr(db, "_now", lambda: anchor_local)
+
+        result = db.create_backup()
+        assert result["ok"] is True
+        path = Path(result["path"])
+        # Filename reflects LOCAL clock — May 8th, 03:30 — not UTC May 7th.
+        assert "20260508_033000" in path.name
+        assert "20260507" not in path.name
+
     def test_backup_directory_auto_created(self, tmp_path, tmp_db):
         """First-run case: backups/ doesn't exist yet. create_backup
         creates it instead of failing on FileNotFoundError."""

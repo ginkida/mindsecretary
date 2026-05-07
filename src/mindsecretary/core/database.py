@@ -69,7 +69,13 @@ class Database:
             return {"ok": False, "path": None, "pruned": 0,
                     "error": type(e).__name__}
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        # Filename uses profile-local time so it matches the user's clock
+        # AND the shell `scripts/backup.sh` (which uses `date +%Y%m%d_%H%M%S`,
+        # i.e. system local time). Pre-fix this used UTC, so on Asia/Almaty
+        # (UTC+5) a 03:30 local backup got a yesterday-22:30-UTC filename —
+        # confusing when sorting `ls -lt data/backups/`. Falls back to UTC
+        # if no profile timezone is configured (matches _now()'s contract).
+        ts = self._now().strftime("%Y%m%d_%H%M%S")
         target = backup_dir / f"mindsecretary_{ts}.db"
         try:
             with sqlite3.connect(str(target)) as dest:
