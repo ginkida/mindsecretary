@@ -1709,9 +1709,12 @@ class TestGetWeatherHandler:
         weather.get_forecast.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_invalid_date_falls_back_to_today(self, tmp_db):
-        """Garbage date string → handler degrades gracefully to today's
-        forecast instead of crashing or refusing."""
+    async def test_invalid_date_returns_format_hint(self, tmp_db):
+        """Pre-fix the handler swallowed ValueError on parse, set
+        target=None, and silently fell through to today's forecast.
+        LLM passing date="tomorrow" got today's weather and reported
+        it as tomorrow's — wrong answer, no diagnostic. Now the LLM
+        sees the format hint and can retry."""
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor
 
@@ -1721,8 +1724,11 @@ class TestGetWeatherHandler:
         te = ToolExecutor(db=tmp_db, memory=MagicMock(), weather=weather)
         result = await te.execute("get_weather", {"date": "not-a-date"})
 
-        weather.get_forecast.assert_awaited_once_with(days=1)
-        assert "2026-04-15" in result
+        # No silent fallthrough — explicit format hint
+        assert "invalid date" in result
+        assert "YYYY-MM-DD" in result
+        # Weather API NOT called — fail fast at validation
+        weather.get_forecast.assert_not_awaited()
 
 
 class TestUpdateEventHandler:

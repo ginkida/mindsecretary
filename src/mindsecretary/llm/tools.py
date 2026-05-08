@@ -1630,22 +1630,25 @@ class ToolExecutor:
 
         target_date: str | None = None
         if date:
-            try:
-                target = datetime.strptime(date, "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                target = None
-            if target is not None:
-                today = tz_now(self.weather.tz).date()
-                delta = (target - today).days
-                if delta < 0:
-                    return f"Дата {date} в прошлом — прогноз не доступен."
-                if delta >= self._WEATHER_FORECAST_HORIZON:
-                    return (
-                        f"Дата {date} слишком далеко — Open-Meteo даёт "
-                        f"максимум {self._WEATHER_FORECAST_HORIZON} дней."
-                    )
-                days = delta + 1
-                target_date = date
+            # Reject malformed dates early — pre-fix this caught the
+            # ValueError, set target=None, and fell through to "today
+            # only", so an LLM passing date="tomorrow" got today's
+            # weather instead and reported it as tomorrow's. Now the
+            # LLM sees a format hint and can retry with a real date.
+            if (err := self._check_iso_date(date, "get_weather", "date")):
+                return err
+            target = datetime.strptime(date, "%Y-%m-%d").date()
+            today = tz_now(self.weather.tz).date()
+            delta = (target - today).days
+            if delta < 0:
+                return f"Дата {date} в прошлом — прогноз не доступен."
+            if delta >= self._WEATHER_FORECAST_HORIZON:
+                return (
+                    f"Дата {date} слишком далеко — Open-Meteo даёт "
+                    f"максимум {self._WEATHER_FORECAST_HORIZON} дней."
+                )
+            days = delta + 1
+            target_date = date
 
         forecast = await self.weather.get_forecast(days=days or 1)
 
