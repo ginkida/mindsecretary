@@ -1009,12 +1009,18 @@ class TestTelegramHandlers:
         assert len(payload["decisions"]) == 1
         assert len(payload["contacts"]) == 1
 
-        # Caption mentions the new categories so the user sees the scope
+        # Caption mentions every exported category and uses the right
+        # plural form. Seeded 1 of each → singular forms.
         caption = call.kwargs["caption"]
-        assert "напоминаний" in caption
-        assert "привычек" in caption
-        assert "целей" in caption
-        assert "взаимодействий" in caption
+        assert "1 напоминание" in caption
+        assert "1 привычка" in caption
+        assert "1 цель" in caption
+        assert "1 сообщение" in caption  # interactions
+        assert "1 событие" in caption    # events
+        assert "1 решение" in caption    # decisions
+        # Old broken forms must NOT leak (would be wrong for count=1)
+        assert "1 напоминаний" not in caption
+        assert "1 целей" not in caption
 
     @pytest.mark.asyncio
     async def test_stats_handler_renders_category_breakdown(self):

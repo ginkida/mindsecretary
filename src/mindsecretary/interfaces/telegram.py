@@ -982,17 +982,37 @@ class TelegramBot:
             f"{tz_now(self.brain.profile.timezone).strftime('%Y%m%d')}.json"
         )
 
-        await update.message.reply_document(
-            document=doc,
-            caption=(
-                f"📦 Экспорт: {len(data['memories'])} воспоминаний, "
-                f"{len(data['contacts'])} контактов, "
-                f"{len(data['reminders'])} напоминаний, "
-                f"{len(data['habits'])} привычек, "
-                f"{len(data['daily_goals'])} целей, "
-                f"{len(data['interactions'])} взаимодействий"
-            ),
+        # Caption summarizes every category we exported. Pre-fix
+        # only 6 of 9 were listed (events/decisions/diary/habit_log
+        # silent), making users wonder if those were skipped. All
+        # plurals also went through pluralize_ru — pre-fix "1 целей"
+        # / "2 воспоминаний" / "3 контактов" all read wrong.
+        cap_parts = [
+            (len(data["memories"]),
+             ("воспоминание", "воспоминания", "воспоминаний")),
+            (len(data["contacts"]),
+             ("контакт", "контакта", "контактов")),
+            (len(data["events"]),
+             ("событие", "события", "событий")),
+            (len(data["reminders"]),
+             ("напоминание", "напоминания", "напоминаний")),
+            (len(data["habits"]),
+             ("привычка", "привычки", "привычек")),
+            (len(data["habit_log"]),
+             ("отметка", "отметки", "отметок")),
+            (len(data["daily_goals"]),
+             ("цель", "цели", "целей")),
+            (len(data["decisions"]),
+             ("решение", "решения", "решений")),
+            (len(data["diary"]),
+             ("запись", "записи", "записей")),
+            (len(data["interactions"]),
+             ("сообщение", "сообщения", "сообщений")),
+        ]
+        caption = "📦 Экспорт: " + ", ".join(
+            f"{n} {pluralize_ru(n, forms)}" for n, forms in cap_parts
         )
+        await update.message.reply_document(document=doc, caption=caption)
 
     async def _handle_habits(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_user(update):
