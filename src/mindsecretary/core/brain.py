@@ -9,7 +9,13 @@ from ..learning.mood import analyze_mood, check_contact_frequency, get_mood_tren
 from ..llm.prompts import MAIN_SYSTEM_DYNAMIC, MAIN_SYSTEM_STATIC
 from ..llm.client import LLMClient
 from ..llm.tools import TOOL_DEFINITIONS, ToolExecutor
-from . import DAYS_RU, NOTIFICATION_KIND_LABELS, fmt_local_time, tz_now
+from . import (
+    DAYS_RU,
+    NOTIFICATION_KIND_LABELS,
+    fmt_local_time,
+    pluralize_ru,
+    tz_now,
+)
 from .config import Profile, Settings
 from .database import Database
 from .memory import Memory
@@ -633,12 +639,22 @@ class Brain:
                 if a.get("days_since", 0) > self.settings.quiet_contact_days
                 and a.get("mention_count", 0) >= self.settings.quiet_contact_min_mentions
             ][:2]
-            return "\n".join(
-                f"- {s(a['name'], 60)}"
-                + (f" ({s(a.get('relation', ''), 40)})" if a.get("relation") else "")
-                + f": не общались {a['days_since']} дней"
-                for a in filtered
-            ) or "Нет тревог."
+            # Pluralize the "дней" suffix — pre-fix "33 дней" / "31 дней"
+            # both read wrong (should be "33 дня" / "31 день"). Filter
+            # is days_since > 30 (default), so values >20 hit the
+            # last-digit rules: 1 → день, 2-4 → дня, 5-0 → дней. Claude
+            # reads this and could quote back to the user as-is.
+            lines = []
+            for a in filtered:
+                rel = a.get("relation") or ""
+                rel_str = f" ({s(rel, 40)})" if rel else ""
+                days = a["days_since"]
+                day_word = pluralize_ru(days, ("день", "дня", "дней"))
+                lines.append(
+                    f"- {s(a['name'], 60)}{rel_str}: "
+                    f"не общались {days} {day_word}"
+                )
+            return "\n".join(lines) or "Нет тревог."
         except Exception as e:
             logger.warning("Section quiet_contacts failed: %s", type(e).__name__)
             return "Нет данных."

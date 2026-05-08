@@ -1,7 +1,7 @@
 """Tests for core/brain.py — sanitization and prompt building."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1045,6 +1045,59 @@ class TestSystemPromptToolGuidance:
             "Add a `- toolname — when-to-call-it` line to the "
             "Инструменты section so Claude knows when to use it."
         )
+
+
+class TestSectionQuietContactsPlural:
+    """The day-count suffix used to be hardcoded "дней" — wrong for any
+    days_since ending in 1 (день) or 2-4 (дня). Filter is days_since>30
+    so the values most affected are 31, 32-34, 41, 42-44, etc. Claude
+    reads the broken plural and could quote it back to the user."""
+
+    def _patch_filter(self, brain, days):
+        brain.settings.quiet_contact_days = 30
+        brain.settings.quiet_contact_min_mentions = 3
+        return [{
+            "name": "Маша", "relation": "друг",
+            "days_since": days, "mention_count": 5,
+        }]
+
+    def test_one_uses_singular(self):
+        brain = _make_brain("UTC")
+        with patch(
+            "mindsecretary.core.brain.check_contact_frequency",
+            return_value=self._patch_filter(brain, 31),
+        ):
+            result = brain._section_quiet_contacts(sanitize_for_context)
+        assert "не общались 31 день" in result
+
+    def test_two_uses_few_form(self):
+        brain = _make_brain("UTC")
+        with patch(
+            "mindsecretary.core.brain.check_contact_frequency",
+            return_value=self._patch_filter(brain, 32),
+        ):
+            result = brain._section_quiet_contacts(sanitize_for_context)
+        assert "не общались 32 дня" in result
+
+    def test_five_uses_many_form(self):
+        brain = _make_brain("UTC")
+        with patch(
+            "mindsecretary.core.brain.check_contact_frequency",
+            return_value=self._patch_filter(brain, 35),
+        ):
+            result = brain._section_quiet_contacts(sanitize_for_context)
+        assert "не общались 35 дней" in result
+
+    def test_eleven_teens_use_many_form(self):
+        """Sanity for the teens special case — 11-14 use 'дней'
+        regardless of last digit."""
+        brain = _make_brain("UTC")
+        with patch(
+            "mindsecretary.core.brain.check_contact_frequency",
+            return_value=self._patch_filter(brain, 41),
+        ):
+            result = brain._section_quiet_contacts(sanitize_for_context)
+        assert "не общались 41 день" in result
 
 
 class TestSectionEvents:
