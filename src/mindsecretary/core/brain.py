@@ -104,10 +104,11 @@ class Brain:
             # row already stored the real (possibly empty) caption above
             # — only the LLM-facing text block gets the inbox-capture
             # instruction injected here. Keeps history replay clean.
-            llm_caption = (
-                user_message.strip() or PHOTO_DEFAULT_INSTRUCTION
-                if user_message else PHOTO_DEFAULT_INSTRUCTION
-            )
+            # `(x or "").strip() or DEFAULT` collapses None / empty /
+            # whitespace-only into the fallback in a single pass — the
+            # earlier nested ternary did the same thing but was hard to
+            # read at a glance.
+            llm_caption = (user_message or "").strip() or PHOTO_DEFAULT_INSTRUCTION
             user_content = [
                 {"type": "text", "text": llm_caption},
                 {"type": "image_url", "image_url": {

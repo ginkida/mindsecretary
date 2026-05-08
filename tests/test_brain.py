@@ -790,6 +790,49 @@ class TestProcessPhotoCaptionInjection:
         rows = tmp_db.get_interactions(message_type="photo", limit=5)
         assert rows[0]["content"] == "вот чек"
 
+    @pytest.mark.asyncio
+    async def test_whitespace_only_caption_uses_default_in_llm_block(self, tmp_db):
+        """Caption with only whitespace ("\\n  \\t ") must collapse to the
+        fallback instruction at the LLM layer — same as a truly empty
+        caption. Pre-iter-33 the nested ternary handled this correctly
+        but had no explicit coverage; the post-iter-33 idiomatic
+        `(x or "").strip() or DEFAULT` keeps the same behavior."""
+        from unittest.mock import AsyncMock
+        from mindsecretary.core.brain import PHOTO_DEFAULT_INSTRUCTION
+        from mindsecretary.llm.client import LLMResponse
+
+        captured: dict = {}
+
+        class FakeLLM:
+            async def chat(self, system, messages, tools=None, max_tokens=1024):
+                captured["messages"] = messages
+                return LLMResponse(
+                    text="ok", tool_calls=[],
+                    usage={"input_tokens": 5, "output_tokens": 1},
+                )
+
+        brain = _make_brain("UTC")
+        brain.llm = FakeLLM()
+        brain.db = tmp_db
+        brain.settings.daily_cost_limit_usd = 100.0
+        brain.settings.max_tool_rounds = 5
+        brain.settings.max_tokens = 1024
+        brain._build_system_prompt = AsyncMock(return_value="SYS")
+        brain.tool_executor = MagicMock()
+
+        await brain.process(
+            user_message="   \n\t  ", message_type="photo",
+            image_base64="abc==",
+        )
+
+        msg = captured["messages"][-1]
+        text_blocks = [
+            b for b in msg["content"] if b.get("type") == "text"
+        ]
+        assert any(
+            PHOTO_DEFAULT_INSTRUCTION in b["text"] for b in text_blocks
+        )
+
 
 class TestSystemPromptCaching:
     """v0.14.62: MAIN_SYSTEM_PROMPT split into static prefix + dynamic
