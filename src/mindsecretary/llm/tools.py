@@ -13,6 +13,7 @@ _tz_utc = _dt_timezone.utc
 
 from ..core import (
     NOTIFICATION_KIND_LABELS,
+    fmt_utc_to_local,
     is_person_in_title,
     pluralize_ru,
     tz_now,
@@ -1534,19 +1535,10 @@ class ToolExecutor:
     # preserve `self._SEARCH_KIND_LABELS.get(...)` callers.
     _SEARCH_KIND_LABELS = NOTIFICATION_KIND_LABELS
 
-    @staticmethod
-    def _ts_utc_to_local_str(ts: str, tz_name: str | None) -> str:
-        """DB timestamps are UTC (SQLite's `datetime('now')`). Convert to
-        profile timezone so Claude reads times that match the user's clock
-        instead of a silent UTC offset (e.g. '05:30' vs actual 10:30)."""
-        if not ts or not tz_name:
-            return ts[:16] if ts else "?"
-        try:
-            utc_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            local = utc_naive.replace(tzinfo=_tz_utc).astimezone(ZoneInfo(tz_name))
-            return local.strftime("%Y-%m-%d %H:%M")
-        except (ValueError, TypeError, KeyError):
-            return ts[:16]
+    # Backward-compat alias — implementation moved to core.fmt_utc_to_local
+    # so telegram.py can share the same conversion. Existing callers
+    # (`self._ts_utc_to_local_str(...)`) keep working.
+    _ts_utc_to_local_str = staticmethod(fmt_utc_to_local)
 
     _DIARY_CONTENT_CHAR_CAP = 600
 

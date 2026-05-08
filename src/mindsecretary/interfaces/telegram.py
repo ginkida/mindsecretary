@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-from ..core import pluralize_ru, tz_now
+from ..core import fmt_utc_to_local, pluralize_ru, tz_now
 from ..core.brain import Brain
 from ..learning.mood import check_contact_frequency
 from ..voice.stt import GroqSTT
@@ -78,17 +78,24 @@ def _memory_source_label(source_type: str | None, source_ref: str | None) -> str
     return label
 
 
-def _format_memory_line(memory: dict, include_match: bool = False) -> str:
+def _format_memory_line(memory: dict, include_match: bool = False,
+                        tz_name: str | None = None) -> str:
     lines = [f"• [{memory['category']}] {memory['content'][:220]}"]
     if include_match:
         lines.append(
             f"  why: {memory.get('match_reason', 'совпадение по смыслу')}, "
             f"score {memory.get('final_score', memory.get('score', 0.0)):.2f}"
         )
+    # created_at is UTC (datetime('now')). Convert to profile-local for
+    # display. Pre-fix the raw [:16] slice showed UTC time, which read
+    # off by N hours for users on positive offsets and could even
+    # surface yesterday's date for memories saved just past local
+    # midnight in Asia/Almaty.
+    created = fmt_utc_to_local(memory.get("created_at") or "", tz_name)
     lines.append(
         f"  source: {_memory_source_label(memory.get('source_type'), memory.get('source_ref'))}, "
         f"confidence {float(memory.get('confidence') or 0.0):.2f}, "
-        f"created {str(memory.get('created_at') or '')[:16]}"
+        f"created {created}"
     )
     return "\n".join(lines)
 
@@ -429,20 +436,26 @@ class TelegramBot:
             await update.message.reply_text("Слишком длинный запрос (макс 500 символов).")
             return
 
+        tz_name = getattr(self.brain.db, "_timezone", None)
         if query:
             memories = await self.brain.memory.search(query, top_k=6)
             if not memories:
                 await update.message.reply_text("По этому запросу память пуста.")
                 return
             lines = ["🧠 *Что помню по запросу*\n"]
-            lines.extend(_format_memory_line(m, include_match=True) for m in memories)
+            lines.extend(
+                _format_memory_line(m, include_match=True, tz_name=tz_name)
+                for m in memories
+            )
         else:
             memories = self.brain.memory.list_recent(limit=8)
             if not memories:
                 await update.message.reply_text("Память пока пуста.")
                 return
             lines = ["🧠 *Недавняя память*\n"]
-            lines.extend(_format_memory_line(m) for m in memories)
+            lines.extend(
+                _format_memory_line(m, tz_name=tz_name) for m in memories
+            )
 
         text = "\n".join(lines)
         for part in _split_message(text):
@@ -765,11 +778,19 @@ class TelegramBot:
         # weekly reviews.
         top = learnings[:10]
         lines = ["📚 *Learnings*\n"]
+        tz_name = getattr(self.brain.db, "_timezone", None)
         for m in top:
             content = m["content"][:280]
             imp = m.get("importance") or 5
             conf = float(m.get("confidence") or 0.0)
-            created = (m.get("created_at") or "")[:10]
+            # created_at is UTC; convert to local then take the date
+            # prefix. Pre-fix raw [:10] showed UTC date, which can be
+            # off by a day for memories saved past local midnight on
+            # positive UTC offsets.
+            created_local = fmt_utc_to_local(
+                m.get("created_at") or "", tz_name,
+            )
+            created = created_local[:10] if created_local != "?" else ""
             tail = f"_imp {imp}_"
             if conf:
                 tail += f" · _conf {conf:.2f}_"

@@ -102,6 +102,33 @@ def tz_now(timezone: str | None = None) -> datetime:
     return datetime.now()
 
 
+def fmt_utc_to_local(ts: str, tz_name: str | None) -> str:
+    """Render a UTC-naive SQL timestamp as 'YYYY-MM-DD HH:MM' in the
+    given timezone.
+
+    Falls back to the raw `ts[:16]` slice when:
+    - tz_name is None (no profile TZ — preserves legacy display shape)
+    - ts is falsy (returns "?")
+    - ts can't be parsed (corrupt row)
+
+    Used by tool handlers and telegram commands that surface UTC-stored
+    timestamps to the user. Pre-extraction each callsite either re-rolled
+    its own conversion or sliced raw UTC and shipped that, leaving users
+    on positive UTC offsets seeing decisions/memories tagged a day off
+    around midnight.
+    """
+    if not ts:
+        return "?"
+    if not tz_name:
+        return ts[:16]
+    try:
+        utc_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        local = utc_naive.replace(tzinfo=_tz.utc).astimezone(ZoneInfo(tz_name))
+        return local.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError, KeyError):
+        return ts[:16]
+
+
 def fmt_local_time(ts: str, profile_tz: str, today_local: str | None = None) -> str:
     """Render a UTC-naive SQL timestamp (`YYYY-MM-DD HH:MM:SS`) as local HH:MM.
 

@@ -690,6 +690,42 @@ class TestNotificationKindLabels:
         assert not missing, f"missing labels for: {missing}"
 
 
+class TestFmtUtcToLocal:
+    """Shared helper used by tools (LLM output) and telegram (user
+    output). Pre-extraction each surface either rolled its own UTC
+    conversion or sliced raw — leaving Asia/Almaty users seeing
+    "yesterday" for memories saved past local midnight."""
+
+    def test_converts_utc_to_local_string(self):
+        from mindsecretary.core import fmt_utc_to_local
+        # 22:00 UTC = 03:00 next-day Almaty
+        out = fmt_utc_to_local("2026-05-07 22:00:00", "Asia/Almaty")
+        assert out == "2026-05-08 03:00"
+
+    def test_no_tz_falls_back_to_slice(self):
+        from mindsecretary.core import fmt_utc_to_local
+        # tz_name=None → return ts[:16] (matches pre-extraction shape)
+        out = fmt_utc_to_local("2026-05-07 22:00:00", None)
+        assert out == "2026-05-07 22:00"
+
+    def test_empty_input_returns_question_mark(self):
+        from mindsecretary.core import fmt_utc_to_local
+        assert fmt_utc_to_local("", "Europe/Moscow") == "?"
+        assert fmt_utc_to_local(None, "Europe/Moscow") == "?"  # type: ignore
+
+    def test_invalid_timestamp_falls_back_safely(self):
+        from mindsecretary.core import fmt_utc_to_local
+        # Garbage → return slice of input, no crash
+        out = fmt_utc_to_local("garbage", "Europe/Moscow")
+        assert out == "garbage"
+
+    def test_invalid_tz_falls_back_safely(self):
+        from mindsecretary.core import fmt_utc_to_local
+        # Bad TZ → ZoneInfoNotFoundError → return slice
+        out = fmt_utc_to_local("2026-05-07 22:00:00", "Nonsense/TZ")
+        assert out == "2026-05-07 22:00"
+
+
 class TestPluralizeRu:
     """Russian plural helper. The 11-14 teens special case is the most
     common bug — without it 'год' becomes 'лет' too aggressively."""
