@@ -428,6 +428,64 @@ class TestLoopsInProgressMarker:
         assert "▶️ сейчас" not in call_text
 
 
+class TestUndoHandler:
+    """Pre-fix /undo always said "♻️ Восстановлено" even when restore()
+    no-opped (e.g., two /undo in a row, or the row was already active).
+    Now Memory.restore returns bool and the handler surfaces the real
+    outcome."""
+
+    @pytest.mark.asyncio
+    async def test_undo_no_deleted_memories(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        brain.memory.get_last_deleted = MagicMock(return_value=None)
+        brain.memory.restore = MagicMock()
+
+        await bot._handle_undo(update, SimpleNamespace(args=[]))
+
+        update.message.reply_text.assert_awaited_once_with(
+            "Нечего восстанавливать."
+        )
+        # restore() not called when nothing to restore
+        brain.memory.restore.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_undo_success_path(self):
+        bot, brain = _make_bot()
+        update = _make_update()
+        brain.memory.get_last_deleted = MagicMock(return_value={
+            "id": "m1", "content": "удалённая запись",
+        })
+        brain.memory.restore = MagicMock(return_value=True)
+
+        await bot._handle_undo(update, SimpleNamespace(args=[]))
+
+        brain.memory.restore.assert_called_once_with("m1")
+        msg = update.message.reply_text.await_args.args[0]
+        assert "♻️ Восстановлено" in msg
+        assert "удалённая запись" in msg
+
+    @pytest.mark.asyncio
+    async def test_undo_already_restored_falls_back(self):
+        """Race: between get_last_deleted and restore the row was
+        already restored. Pre-fix the user saw a misleading
+        "♻️ Восстановлено" message; now they see a clear
+        "Уже восстановлено" instead."""
+        bot, brain = _make_bot()
+        update = _make_update()
+        brain.memory.get_last_deleted = MagicMock(return_value={
+            "id": "m1", "content": "race target",
+        })
+        brain.memory.restore = MagicMock(return_value=False)
+
+        await bot._handle_undo(update, SimpleNamespace(args=[]))
+
+        msg = update.message.reply_text.await_args.args[0]
+        assert "Уже восстановлено" in msg or "удалено навсегда" in msg
+        # Sanity: doesn't claim success
+        assert "♻️" not in msg
+
+
 class TestTelegramHandlers:
     @pytest.mark.asyncio
     async def test_search_is_rate_limited(self):

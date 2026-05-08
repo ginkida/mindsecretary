@@ -592,7 +592,15 @@ class TelegramBot:
         if not last:
             await update.message.reply_text("Нечего восстанавливать.")
             return
-        self.brain.memory.restore(last["id"])
+        # Memory.restore returns False on missing id / already-active.
+        # Pre-fix /undo always said "♻️ Восстановлено" — but two /undo
+        # in a row would re-restore an already-active row (no-op) and
+        # still claim success. Surface the real outcome instead.
+        if not self.brain.memory.restore(last["id"]):
+            await update.message.reply_text(
+                "Уже восстановлено или удалено навсегда."
+            )
+            return
         await update.message.reply_text(
             f"♻️ Восстановлено: {last['content'][:200]}"
         )
