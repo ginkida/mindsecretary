@@ -1177,6 +1177,52 @@ class TestSectionEvents:
         assert "22:00 ночная смена" in result
 
 
+class TestSectionBirthdaysFormat:
+    """Pre-fix the section rendered "1990-04-28: Маша" for full-year
+    birthdays — exposed the birth year into the system prompt where
+    Claude could quote it. Now uses MM-DD consistently with the
+    same-day branch."""
+
+    def test_full_year_bday_renders_as_md_only(self):
+        from datetime import datetime
+        brain = _make_brain("UTC")
+        brain.db.get_upcoming_birthdays = MagicMock(return_value=[
+            {"name": "Маша", "relation": "друг", "birthday": "1990-04-28"},
+        ])
+        # now=2026-04-25, contact has bday 04-28 (3 days away)
+        result = brain._section_birthdays(
+            datetime(2026, 4, 25), sanitize_for_context,
+        )
+        assert "04-28: Маша" in result
+        # Year must NOT leak into the prompt
+        assert "1990" not in result
+
+    def test_year_less_bday_unchanged(self):
+        from datetime import datetime
+        brain = _make_brain("UTC")
+        brain.db.get_upcoming_birthdays = MagicMock(return_value=[
+            {"name": "Олег", "relation": "коллега", "birthday": "06-15"},
+        ])
+        result = brain._section_birthdays(
+            datetime(2026, 6, 13), sanitize_for_context,
+        )
+        assert "06-15: Олег" in result
+
+    def test_today_branch_unchanged(self):
+        """Same-day branch already used MM-DD-only via 'сегодня'
+        — sanity that this hasn't regressed."""
+        from datetime import datetime
+        brain = _make_brain("UTC")
+        brain.db.get_upcoming_birthdays = MagicMock(return_value=[
+            {"name": "Маша", "birthday": "1990-04-28"},
+        ])
+        result = brain._section_birthdays(
+            datetime(2026, 4, 28), sanitize_for_context,
+        )
+        assert "сегодня: Маша" in result
+        assert "1990" not in result
+
+
 class TestSectionDecisions:
     """Brain._section_decisions feeds the 'Решения в процессе' slot of
     the main system prompt. Pre-fix it dropped the context field, so

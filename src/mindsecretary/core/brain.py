@@ -689,10 +689,15 @@ class Brain:
                 name = s(c["name"], 60)
                 relation = s(c.get("relation") or "", 40)
                 rel_str = f" ({relation})" if relation else ""
+                # Use bday_md (MM-DD) for the upcoming-day prefix —
+                # full-year format leaked the birth year into the system
+                # prompt slot, where Claude could echo it back to the
+                # user. Year stays available via update_contact's
+                # birthday field for explicit asks.
                 if bday_md == today_md:
                     lines.append(f"- сегодня: {name}{rel_str}")
                 else:
-                    lines.append(f"- {bday}: {name}{rel_str}")
+                    lines.append(f"- {bday_md}: {name}{rel_str}")
             return "\n".join(lines) or "Нет ближайших."
         except Exception as e:
             logger.warning("Section birthdays failed: %s", type(e).__name__)
