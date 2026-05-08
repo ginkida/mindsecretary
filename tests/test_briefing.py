@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -439,6 +439,37 @@ class TestDiaryInboundGuard:
         # Diary generated; mock LLM returns "итог" which gets saved
         assert result is not None
         llm.chat.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_relationship_alert_pluralizes_days(self, tmp_path):
+        """Pre-fix the rel_text line hardcoded "дней" — Claude saw
+        "не общались 31 дней" in DIARY_SYSTEM_PROMPT and could echo
+        it. Now uses pluralize_ru."""
+        bg, db, llm = _make_briefing(tmp_path)
+        # Need at least one inbound message + 3 total interactions to
+        # pass the inbound guard.
+        db.log_interaction(direction="in", content="вечер", message_type="text")
+        db.log_interaction(direction="out", content="ок", message_type="chat")
+        db.log_interaction(direction="in", content="устал", message_type="text")
+
+        with patch(
+            "mindsecretary.proactive.briefing.check_contact_frequency",
+            return_value=[
+                {"name": "Маша", "relation": "друг",
+                 "days_since": 31, "mention_count": 5},
+                {"name": "Олег", "relation": "коллега",
+                 "days_since": 33, "mention_count": 4},
+            ],
+        ):
+            await bg.generate_diary()
+
+        prompt = llm.chat.call_args.kwargs["system"]
+        # 31 → singular "день", 33 → few-form "дня"
+        assert "не общались 31 день" in prompt
+        assert "не общались 33 дня" in prompt
+        # Old hardcoded form must NOT leak through
+        assert "не общались 31 дней" not in prompt
+        assert "не общались 33 дней" not in prompt
 
 
 class TestEveningEventsTimeIncluded:

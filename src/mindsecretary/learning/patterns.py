@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..core import DAYS_RU
+from ..core import DAYS_RU, pluralize_ru
 from ..core.config import Profile
 from ..core.database import Database
 from .mood import analyze_mood, check_contact_frequency
@@ -171,9 +171,14 @@ def _habit_breaks(db: Database, profile: Profile) -> list[Pattern]:
         rate = round(done / total * 100)
         if rate >= 40:
             continue  # kept more often than missed
+        # Two day-counts on this line — pluralize against `total` since
+        # that's what "дней" agrees with grammatically ("3 дня" vs
+        # "5 дней"). `done` is "X out of Y" so reads cleanly without
+        # a separate suffix.
+        word = pluralize_ru(total, ("день", "дня", "дней"))
         patterns.append(Pattern(
             label="Привычка под риском",
-            detail=f"{r['name']}: {done}/{total} дней ({rate}%)",
+            detail=f"{r['name']}: {done}/{total} {word} ({rate}%)",
             strength=1.0 - rate / 100,
         ))
     return sorted(patterns, key=lambda p: p.strength, reverse=True)[:2]
@@ -247,9 +252,10 @@ def _quiet_contacts(db: Database, profile: Profile) -> Pattern | None:
     days = first.get("days_since", 0)
     if days < 14:
         return None
+    word = pluralize_ru(days, ("день", "дня", "дней"))
     return Pattern(
         label="Тихий контакт",
-        detail=f"{first['name']}: {days} дней без контакта",
+        detail=f"{first['name']}: {days} {word} без контакта",
         strength=min(1.0, days / 60),
     )
 

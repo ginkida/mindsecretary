@@ -532,10 +532,13 @@ class TelegramBot:
             lines.extend(f"• {p['content'][:140]}" for p in promises)
         if contact_alerts:
             lines.append("\n👥 Тихие контакты:")
-            lines.extend(
-                f"• {a['name']} — {a['days_since']} дней"
-                for a in contact_alerts
-            )
+            # Pluralize day-count — "31 дней" reads wrong; should be
+            # "31 день", "32-34 дня", "35+ дней" (with teens carve-out
+            # already in pluralize_ru).
+            for a in contact_alerts:
+                days = a["days_since"]
+                word = pluralize_ru(days, ("день", "дня", "дней"))
+                lines.append(f"• {a['name']} — {days} {word}")
 
         text = "\n".join(lines)
         for part in _split_message(text):

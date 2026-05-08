@@ -542,10 +542,20 @@ class BriefingGenerator:
 
         rel_text = ""
         if rel_alerts:
-            rel_text = "\n".join(
-                f"- {s(a['name'], 80)} ({s(a.get('relation', '?'), 60)}): не общались {a['days_since']} дней"
-                for a in rel_alerts
-            )
+            # Pluralize the day-count suffix — pre-fix "33 дней" /
+            # "31 дней" both read wrong. Same fix iter 35 applied to
+            # Brain's _section_quiet_contacts; this surface fed the
+            # diary prompt with the broken plural.
+            lines = []
+            for a in rel_alerts:
+                days = a["days_since"]
+                day_word = pluralize_ru(days, ("день", "дня", "дней"))
+                lines.append(
+                    f"- {s(a['name'], 80)} "
+                    f"({s(a.get('relation', '?'), 60)}): "
+                    f"не общались {days} {day_word}"
+                )
+            rel_text = "\n".join(lines)
 
         try:
             response = await self.llm.chat(

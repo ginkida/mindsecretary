@@ -248,6 +248,20 @@ class TestHabitBreaks:
         assert len(patterns) == 1
         assert "бег" in patterns[0].detail
 
+    def test_habit_break_pluralizes_total_days(self, tmp_path: Path):
+        """Pre-fix the detail line hardcoded "дней" — for total=4 it
+        should say "дня". Now uses pluralize_ru against `total` (the
+        denominator agrees grammatically with the suffix)."""
+        db = _make_db(tmp_path)
+        fake_local = datetime(2026, 4, 26, 12, 0, tzinfo=ZoneInfo(ALMATY))
+        with patch("mindsecretary.core.database.tz_now", return_value=fake_local):
+            # 4 entries this week, 0 done — total=4 → "4 дня"
+            for day in range(23, 27):
+                db.log_habit("бег", False, date=f"2026-04-{day:02d}")
+            patterns = _habit_breaks(db, _profile())
+        assert patterns
+        assert "0/4 дня" in patterns[0].detail
+
     def test_skips_untracked_habit(self, tmp_path: Path):
         """A habit with no log entries this week must NOT be flagged
         just because `week_done` is 0 — the user simply isn't tracking it.
