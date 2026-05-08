@@ -366,6 +366,42 @@ class TestSearchConfidenceRanking:
         assert results[0]["final_score"] > 0
 
 
+class TestMemoryDeleteReturn:
+    """Memory.delete used to be a fire-and-forget UPDATE — telegram
+    /forget then said "🗑 Удалено" regardless of whether the row
+    actually existed. Race possible: LLM might run delete_memory
+    between /forget showing the prompt and the user clicking Yes,
+    leaving the second confirmation pointing at a row that's
+    already deleted. Now delete returns True/False so the caller
+    can show accurate feedback."""
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_true_on_active_row(self):
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("факт", "personal")
+        assert memory.delete(mem_id) is True
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_on_missing_id(self):
+        memory, _ = _make_memory()
+        assert memory.delete("nonexistent_id") is False
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_on_already_deleted(self):
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("факт", "personal")
+        # First delete succeeds
+        assert memory.delete(mem_id) is True
+        # Second delete on the same id finds status='deleted', no-op
+        assert memory.delete(mem_id) is False
+
+
 class TestMemoryDeleteByHint:
     """delete_by_hint mirrors update_by_hint's safety contract: ambiguous
     hint refuses; soft-delete preserves /undo."""

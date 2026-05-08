@@ -1039,11 +1039,21 @@ class TelegramBot:
             return
         # forget_yes:<memory_id>
         memory_id = query.data.split(":", 1)[1] if ":" in query.data else ""
-        if memory_id:
-            self.brain.memory.delete(memory_id)
-            await query.edit_message_text(f"🗑 Удалено.")
-        else:
+        if not memory_id:
             await query.edit_message_text("Ошибка: ID не найден.")
+            return
+        # Memory.delete returns False on missing id / already-deleted
+        # — race possible between /forget showing the prompt and the
+        # user clicking Yes (LLM might have run delete_memory in
+        # between, or another /forget action was confirmed first).
+        # Pre-fix we showed "🗑 Удалено" regardless; surface the real
+        # outcome instead.
+        if self.brain.memory.delete(memory_id):
+            await query.edit_message_text("🗑 Удалено.")
+        else:
+            await query.edit_message_text(
+                "Уже удалено или не найдено."
+            )
 
     # --- Message handlers ---
 

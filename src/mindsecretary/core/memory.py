@@ -455,13 +455,23 @@ class Memory:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def delete(self, memory_id: str):
-        self.db.execute(
+    def delete(self, memory_id: str) -> bool:
+        """Soft-delete a memory by id. Returns True if a row was actually
+        marked deleted (False on missing id / already-deleted).
+
+        Pre-fix the method silently succeeded for any input — the
+        /forget callback then told the user "🗑 Удалено" even when the
+        target row had been deleted by an earlier delete_memory tool
+        call between showing the confirmation and the user clicking
+        Yes. Misleading; the user expects accurate feedback."""
+        cur = self.db.execute(
             "UPDATE memories SET status = 'deleted', "
-            "last_accessed = datetime('now') WHERE id = ?",
+            "last_accessed = datetime('now') "
+            "WHERE id = ? AND status = 'active'",
             (memory_id,),
         )
         self.db.commit()
+        return cur.rowcount > 0
 
     def get_last_deleted(self) -> dict | None:
         """Get the most recently deleted memory (for /undo)."""
