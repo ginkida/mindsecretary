@@ -1538,6 +1538,37 @@ class TestGetDecisionsHandler:
         assert today_prefix in result
 
     @pytest.mark.asyncio
+    async def test_created_at_rendered_in_profile_local_tz(self, tmp_path):
+        """Pre-fix get_decisions sliced created_at[:10] which gave the
+        UTC date. For Asia/Almaty (+5) at 03:00 May 8, the row's
+        UTC-stored created_at is "2026-05-07 22:00:00" — display read
+        "[2026-05-07] описание", looked like the bot lost a day."""
+        from datetime import datetime
+        from unittest.mock import MagicMock
+        from mindsecretary.core.database import Database
+        from mindsecretary.llm.tools import ToolExecutor
+
+        # Profile-aware DB so _ts_utc_to_local_str has a TZ to apply.
+        db = Database(tmp_path / "tz.db", timezone="Asia/Almaty")
+        # Insert a decision with UTC created_at = 2026-05-07 22:00:00
+        # (that's 2026-05-08 03:00 in Almaty).
+        db.db.execute(
+            "INSERT INTO decisions (description, follow_up_at, created_at) "
+            "VALUES (?, ?, ?)",
+            ("ночное решение", "2026-06-07 22:00:00",
+             "2026-05-07 22:00:00"),
+        )
+        db.db.commit()
+
+        te = ToolExecutor(db=db, memory=MagicMock())
+        result = await te.execute("get_decisions", {})
+
+        # Should render the LOCAL date (May 8), not the UTC date (May 7)
+        assert "[2026-05-08]" in result
+        assert "[2026-05-07]" not in result
+        assert "ночное решение" in result
+
+    @pytest.mark.asyncio
     async def test_excludes_resolved_decisions(self, tmp_db):
         """Resolved decisions belong to past_decisions, not pending —
         otherwise the user would see closed items as 'still in process'."""

@@ -1101,12 +1101,19 @@ class ToolExecutor:
         memories = self.memory.list_recent(limit=limit, category=category)
         if not memories:
             return "No recent memories."
+        # memories.created_at is UTC. Convert to local so the LLM doesn't
+        # tell the user "saved at 22:00" for a memory they actually saved
+        # at 03:00 local (Asia/Almaty).
+        tz_name = getattr(self.db, "_timezone", None)
         lines = []
         for m in memories:
+            created_local = self._ts_utc_to_local_str(
+                m.get("created_at", ""), tz_name,
+            )
             lines.append(
                 f"- [{m['category']}] {m['content']} "
                 f"(source={self._format_memory_source(m.get('source_type'), m.get('source_ref'))}, "
-                f"confidence={float(m.get('confidence') or 0.0):.2f}, created={m.get('created_at', '')})"
+                f"confidence={float(m.get('confidence') or 0.0):.2f}, created={created_local})"
             )
         return "\n".join(lines)
 
@@ -1699,12 +1706,19 @@ class ToolExecutor:
         rows = self.db.get_pending_decisions(limit=limit)
         if not rows:
             return "Нет активных решений в процессе."
-        # Format: created_at[:10] is the YYYY-MM-DD prefix; works for both
-        # SQLite-written UTC (datetime('now')) and any future local-write
-        # since we only show the date, not the clock.
+        # decisions.created_at is UTC (`DEFAULT (datetime('now'))`).
+        # Slicing [:10] would give the UTC date, off by a day for users
+        # whose local time crosses the UTC date boundary at the hour
+        # they make decisions (Asia/Almaty +5 — a 03:00 May 8 decision
+        # is stored as "2026-05-07 22:00" UTC, so the bot would render
+        # it as "[2026-05-07]" while the user thinks "today".
+        tz_name = getattr(self.db, "_timezone", None)
         lines = []
         for r in rows:
-            created = (r.get("created_at") or "?")[:10]
+            created_local = self._ts_utc_to_local_str(
+                r.get("created_at") or "", tz_name,
+            )
+            created = created_local[:10]
             desc = (r.get("description") or "")[:200]
             ctx = (r.get("context") or "").strip()
             line = f"- [{created}] {desc}"
