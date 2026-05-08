@@ -201,6 +201,55 @@ class TestBuildHistoryTurns:
         assert "[уведомление в " in turns[1]["content"]
         assert turns[1]["content"].endswith("\nx")
 
+    def test_empty_photo_caption_renders_placeholder(self):
+        """Iter 29 made photo-without-caption store empty content. Pre-fix
+        _build_history_turns dropped that row at the empty-content guard,
+        so the bot's photo-reply turn looked orphaned (Claude saw "ok"
+        with no preceding user turn). Now empty photo rows render as
+        '[фото без подписи]' so the alternation stays intact and Claude
+        can refer back to "the photo you sent" on follow-ups."""
+        brain = _make_brain("UTC")
+        brain.db.get_recent_messages.return_value = [
+            {
+                "direction": "in", "message_type": "photo",
+                "content": "", "timestamp": "2099-01-01 14:00:00",
+                "metadata": None,
+            },
+            {
+                "direction": "out", "message_type": "chat",
+                "content": "Это чек на 500р.", "timestamp": "2099-01-01 14:00:01",
+                "metadata": None,
+            },
+        ]
+        turns = brain._build_history_turns()
+        assert len(turns) == 2
+        assert turns[0]["role"] == "user"
+        assert turns[0]["content"] == "[фото без подписи]"
+        assert turns[1]["role"] == "assistant"
+        assert turns[1]["content"] == "Это чек на 500р."
+
+    def test_empty_text_message_still_skipped(self):
+        """Sanity: only photo gets the placeholder. Empty-content text
+        rows (shouldn't happen post-iter-46, but be defensive) still
+        skip — no point feeding "[пусто]" placeholders for accidents."""
+        brain = _make_brain("UTC")
+        brain.db.get_recent_messages.return_value = [
+            {
+                "direction": "in", "message_type": "text",
+                "content": "", "timestamp": "2099-01-01 14:00:00",
+                "metadata": None,
+            },
+            {
+                "direction": "in", "message_type": "text",
+                "content": "real message", "timestamp": "2099-01-01 14:01:00",
+                "metadata": None,
+            },
+        ]
+        turns = brain._build_history_turns()
+        # Only the real message survives; the empty text row is skipped
+        assert len(turns) == 1
+        assert turns[0]["content"] == "real message"
+
     def test_today_timestamps_show_only_hh_mm(self):
         from mindsecretary.core import tz_now
         brain = _make_brain("UTC")

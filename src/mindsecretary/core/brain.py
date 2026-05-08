@@ -364,10 +364,20 @@ class Brain:
         for m in rows:
             raw = m.get("content") or ""
             content = sanitize_for_context(raw, HISTORY_TURN_CHAR_CAP)
-            if not content.strip():
-                continue
             direction = m.get("direction")
             msg_type = m.get("message_type")
+            if not content.strip():
+                # Photo with empty caption (post-iter-29 storage shape)
+                # would otherwise drop out of history entirely and the
+                # bot's photo-reply turn would look orphaned. Substitute
+                # a placeholder so the user→assistant alternation reads
+                # cleanly and Claude can refer back to "the photo you
+                # sent" on follow-ups. Other empty rows still skip —
+                # nothing useful to replay there.
+                if direction == "in" and msg_type == "photo":
+                    content = "[фото без подписи]"
+                else:
+                    continue
             if direction == "in":
                 turns.append({"role": "user", "content": content})
             elif msg_type == "notification":
