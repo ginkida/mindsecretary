@@ -746,6 +746,25 @@ def _safe_int(val: Any, default: int) -> int:
         return default
 
 
+def _safe_float(val: Any, default: float) -> float:
+    """Float counterpart to _safe_int — same fallback contract.
+
+    Used for ttl_hours / fractional numeric fields where the LLM
+    might hallucinate a non-numeric value ("forever", "пять"). bool
+    is bounced to default for the same reason as _safe_int.
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        return float(str(val).strip())
+    except (ValueError, TypeError):
+        return default
+
+
 def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate and sanitize tool arguments from LLM output."""
     clean = {}
@@ -868,7 +887,11 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # into the system prompt of every message.
         val = clean.get("value") or ""
         clean["value"] = str(val)[:200] or "активно"
-        ttl = float(clean.get("ttl_hours", 8.0))
+        # _safe_float defends against LLM hallucinating "forever" or
+        # "пять" — the prior float() raised ValueError, sanitize_args
+        # propagated it, tool_executor returned opaque "Error executing
+        # set_ephemeral_state: ValueError". Now falls back to 8h.
+        ttl = _safe_float(clean.get("ttl_hours"), 8.0)
         clean["ttl_hours"] = max(0.5, min(72.0, ttl))
 
     if name in ("create_event", "create_reminder", "set_daily_goal"):

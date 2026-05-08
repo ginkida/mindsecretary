@@ -291,6 +291,35 @@ class TestSanitizeArgs:
         })
         assert args["value"] == "активно"
 
+    def test_ephemeral_state_non_numeric_ttl_falls_back_to_default(self):
+        """Pre-fix `float(clean.get("ttl_hours"))` crashed with
+        ValueError when the LLM hallucinated a string value
+        ("forever", "пять"). The exception propagated up the
+        sanitize_args call, tool_executor returned an opaque
+        "Error executing set_ephemeral_state: ValueError" with no
+        actionable info for the LLM. Now _safe_float falls back to
+        the 8.0 default."""
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity", "value": "тест", "ttl_hours": "forever",
+        })
+        # Default (8.0) survives the clamp [0.5, 72.0]
+        assert args["ttl_hours"] == 8.0
+
+    def test_ephemeral_state_numeric_string_ttl_parses(self):
+        """LLM might send "2.5" as a string instead of 2.5 — the safe
+        coerce should still produce the float value."""
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity", "value": "тест", "ttl_hours": "2.5",
+        })
+        assert args["ttl_hours"] == 2.5
+
+    def test_ephemeral_state_bool_ttl_falls_back(self):
+        """bool(True) → float(1.0) is meaningless for TTL — fall back."""
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity", "value": "тест", "ttl_hours": True,
+        })
+        assert args["ttl_hours"] == 8.0
+
 
 class TestSearchConversationsSanitize:
     def test_days_clamped_to_365(self):
