@@ -746,6 +746,22 @@ def _safe_int(val: Any, default: int) -> int:
         return default
 
 
+def _strip_or_none(val: Any) -> str | None:
+    """Trim whitespace; collapse empty/None to None.
+
+    Free-text fields (related_person, location, description, etc.) used
+    to land in the DB with leading/trailing whitespace from LLM-side
+    formatting. That broke is_person_in_title's stem match ("  м" not
+    in "встреча с машей") and surfaced as "📍   кафе  " in user-facing
+    output. Bouncing empty strings to None matches the DB nullable
+    contract too (so Brain.section_events skips empty fields cleanly).
+    """
+    if val is None:
+        return None
+    stripped = str(val).strip()
+    return stripped or None
+
+
 def _safe_float(val: Any, default: float) -> float:
     """Float counterpart to _safe_int — same fallback contract.
 
@@ -1034,6 +1050,13 @@ class ToolExecutor:
         if not content or not content.strip():
             return "save_memory requires a non-empty content"
         content = content.strip()
+        # Strip ancillary free-text fields too — LLM occasionally passes
+        # "  Маша  " for related_person, which then breaks
+        # is_person_in_title's 3-char stem (becomes "  м", never matches
+        # the title's lowercase form). Empty after strip → None to
+        # match the DB nullable contract.
+        related_person = _strip_or_none(related_person)
+        related_date = _strip_or_none(related_date)
         source_type = (request_context or {}).get("source_type")
         source_ref = (request_context or {}).get("source_ref")
         mid = await self.memory.save(content, category, importance,
@@ -1234,8 +1257,17 @@ class ToolExecutor:
                     )
             except (ValueError, TypeError):
                 pass  # parse failures already caught above
-        event = self.db.create_event(title.strip(), start_at, end_at, location,
-                                     description, related_person)
+        # Strip free-text fields so " кафе " doesn't render as "📍  кафе "
+        # in /events output and so is_person_in_title's stem matcher
+        # works on "  Маша  " → "Маша". Empty after strip → None
+        # so Brain.section_events / formatters skip the field entirely
+        # instead of emitting "(с )".
+        event = self.db.create_event(
+            title.strip(), start_at, end_at,
+            _strip_or_none(location),
+            _strip_or_none(description),
+            _strip_or_none(related_person),
+        )
         return f"Event created: {title} at {start_at}"
 
     _EVENTS_OUTPUT_CAP = 30

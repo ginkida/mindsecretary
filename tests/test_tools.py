@@ -1760,6 +1760,76 @@ class TestGetWeatherHandler:
         weather.get_forecast.assert_not_awaited()
 
 
+class TestStripOrNoneHelper:
+    """_strip_or_none collapses LLM-padded free-text fields to clean
+    None / stripped strings. Pre-fix create_event stored "  кафе  "
+    raw, surfacing as "📍   кафе  " in /events output. save_memory
+    stored "  Маша  " for related_person, breaking the
+    is_person_in_title 3-char stem matcher in event renderers."""
+
+    def test_returns_none_for_none(self):
+        from mindsecretary.llm.tools import _strip_or_none
+        assert _strip_or_none(None) is None
+
+    def test_returns_none_for_empty_string(self):
+        from mindsecretary.llm.tools import _strip_or_none
+        assert _strip_or_none("") is None
+
+    def test_returns_none_for_whitespace_only(self):
+        from mindsecretary.llm.tools import _strip_or_none
+        assert _strip_or_none("   \n\t  ") is None
+
+    def test_strips_real_value(self):
+        from mindsecretary.llm.tools import _strip_or_none
+        assert _strip_or_none("  Маша  ") == "Маша"
+
+
+class TestCreateEventStripsTextFields:
+    """Iter 42 wired _strip_or_none into _handle_create_event so
+    location / related_person / description don't land in the DB
+    with LLM-side padding. Covers the path that pollutes user-
+    facing /events output and breaks is_person_in_title."""
+
+    @pytest.mark.asyncio
+    async def test_create_event_strips_related_person(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        result = await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "related_person": "  Маша  ",
+            "location": "  кафе  ",
+        })
+        assert "created" in result.lower() or "Event" in result
+
+        row = tmp_db.db.execute(
+            "SELECT related_person, location FROM events"
+        ).fetchone()
+        assert row["related_person"] == "Маша"
+        assert row["location"] == "кафе"
+
+    @pytest.mark.asyncio
+    async def test_create_event_whitespace_only_becomes_null(self, tmp_db):
+        """Whitespace-only field → None in DB, not empty string. Brain's
+        section_events / event_alert formatter then skip the field
+        cleanly instead of emitting "(с )" / "📍 ."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("create_event", {
+            "title": "встреча",
+            "start_at": "2099-04-15T14:00",
+            "location": "   ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT location FROM events"
+        ).fetchone()
+        assert row["location"] is None
+
+
 class TestUpdateEventHandler:
     """ToolExecutor handler for update_event. Closes the event-CRUD loop
     — non-time fields (title, description, location, related_person)
