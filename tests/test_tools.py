@@ -1600,6 +1600,60 @@ class TestResolveDecisionAmbiguity:
         })
         assert "No pending decision found" in result
 
+    @pytest.mark.asyncio
+    async def test_outcome_stripped_before_storage(self, tmp_db):
+        """Padded outcome leaks into get_anniversaries' briefing line
+        ("решил X — купил   [neutral]"). Strip before passing to DB."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_decision("купить велосипед")
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("resolve_decision", {
+            "description_hint": "велосипед", "outcome": "  купил  ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT outcome FROM decisions"
+        ).fetchone()
+        assert row["outcome"] == "купил"
+
+
+class TestCompleteDailyGoalReflectionStrip:
+    """complete_daily_goal stores reflection raw — padded text reads
+    "_  устал, отложил  _" in /goals italic, looks visibly off."""
+
+    @pytest.mark.asyncio
+    async def test_padded_reflection_stripped(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("починить кран")
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("complete_daily_goal", {
+            "goal_hint": "кран", "status": "skipped",
+            "reflection": "  устал, отложил  ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT reflection FROM daily_goals WHERE title = 'починить кран'"
+        ).fetchone()
+        assert row["reflection"] == "устал, отложил"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_reflection_becomes_null(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        tmp_db.create_daily_goal("позвонить маме")
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("complete_daily_goal", {
+            "goal_hint": "позвонить", "status": "completed",
+            "reflection": "   ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT reflection FROM daily_goals WHERE title = 'позвонить маме'"
+        ).fetchone()
+        assert row["reflection"] is None
+
 
 class TestGetDecisionsHandler:
     """ToolExecutor handler for get_decisions. The LLM had track_decision

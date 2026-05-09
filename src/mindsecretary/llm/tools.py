@@ -1887,6 +1887,10 @@ class ToolExecutor:
         # sentiment coercion in _handle_resolve_decision.
         if status not in (Status.COMPLETED, Status.SKIPPED, Status.PARTIAL):
             status = Status.COMPLETED
+        # Strip reflection so a padded note doesn't surface in /goals
+        # as "_  устал, отложил  _" (italic of padded text reads off).
+        # None for empty so the render skips the reflection line.
+        reflection = _strip_or_none(reflection)
         # Count first so we can disclose ambiguity ("matched 2, marked
         # the soonest"). Single-threaded SQLite, no race with the mark
         # below.
@@ -1909,6 +1913,10 @@ class ToolExecutor:
             return "resolve_decision requires a non-empty outcome"
         if sentiment not in (Sentiment.POSITIVE, Sentiment.NEUTRAL, Sentiment.NEGATIVE):
             sentiment = Sentiment.NEUTRAL
+        # Strip outcome before storage — padded "  купил  " surfaces in
+        # get_anniversaries → briefing morning anniversary line as
+        # "решил X — купил   [neutral]" with stray whitespace.
+        outcome = outcome.strip()
         # Count first so we can disclose ambiguity in the response —
         # single-threaded SQLite, no race with the resolve below.
         total = self.db.count_pending_decisions_matching(description_hint)
