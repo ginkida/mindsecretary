@@ -277,6 +277,27 @@ class TestMemoryUpdateByHint:
         assert result["status"] == "ok"
         assert result["memory"]["content"] == "новый врач"
 
+    @pytest.mark.asyncio
+    async def test_padded_new_content_stripped(self):
+        """LLM-padded new_content lands in DB raw pre-fix and surfaces
+        in /memory + Brain.section_memories with stray whitespace.
+        Voyage embedding can also be sensitive to leading space tokens
+        for some inputs. Strip before storage."""
+        memory, voyage = _make_memory()
+        emb = np.random.randn(1024).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        voyage.embed.return_value = MagicMock(embeddings=[emb.tolist()])
+        mem_id = await memory.save("старая запись", "personal")
+
+        result = await memory.update_by_hint("старая", "  обновлённая запись  ")
+        assert result["status"] == "ok"
+        assert result["memory"]["content"] == "обновлённая запись"
+
+        row = memory.db.execute(
+            "SELECT content FROM memories WHERE id = ?", (mem_id,),
+        ).fetchone()
+        assert row["content"] == "обновлённая запись"
+
 
 class TestSearchConfidenceRanking:
     """Search ranking now blends confidence into the final score so

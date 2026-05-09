@@ -185,6 +185,12 @@ class Memory:
                 or not new_content or not new_content.strip()):
             return {"status": "invalid"}
 
+        # Strip padded new_content before storage. Pre-fix LLM-passed
+        # "  новый факт  " landed in DB raw and surfaced in /memory and
+        # Brain.section_memories with stray whitespace, plus polluted
+        # the embedding (Voyage treats leading/trailing space as
+        # tokens for some inputs).
+        new_content = new_content.strip()
         escaped = self._escape_like(hint.strip().lower())
         rows = self.db.execute(
             "SELECT id, content, category, importance, confidence "
