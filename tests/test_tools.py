@@ -2025,6 +2025,60 @@ class TestEmptyInputValidation:
         assert "Contact updated" in result
 
     @pytest.mark.asyncio
+    async def test_update_contact_strips_padded_birthday(self, tmp_db):
+        """LLM padding around birthday breaks substr(birthday, -5) in
+        get_upcoming_birthdays — "  04-15  " stored as-is gives "-15  "
+        for the MM-DD slice, which never matches the alert window. Must
+        strip before passing to upsert_contact."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("update_contact", {
+            "name": "Маша", "birthday": "  04-15  ",
+        })
+        contacts = tmp_db.get_contacts("Маша")
+        assert contacts
+        assert contacts[0]["birthday"] == "04-15"
+
+    @pytest.mark.asyncio
+    async def test_update_contact_strips_padded_relation_and_notes(self, tmp_db):
+        """Padded relation surfaces as "(  друг  )" in /people. Notes
+        accumulate trailing whitespace on each upsert append. Strip
+        bounces both to clean values."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("update_contact", {
+            "name": "Олег",
+            "relation": "  коллега  ",
+            "notes": "  любит шахматы  ",
+        })
+        contacts = tmp_db.get_contacts("Олег")
+        assert contacts[0]["relation"] == "коллега"
+        # Notes trimmed too
+        assert contacts[0]["notes"].strip() == "любит шахматы"
+        assert not contacts[0]["notes"].endswith("  ")
+
+    @pytest.mark.asyncio
+    async def test_update_contact_whitespace_only_relation_becomes_null(
+        self, tmp_db,
+    ):
+        """Whitespace-only field collapses to None — matches DB nullable
+        contract so /people doesn't render '()' for a relation that's
+        just spaces."""
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("update_contact", {
+            "name": "Ксюша", "relation": "   ",
+        })
+        contacts = tmp_db.get_contacts("Ксюша")
+        assert contacts[0]["relation"] is None
+
+    @pytest.mark.asyncio
     async def test_log_habit_rejects_empty_name(self, tmp_db):
         from unittest.mock import MagicMock
         from mindsecretary.llm.tools import ToolExecutor

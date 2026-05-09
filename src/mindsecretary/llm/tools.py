@@ -1557,6 +1557,14 @@ class ToolExecutor:
         # but the rendered output is '— (relation)'). Defend at the boundary.
         if not name or not name.strip():
             return "update_contact requires a non-empty name"
+        # Strip padded fields so " 04-15 " doesn't slip past
+        # substr(birthday, -5) — that slice would return "-15 " and the
+        # MM-DD lookup window in get_upcoming_birthdays never matches.
+        # Same risk for relation ("(  друг  )" in /people) and notes
+        # (whitespace accumulating on each upsert append).
+        relation = _strip_or_none(relation)
+        birthday = _strip_or_none(birthday)
+        notes = _strip_or_none(notes)
         # Validate birthday shape so a typo doesn't silently break
         # get_upcoming_birthdays — it uses substr(birthday, -5) for the
         # MM-DD match, which never lines up with bogus input. User adds
