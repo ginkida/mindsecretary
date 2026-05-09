@@ -230,6 +230,105 @@ class TestTextHandlerWhitespaceGuard:
         update.message.reply_text.assert_not_awaited()
 
 
+class TestTextTruncationWarning:
+    """Pre-fix _handle_text silently clipped >MAX_TEXT_LENGTH paste,
+    sending only the first 10k chars to Brain. Voice handler already
+    warned the user about the same situation; text was the inconsistent
+    one. A 12k-char article paste came back with a reply that ignored
+    the second half and the user had no signal anything was dropped."""
+
+    @pytest.mark.asyncio
+    async def test_long_text_warns_and_truncates(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+        from mindsecretary.interfaces.telegram import MAX_TEXT_LENGTH
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "x" * (MAX_TEXT_LENGTH + 5000)
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="ok", tool_calls_made=0, total_tokens=10,
+        ))
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_text(update, context)
+
+        # Warning sent — original length leaked to user so they know
+        # which half got processed.
+        warned = any(
+            "обрезаю" in (call.args[0] if call.args else "")
+            for call in update.message.reply_text.await_args_list
+        )
+        assert warned, "expected truncation warning"
+        # Brain still got called with the truncated length.
+        brain.process.assert_awaited_once()
+        kwargs = brain.process.await_args.kwargs
+        assert len(kwargs["user_message"]) == MAX_TEXT_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_short_text_no_warning(self):
+        """Sanity: under-limit text doesn't trigger the warning."""
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "короткое сообщение"
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="ok", tool_calls_made=0, total_tokens=10,
+        ))
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_text(update, context)
+
+        # Only the bot's actual reply, no truncation warning.
+        for call in update.message.reply_text.await_args_list:
+            assert "обрезаю" not in (call.args[0] if call.args else "")
+
+
+class TestForwardTruncationWarning:
+    """Same gap for forwarded text — long-article forwards shipped to
+    Brain pre-truncated with no signal."""
+
+    @pytest.mark.asyncio
+    async def test_long_forwarded_text_warns(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from mindsecretary.core.brain import BrainResponse
+        from mindsecretary.interfaces.telegram import MAX_TEXT_LENGTH
+
+        bot, brain = _make_bot()
+        update = _make_update()
+        update.message.text = "y" * (MAX_TEXT_LENGTH + 3000)
+        update.message.caption = None
+        update.message.photo = None
+        update.message.forward_origin = None
+        update.message.chat = MagicMock()
+        update.message.chat.send_action = AsyncMock()
+        brain.process = AsyncMock(return_value=BrainResponse(
+            text="ok", tool_calls_made=0, total_tokens=10,
+        ))
+        context = SimpleNamespace(args=[])
+
+        await bot._handle_forward(update, context)
+
+        warned = any(
+            "обрезаю" in (call.args[0] if call.args else "")
+            for call in update.message.reply_text.await_args_list
+        )
+        assert warned, "expected forwarded-text truncation warning"
+        brain.process.assert_awaited_once()
+        # full_text = prefix + truncated text. Verify the body part is capped.
+        kwargs = brain.process.await_args.kwargs
+        msg = kwargs["user_message"]
+        # Strip prefix "[Переслано]: " (forward_origin=None branch).
+        body = msg.split(": ", 1)[1] if ": " in msg else msg
+        assert len(body) == MAX_TEXT_LENGTH
+
+
 class TestPhotoPostDownloadSizeGuard:
     """Pre-fix only photo.file_size was checked, which Telegram doesn't
     always populate. A missing file_size header would skip the guard

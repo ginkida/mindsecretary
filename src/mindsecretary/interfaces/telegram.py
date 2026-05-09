@@ -1242,6 +1242,14 @@ class TelegramBot:
         if not text or not text.strip():
             return
         if len(text) > MAX_TEXT_LENGTH:
+            # Mirror the voice handler — pre-fix a 12k-char paste was
+            # silently clipped to 10k and the LLM only saw the first
+            # half, so its reply ignored the rest with no signal to
+            # the user that anything was dropped.
+            await update.message.reply_text(
+                f"Сообщение длинное ({len(text)} симв), "
+                f"обрезаю до {MAX_TEXT_LENGTH}."
+            )
             text = text[:MAX_TEXT_LENGTH]
 
         await self._typing(update)
@@ -1353,7 +1361,8 @@ class TelegramBot:
                 await msg.reply_text("Не удалось обработать фото.")
             return
 
-        text = (msg.text or msg.caption or "")[:MAX_TEXT_LENGTH]
+        raw = msg.text or msg.caption or ""
+        text = raw[:MAX_TEXT_LENGTH]
         # Pre-fix the empty-check used full_text, which always has the
         # "[Переслано]:" prefix and was therefore never empty. So a
         # forwarded photo without a caption (or a sticker forward) became
@@ -1362,6 +1371,14 @@ class TelegramBot:
         # portion explicitly.
         if not text.strip():
             return
+        if len(raw) > MAX_TEXT_LENGTH:
+            # Same UX gap as plain text — silent clip on long forwards
+            # (long article forwarded for summary) hid which half got
+            # processed. Warn before dispatching to Brain.
+            await update.message.reply_text(
+                f"Пересланный текст длинный ({len(raw)} симв), "
+                f"обрезаю до {MAX_TEXT_LENGTH}."
+            )
         full_text = f"{forward_from}{text}"
 
         await self._typing(update)
