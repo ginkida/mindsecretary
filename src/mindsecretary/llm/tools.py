@@ -1794,6 +1794,11 @@ class ToolExecutor:
         if not description or not description.strip():
             return "track_decision requires a non-empty description"
         description = description.strip()
+        # Strip context too — padded "  бюджет 50к  " surfaces in
+        # get_decisions / Brain._section_decisions output as awkward
+        # "( бюджет 50к )". None for empty so the section formatters
+        # skip the field cleanly instead of emitting "(  )".
+        context = _strip_or_none(context)
         # Save first, search second. Pre-fix the order was reversed and
         # any failure in get_past_decisions (DB hiccup, weird LIKE input)
         # would propagate up the execute() wrapper as "Error executing
@@ -1862,6 +1867,10 @@ class ToolExecutor:
         # complete_daily_goal_by_hint can't match it back.
         if not title or not title.strip():
             return "set_daily_goal requires a non-empty title"
+        # Strip description so a padded value doesn't surface in /goals
+        # ("  починить кран  " on its own line). None for empty so the
+        # render skips the description tail cleanly.
+        description = _strip_or_none(description)
         goal = self.db.create_daily_goal(title.strip(), description, priority)
         prio_ru = {"high": "высокий", "medium": "средний", "low": "низкий"}.get(priority, priority)
         return f"Goal set: {title} (приоритет: {prio_ru})"

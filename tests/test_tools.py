@@ -1478,6 +1478,79 @@ class TestTrackDecisionResilience:
         assert "купить старый велосипед" in result
 
 
+class TestTrackDecisionStripsContext:
+    """track_decision passes context to db.create_decision. Pre-iter-44
+    a padded "  бюджет 50к  " landed raw and surfaced as awkward
+    "( бюджет 50к )" in get_decisions / Brain section_decisions output.
+    Now _strip_or_none cleans it; whitespace-only collapses to None
+    so section formatters skip the field cleanly."""
+
+    @pytest.mark.asyncio
+    async def test_padded_context_stripped(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("track_decision", {
+            "description": "купить велосипед",
+            "context": "  бюджет 50к  ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT context FROM decisions"
+        ).fetchone()
+        assert row["context"] == "бюджет 50к"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_context_becomes_null(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("track_decision", {
+            "description": "купить велосипед",
+            "context": "   \n  ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT context FROM decisions"
+        ).fetchone()
+        assert row["context"] is None
+
+
+class TestSetDailyGoalStripsDescription:
+    """set_daily_goal also passed description raw. Padded values
+    surface in /goals on a separate italicized line. Strip and
+    collapse-to-None for consistency."""
+
+    @pytest.mark.asyncio
+    async def test_padded_description_stripped(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("set_daily_goal", {
+            "title": "почитать книгу",
+            "description": "  главы 4-5  ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT description FROM daily_goals"
+        ).fetchone()
+        assert row["description"] == "главы 4-5"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_description_becomes_null(self, tmp_db):
+        from unittest.mock import MagicMock
+        from mindsecretary.llm.tools import ToolExecutor
+
+        te = ToolExecutor(db=tmp_db, memory=MagicMock())
+        await te.execute("set_daily_goal", {
+            "title": "x", "description": "   ",
+        })
+        row = tmp_db.db.execute(
+            "SELECT description FROM daily_goals"
+        ).fetchone()
+        assert row["description"] is None
+
+
 class TestResolveDecisionAmbiguity:
     """resolve_decision picks the most-recent match silently when hint
     is ambiguous. Mirror cancel_reminder/cancel_event ambiguity disclosure
