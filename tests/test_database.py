@@ -33,6 +33,40 @@ class TestEvents:
         events = tmp_db.get_events("2026-04-15", "2026-04-16")
         assert len(events) == 2
 
+    def test_get_events_includes_ongoing_multiday(self, tmp_db: Database):
+        """3-day conference (start May 7, end May 9) must surface on
+        every middle day, not just the start. Pre-fix
+        date(start_at) BETWEEN date_from AND date_to dropped May 8/9
+        because start was May 7, leaving Brain._section_events and
+        the briefing today-block blank while the user was at the
+        conference."""
+        tmp_db.create_event(
+            "Конференция", "2026-05-07 10:00:00",
+            end_at="2026-05-09 18:00:00",
+        )
+        # Visible on every day in the range, including middle and last.
+        for day in ("2026-05-07", "2026-05-08", "2026-05-09"):
+            events = tmp_db.get_events(day)
+            assert len(events) == 1, f"missed multi-day event on {day}"
+            assert events[0]["title"] == "Конференция"
+        # Day after end_at — gone.
+        assert tmp_db.get_events("2026-05-10") == []
+        # Day before start_at — gone.
+        assert tmp_db.get_events("2026-05-06") == []
+
+    def test_get_events_overnight_event(self, tmp_db: Database):
+        """Event that bleeds across midnight (22:00→01:00) shows on
+        both the start day and the next day. Mirrors the multi-day
+        case but ensures the overlap predicate handles a same-window
+        end correctly."""
+        tmp_db.create_event(
+            "Ночная смена", "2026-04-15 22:00:00",
+            end_at="2026-04-16 01:00:00",
+        )
+        assert len(tmp_db.get_events("2026-04-15")) == 1
+        assert len(tmp_db.get_events("2026-04-16")) == 1
+        assert tmp_db.get_events("2026-04-17") == []
+
     def test_cancel_event_by_hint_picks_soonest_future(self, tmp_db: Database):
         now = tmp_db.local_now_naive()
         # Two future events matching hint, one past — cancel must pick the

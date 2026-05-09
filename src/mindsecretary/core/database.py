@@ -414,12 +414,29 @@ class Database:
         return dict(row)
 
     def get_events(self, date_from: str, date_to: str | None = None) -> list[dict]:
+        """Events overlapping the [date_from, date_to] window.
+
+        Pre-fix the filter was `date(start_at) BETWEEN date_from AND
+        date_to`, so a 3-day conference (start May 7, end May 9) was
+        invisible on May 8 — start was outside the window even though
+        the event was actively running. Brain._section_events / the
+        morning/evening briefing rendered "Нет событий" while the user
+        was sitting in the conference room.
+
+        Now uses standard date-range overlap: include any row whose
+        START is on/before date_to AND whose END (or start, if no end
+        recorded) is on/after date_from. COALESCE handles the legacy
+        point-in-time event shape (end_at NULL — treat as same-day) so
+        we don't need a separate branch.
+        """
         if date_to is None:
             date_to = date_from
         rows = self.db.execute(
-            "SELECT * FROM events WHERE date(start_at) >= date(?) AND date(start_at) <= date(?) "
+            "SELECT * FROM events "
+            "WHERE date(start_at) <= date(?) "
+            "  AND date(COALESCE(end_at, start_at)) >= date(?) "
             "ORDER BY start_at",
-            (date_from, date_to),
+            (date_to, date_from),
         ).fetchall()
         return [dict(r) for r in rows]
 
