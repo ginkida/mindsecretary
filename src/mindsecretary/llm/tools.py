@@ -899,10 +899,15 @@ def _sanitize_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
         key = clean.get("key", "")
         if key not in VALID_EPHEMERAL_KEYS:
             clean["key"] = "activity"  # safe default
-        # value length cap tighter than global MAX_STR_LEN — state lines go
+        # Strip + cap value. Pre-fix padded "  на работе  " landed in
+        # /context and Brain._section_ephemeral_state with stray
+        # whitespace ("📍 Локация:   на работе  "). The "активно"
+        # fallback fires after strip so a whitespace-only value
+        # (which the user clearly didn't intend) still gets a clean
+        # default. Cap stays tight (200 chars) since state lines go
         # into the system prompt of every message.
-        val = clean.get("value") or ""
-        clean["value"] = str(val)[:200] or "активно"
+        val = str(clean.get("value") or "").strip()
+        clean["value"] = val[:200] if val else "активно"
         # _safe_float defends against LLM hallucinating "forever" or
         # "пять" — the prior float() raised ValueError, sanitize_args
         # propagated it, tool_executor returned opaque "Error executing

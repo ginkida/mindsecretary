@@ -291,6 +291,24 @@ class TestSanitizeArgs:
         })
         assert args["value"] == "активно"
 
+    def test_ephemeral_state_padded_value_stripped(self):
+        """LLM-padded value lands in /context display + Brain section
+        with stray whitespace ("📍 Локация:   на работе  "). Strip
+        before storage so downstream rendering reads clean."""
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "location", "value": "  на работе  ", "ttl_hours": 1,
+        })
+        assert args["value"] == "на работе"
+
+    def test_ephemeral_state_whitespace_only_value_falls_back(self):
+        """Whitespace-only (no real intent) → default 'активно' just
+        like fully empty input. Pre-fix it stored '   ' as the value
+        and the section rendered '📍 Локация:    _(до ...)_'."""
+        args = _sanitize_args("set_ephemeral_state", {
+            "key": "activity", "value": "   \n\t  ", "ttl_hours": 1,
+        })
+        assert args["value"] == "активно"
+
     def test_ephemeral_state_non_numeric_ttl_falls_back_to_default(self):
         """Pre-fix `float(clean.get("ttl_hours"))` crashed with
         ValueError when the LLM hallucinated a string value
